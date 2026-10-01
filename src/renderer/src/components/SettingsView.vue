@@ -409,13 +409,16 @@ async function openOutputDir(): Promise<void> {
       <!-- 路径设置 -->
       <h2>路径设置</h2>
       <div class="field">
-        <label>字幕缓存目录</label>
+        <label>旧版字幕正文目录</label>
         <div class="row">
           <input :value="state.settings?.subtitleCacheDir" class="input grow" readonly />
           <button class="btn" @click="pickDir('subtitleCacheDir')">选择…</button>
         </div>
       </div>
-      <div class="hint">字幕正文缓存位置，修改后需重启应用生效。</div>
+      <div class="hint">
+        仅用于迁移：新版已把字幕正文存进数据库，这里指的是旧版本放 <code>&lt;docId&gt;.json</code> 的位置。
+        首次启动会自动从这里导入，导入完成后就不再使用；留空则用默认位置。
+      </div>
       <div class="field">
         <label>外部切片工具目录</label>
         <div class="row">

@@ -97,8 +97,12 @@ WebSocket 握手**不受 CORS 约束** —— 只绑 `127.0.0.1` 挡得住外部
 
 - **Electron 33** + **Vue 3** + **Vite**（`electron-vite` 构建）
 - **TypeScript** 全量类型覆盖，主/预加载/渲染三端共享类型（`src/shared`）
-- **数据存储**：单文件 JSON（原子写入，`rename` 覆盖）+ 字幕正文按文档单独缓存
-  > 说明：原计划使用 better-sqlite3，但本机缺少 MSVC C++ 工具链导致原生模块编译失败，遂改为零依赖的 JSON 存储层。数据层接口保持独立（`src/main/db.ts`），数万条记录以内性能足够，后续可平滑替换为 SQLite。
+- **数据存储**：**SQLite**（用 Electron 内置的 `node:sqlite`，零原生依赖，不需要 MSVC 工具链）
+  > 早期版本是「单文件 JSON + 每个文档一个正文 JSON」。换成 SQLite 的原因：每次写操作都要重写整个文件，
+  > 批量拉字幕时放大得厉害；文件一坏全库皆失；而且没法做跨文档全文检索。
+  > 现在字幕正文直接入库，并带一个 FTS5 索引支撑全库检索。
+  > **老数据会自动迁移**：首次启动读到旧的 `srt-tool.json` 就导入进去（含旧目录里的正文文件），
+  > 完成后把原文件改名成 `srt-tool.json.migrated-<时间戳>` 留档，不删除。
 - **表格导出**：CSV（带 UTF-8 BOM，Excel 打开不乱码）+ XLSX（SheetJS）
 
 ---
@@ -152,7 +156,7 @@ app/
     ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验（59 项）
     ├── wbi.test.ts             # WBI 签名 / 协议 / 版本 / 扩展 ID 一致性（18 项）
     ├── sidx.test.ts            # 切片 SIDX 解析与区间计算（14 项）
-    ├── smoke.ts                # Electron 端到端冒烟测试（21 项）
+    ├── smoke.ts                # Electron 端到端冒烟 + 迁移 + 全文检索（24 项）
     ├── bridge.smoke.ts         # 插件通信端到端 + 来源校验 / 配对令牌（27 项）
     ├── demo.srt                # 演示字幕
     ├── gen-large-srt.mjs       # 开发辅助：生成超大字幕文件
@@ -173,7 +177,7 @@ npm install
 npm run dev        # 开发模式（热更新）
 npm run build      # 构建到 out/
 npm run typecheck  # 类型检查（渲染进程 + 主进程 + 测试 + 插件脚本）
-npm test           # 运行全部测试（59 + 18 + 14 + 21 + 27 项）
+npm test           # 运行全部测试（59 + 18 + 14 + 24 + 27 项）
 ```
 
 调试辅助：
@@ -294,8 +298,8 @@ npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更�
 
 | 内容 | 路径 |
 | --- | --- |
-| 资源 / 切片任务数据 | `%APPDATA%\srt-clip-helper\srt-tool-data\srt-tool.json` |
-| 字幕正文缓存 | 同上目录 `docs\<docId>.json`（可在设置里改） |
+| 资源 / 字幕 / 切片任务数据 | `%APPDATA%\srt-clip-helper\srt-tool-data\srt-tool.db`（SQLite，附带 `-wal` / `-shm`） |
+| 旧版数据（迁移后留档） | 同目录 `srt-tool.json.migrated-<时间戳>` 与 `docs\<docId>.json` |
 | 应用设置 | `%APPDATA%\srt-clip-helper\settings.json` |
 | 切片表输出 | 默认 `我的文档\subtitle-clips`，可在设置里改 |
 
@@ -309,7 +313,7 @@ npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更�
 - **推送陌生 BV 号时会多一次接口调用**：本地没有该 BV 号时需要先查一次视频信息才能归对分组；未登录 / 断网时会退化成「未关联」占位，之后可自动归位。
 - **MV3 保活**：service worker 被浏览器回收后，靠 `chrome.alarms` 每分钟唤醒重连，极端情况下有约 1 分钟的重连空窗。
 - **批量编辑**：目前只能逐条编辑正文；批量替换 / 时间轴微调尚未提供。
-- **数据规模**：存储为单文件 JSON，适合数万条量级；单文档超十万条字幕时首屏解析会有可感知的延迟。
+- **数据规模**：SQLite + FTS5，十万条量级字幕下检索与滚动都不成问题；超大单文档（十万条以上）首次打开仍会有可感知的读取延迟。
 - **本地切片的依赖**：需要 ffmpeg（工具不自带，需自行指定或安装）；老视频若只提供 `durl` 格式则不支持切片，会给出明确提示。
 - **切片并发**：ffmpeg 处理是串行的（同一时刻只跑一个），并发只作用于网络下载阶段。
 

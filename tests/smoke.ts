@@ -5,7 +5,15 @@
  */
 import { app } from 'electron'
 import assert from 'node:assert'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as db from '../src/main/db'
@@ -322,25 +330,35 @@ async function run(): Promise<void> {
 
   /* ------------------------ 9. 持久化（重新加载） ------------------------ */
   db.closeDb()
-  check('数据已落盘且可重新加载', () => {
-    const dataFile = join(workDir, 'srt-tool-data', 'srt-tool.json')
-    assert.ok(existsSync(dataFile), '数据文件不存在')
-    const raw = JSON.parse(readFileSync(dataFile, 'utf8'))
-    assert.strictEqual(raw.uploaders.length, 1)
-    assert.ok(raw.docs.length >= 1)
-    assert.ok(raw.videos.length >= 3)
+  check('数据已落盘，重新打开数据库后仍可读', () => {
+    const dbFile = join(workDir, 'srt-tool-data', 'srt-tool.db')
+    assert.ok(existsSync(dbFile), '数据库文件不存在')
+    db.initDb(workDir) // 重新打开
+    const s = db.stats()
+    assert.strictEqual(s.uploaders, 1)
+    assert.ok(s.docs >= 1, `docs 应至少为 1，实际 ${s.docs}`)
+    assert.ok(s.videos >= 3, `videos 应至少为 3，实际 ${s.videos}`)
   })
 
-  /* ------------------- 10. 老数据迁移（UP主 mid → uid） ------------------- */
-  check('老数据里的 UP主 mid 会迁移成 uid', () => {
+  /* -------------------- 10. 老数据迁移（JSON → SQLite） -------------------- */
+  check('老数据（JSON + 每文档一个正文文件）能完整迁移进 SQLite', () => {
     const legacyDir = mkdtempSync(join(tmpdir(), 'srt-tool-legacy-'))
     const dataDir = join(legacyDir, 'srt-tool-data')
-    mkdirSync(dataDir, { recursive: true })
     mkdirSync(join(dataDir, 'docs'), { recursive: true })
+    // 老版本的正文是单独文件，迁移时要一并读进来
+    writeFileSync(
+      join(dataDir, 'docs', '1.json'),
+      JSON.stringify([
+        { index: 1, start: 1, end: 2, text: '老版本第一句' },
+        { index: 2, start: 3, end: 4, text: '老版本第二句' }
+      ]),
+      'utf8'
+    )
     writeFileSync(
       join(dataDir, 'srt-tool.json'),
       JSON.stringify({
-        seq: { uploaders: 1, collections: 1, videos: 1, docs: 1, clips: 0 },
+        seq: { uploaders: 1, collections: 1, videos: 1, docs: 1, clips: 1 },
+        // 老版本字段名是 mid，v2 起统一为 uid
         uploaders: [{ id: 1, mid: 88888, name: '老版本UP主', avatar: null, favorite: 0, createdAt: 1 }],
         collections: [
           { id: 1, uploaderId: 1, sid: null, title: '单视频', url: null, favorite: 0, createdAt: 1 }
@@ -372,17 +390,91 @@ async function run(): Promise<void> {
             createdAt: 1
           }
         ],
-        clips: []
+        clips: [
+          {
+            id: 1,
+            docId: 1,
+            bvid: 'BV1LEGACY001',
+            page: 1,
+            start: 1,
+            end: 4,
+            note: '老切片',
+            createdAt: 1
+          }
+        ]
       }),
       'utf8'
     )
 
     db.initDb(legacyDir)
+
     const tree = db.buildTree()
     assert.strictEqual(tree.length, 1)
     assert.strictEqual(tree[0].subtitle, 'UID 88888', 'mid 应迁移成 uid 并显示出来')
+    assert.strictEqual(tree[0].children?.[0].children?.[0].label, '老视频')
+
+    const cues = db.loadCues(1)
+    assert.strictEqual(cues.length, 2, '正文文件应一起迁移')
+    assert.strictEqual(cues[0].text, '老版本第一句')
+    assert.strictEqual(db.listClipTasks().length, 1, '切片任务应一起迁移')
+
+    // 迁移后老文件改名留档，不删除
+    const migrated = readdirSync(dataDir).filter((f) => f.startsWith('srt-tool.json.migrated-'))
+    assert.strictEqual(migrated.length, 1, '老 JSON 应改名留档')
+    // 迁移进来的正文也应当能被检索到
+    assert.strictEqual(db.searchCues('老版本第一句').length, 1)
+
     db.closeDb()
     rmSync(legacyDir, { recursive: true, force: true })
+  })
+
+  /* --------------------- 11. 跨文档全文检索（FTS5） --------------------- */
+  // 上一节迁移测试用的是另一个临时目录，这里切回本测试的主库
+  db.initDb(workDir)
+
+  check('跨文档检索能一次搜到不同视频里的字幕', () => {
+    const upId = db.upsertUploader(700001, '检索测试UP主')
+    const colId = db.upsertCollection(upId, null, '单视频')
+    const v1 = db.upsertVideo(colId, 'BV1SEARCH001', '检索测试视频一', {})
+    const v2 = db.upsertVideo(colId, 'BV1SEARCH002', '检索测试视频二', {})
+    db.upsertDoc(v1, 1, 'zh-CN', '简体中文', 's1.srt', 'bilibili', [
+      cue(1, 0, 1, '这里出现了独角兽这个词'),
+      cue(2, 2, 3, '无关内容')
+    ])
+    db.upsertDoc(v2, 1, 'zh-CN', '简体中文', 's2.srt', 'bilibili', [
+      cue(1, 5, 6, '另一个视频里的独角兽')
+    ])
+
+    // 4 个字 → 走 FTS5 索引
+    const ftsHits = db.searchCues('独角兽')
+    assert.strictEqual(ftsHits.length, 2, `FTS 应命中两条，实际 ${ftsHits.length}`)
+    assert.deepStrictEqual([...new Set(ftsHits.map((h) => h.videoId))].sort(), [v1, v2].sort())
+    assert.strictEqual(ftsHits[0].uploaderName, '检索测试UP主')
+    assert.ok(ftsHits[0].videoTitle.startsWith('检索测试视频'))
+
+    // 2 个字 → trigram 要求至少 3 字符，自动回退 LIKE，语义仍然正确
+    const shortHits = db.searchCues('独角')
+    assert.strictEqual(shortHits.length, 2, `短查询应回退 LIKE 并命中两条，实际 ${shortHits.length}`)
+
+    // 搜不到的词不该有结果
+    assert.strictEqual(db.searchCues('不存在的词').length, 0)
+    assert.strictEqual(db.searchCues('   ').length, 0)
+  })
+
+  check('改写正文后全文索引同步更新（不会搜到已删掉的句子）', () => {
+    const video = db.findVideoByBvid('BV1SEARCH001')
+    assert.ok(video)
+    const docId = db.listDocsByVideo(video!.id)[0].id
+    db.updateDocCues(docId, [cue(1, 0, 1, '换成了完全不同的内容')])
+    assert.strictEqual(db.searchCues('独角兽').length, 1, '旧句子应从索引里消失')
+    assert.strictEqual(db.searchCues('完全不同').length, 1, '新句子应能被搜到')
+  })
+
+  check('删除视频后其字幕也不再出现在检索结果里', () => {
+    const video = db.findVideoByBvid('BV1SEARCH002')
+    assert.ok(video)
+    db.deleteVideo(video!.id)
+    assert.strictEqual(db.searchCues('独角兽').length, 0, '被删视频的字幕不该还能搜到')
   })
 
   console.log(`\n通过 ${passed}，失败 ${failed}\n`)
