@@ -13,8 +13,9 @@ npm install
 npm run dev        # 开发模式（热更新）
 ```
 
-> `.npmrc` 预设了国内镜像（registry + Electron 二进制）。**海外网络请先删掉或注释掉 `.npmrc`**，
-> 否则会绕远路。
+> **npm 镜像（可选）**：中国大陆网络下，把 `.npmrc.example` 复制成 `.npmrc` 可显著加快安装
+> （registry 与 Electron 二进制都走 npmmirror）。**默认不要提交 `.npmrc`** ——
+> CI 跑在境外 runner 上，国内镜像会让它更慢甚至失败。
 
 ## 提交之前必须全部通过
 

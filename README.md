@@ -205,7 +205,9 @@ app/
 | `THIRD-PARTY.md` | 随程序分发的依赖与移植代码的归属声明 |
 | `SECURITY.md` | 安全模型与漏洞报告方式 |
 | `CONTRIBUTING.md` | 开发约定与提交前检查清单 |
+| `CHANGELOG.md` | 版本变更记录 |
 | `electron-builder.yml` | 打包配置 |
+| `.npmrc.example` | 国内 npm 镜像示例（可选，复制成 `.npmrc` 生效） |
 | `build/make-icon.mjs` | 生成应用图标（可复现，不用二进制设计文件） |
 | `build/make-extension-key.mjs` | 生成插件固定 ID 所需的公钥 |
 
@@ -235,8 +237,15 @@ node tests/fake-plugin.mjs 8765
 node tests/gen-large-srt.mjs 5000
 ```
 
-> **关于 npm 镜像**：仓库里的 `.npmrc` 预设了国内镜像（registry / Electron 二进制走 npmmirror），
-> 中国大陆网络下安装快很多；**海外网络请删掉或注释掉 `.npmrc` 再装**，否则会走弯路。
+> **关于 npm 镜像（可选）**：中国大陆网络直连 npm 与 GitHub Releases（Electron 二进制）通常很慢，
+> 仓库提供了 `.npmrc.example`，复制成 `.npmrc` 即可走国内镜像：
+>
+> ```bash
+> cp .npmrc.example .npmrc     # Windows: copy .npmrc.example .npmrc
+> ```
+>
+> 之所以只提交示例而不是 `.npmrc` 本身：CI 跑在境外的 runner 上，用国内镜像反而更慢、还可能拉不到包，
+> 所以镜像做成 opt-in，两边都不吃亏。
 >
 > **关于测试环境**：`test:smoke` 与 `test:bridge` 会真的启动 Electron 主进程，需要能创建窗口的桌面会话
 > （纯 SSH / 无图形环境会失败），其余三组是纯 Node 测试，任何环境都能跑。
