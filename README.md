@@ -179,7 +179,18 @@ node tests/gen-large-srt.mjs 5000
 
 ```bash
 npm run dist       # Windows 安装包（NSIS）+ 免安装版，输出到 dist/
+npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更快）
 ```
+
+> **Windows 打包前置条件**：electron-builder 会下载 `winCodeSign` 工具包，其中 macOS 的符号链接
+> 需要「创建符号链接」权限。**未开启开发者模式且非管理员时解压会失败**，报
+> `Cannot create symbolic link ... libcrypto.dylib`。二选一解决：
+> 打开「设置 → 系统 → 开发者选项 → 开发人员模式」，或改用管理员终端执行。
+> （GitHub Actions 的 windows runner 自带该权限，CI 里不受影响。）
+>
+> 产物结构：`dist/win-unpacked/` 就是免安装版，直接运行 `SRT Clip Helper.exe`；
+> 浏览器插件被放在 `resources/extension/`（asar 之外），
+> 「设置 → 浏览器插件通信 → 插件目录」指向的就是它。
 
 ---
 

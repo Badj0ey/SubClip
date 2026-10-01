@@ -1,0 +1,44 @@
+# electron-builder 打包配置
+# 打包：npm run dist（安装包 + 免安装版） / npm run dist:dir（只解包，便于快速验证）
+
+appId: com.badj0ey.srt-clip-helper
+productName: SRT Clip Helper
+copyright: Copyright © 2026 Badj0ey
+artifactName: ${productName}-${version}-${arch}.${ext}
+
+directories:
+  output: dist
+  buildResources: build
+
+# 只把构建产物与清单打进 asar。
+# src/ 与 tests/ 不需要随程序分发（早期配置缺失时它们会被一起打包进 asar）。
+files:
+  - out/**/*
+  - package.json
+  - '!**/*.map'
+
+# 浏览器插件必须放在 asar 之外的真实目录里：
+# 主进程用 process.resourcesPath/extension 去找它，用户要在「加载解压缩的扩展」里选中它。
+# 少了这一段，打包后的应用会报「插件目录不存在」。
+extraResources:
+  - from: extension
+    to: extension
+    filter:
+      - '**/*'
+
+win:
+  icon: build/icon.ico
+  target:
+    - target: nsis
+      arch: [x64]
+    - target: zip
+      arch: [x64]
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: SRT 字幕助手
+  artifactName: ${productName}-${version}-setup.${ext}

@@ -2,19 +2,36 @@
   "name": "srt-clip-helper",
   "version": "0.1.0",
   "private": true,
-  "description": "SRT 字幕检索与视频切片辅助工具",
+  "description": "Bilibili 字幕检索与视频切片辅助工具：抓字幕 → 检索 → 选片段 → 生成时间坐标 → 本机切片",
+  "license": "MIT",
+  "author": "Badj0ey",
   "main": "./out/main/index.js",
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "bilibili",
+    "subtitle",
+    "srt",
+    "subtitle-editor",
+    "video-clip",
+    "electron",
+    "vue3"
+  ],
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
+    "start": "electron .",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
     "test": "npm run test:core && npm run test:wbi && npm run test:slice && npm run test:smoke && npm run test:bridge",
     "test:slice": "esbuild tests/sidx.test.ts --bundle --platform=node --format=cjs --outfile=tests/sidx.test.cjs --alias:@shared=./src/shared --external:electron --log-level=warning && node tests/sidx.test.cjs",
     "test:core": "esbuild tests/core.test.ts --bundle --platform=node --format=cjs --outfile=tests/core.test.cjs --alias:@shared=./src/shared --log-level=warning && node tests/core.test.cjs",
     "test:wbi": "esbuild tests/wbi.test.ts --bundle --platform=node --format=cjs --outfile=tests/wbi.test.cjs --log-level=warning && node tests/wbi.test.cjs",
     "test:smoke": "esbuild tests/smoke.ts --bundle --platform=node --format=cjs --outfile=tests/smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --log-level=warning && electron tests/smoke.cjs",
-    "test:bridge": "esbuild tests/bridge.smoke.ts --bundle --platform=node --format=cjs --outfile=tests/bridge.smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --external:ws --log-level=warning && electron tests/bridge.smoke.cjs"
+    "test:bridge": "esbuild tests/bridge.smoke.ts --bundle --platform=node --format=cjs --outfile=tests/bridge.smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --external:ws --log-level=warning && electron tests/bridge.smoke.cjs",
+    "dist": "npm run build && electron-builder --win",
+    "dist:dir": "npm run build && electron-builder --win --dir"
   },
   "dependencies": {
     "ws": "^8.21.3",
