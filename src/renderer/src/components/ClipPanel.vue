@@ -1,18 +1,91 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import { formatTime } from '@shared/time'
 import { rangeDuration, totalDuration } from '@shared/ranges'
 import {
   cancelSlice,
+  clearSliceHistory,
   enqueueCurrentRanges,
+  exportClipsJson,
   exportSlice,
+  importClipsJson,
   loadClips,
+  moveClip,
   openSliceOutput,
   ranges,
+  renameClip,
+  retryFailedSlices,
   startSlice,
   state,
   toast
 } from '../store'
+
+/** 右侧面板分两个页签：任务列表 / 切片历史 */
+const tab = ref<'tasks' | 'history'>('tasks')
+
+const failedCount = computed(() => state.sliceHistory.filter((h) => h.status !== 'ok').length)
+const okCount = computed(() => state.sliceHistory.filter((h) => h.status === 'ok').length)
+
+/* ------------------------------ 任务：重命名 ------------------------------ */
+
+const editingId = ref<number | null>(null)
+const editingNote = ref('')
+const noteEl = ref<HTMLInputElement | null>(null)
+
+async function startRenameClip(id: number, note: string): Promise<void> {
+  editingId.value = id
+  editingNote.value = note
+  await nextTick()
+  noteEl.value?.focus()
+  noteEl.value?.select()
+}
+
+async function commitRenameClip(): Promise<void> {
+  const id = editingId.value
+  if (id == null) return
+  const note = editingNote.value.trim()
+  editingId.value = null
+  if (!note) return
+  await renameClip(id, note)
+}
+
+/* ---------------------------- 任务：排序与导入导出 ---------------------------- */
+
+async function onMove(id: number, dir: -1 | 1): Promise<void> {
+  await moveClip(id, dir)
+}
+
+async function onImportJson(): Promise<void> {
+  await importClipsJson()
+}
+
+async function onExportJson(): Promise<void> {
+  await exportClipsJson()
+}
+
+/* -------------------------------- 历史 -------------------------------- */
+
+const STATUS_TEXT: Record<string, string> = {
+  ok: '成功',
+  error: '失败',
+  canceled: '已取消'
+}
+
+async function onRetryFailed(): Promise<void> {
+  await retryFailedSlices()
+}
+
+async function onClearHistory(): Promise<void> {
+  if (!state.sliceHistory.length) return
+  if (!window.confirm(`确定清空 ${state.sliceHistory.length} 条切片历史？`)) return
+  await clearSliceHistory()
+  toast('已清空切片历史', 'success')
+}
+
+async function openOutput(path: string): Promise<void> {
+  const err = await window.api.openPath(path)
+  if (err) toast(err, 'error', 4200)
+}
 
 const PHASE_TEXT: Record<string, string> = {
   resolve: '解析',
@@ -168,36 +241,138 @@ watch(currentVideoTitle, (title) => {
         </div>
       </div>
 
-      <!-- 切片任务列表 -->
+      <!-- 切片任务列表 / 历史 -->
       <div class="seg">
         <div class="seg-title">
-          <span>切片任务列表</span>
-          <span class="grow"></span>
-          <button class="btn sm danger" :disabled="!state.clips.length" @click="onClearClips">
-            清空
+          <button
+            class="btn sm"
+            :class="{ primary: tab === 'tasks' }"
+            @click="tab = 'tasks'"
+          >
+            任务 {{ state.clips.length }}
           </button>
+          <button
+            class="btn sm"
+            :class="{ primary: tab === 'history' }"
+            :title="`切片历史：成功 ${okCount}，失败/取消 ${failedCount}`"
+            @click="tab = 'history'"
+          >
+            历史 {{ state.sliceHistory.length }}
+            <template v-if="failedCount"> · {{ failedCount }} 待重试</template>
+          </button>
+          <span class="grow"></span>
+          <template v-if="tab === 'tasks'">
+            <button class="btn sm" :disabled="!state.clips.length" @click="onExportJson">
+              导出 JSON
+            </button>
+            <button class="btn sm" title="从 JSON 追加导入任务" @click="onImportJson">导入</button>
+            <button class="btn sm danger" :disabled="!state.clips.length" @click="onClearClips">
+              清空
+            </button>
+          </template>
+          <template v-else>
+            <button
+              class="btn sm"
+              :disabled="!failedCount"
+              title="把失败/取消的任务重新加入任务列表"
+              @click="onRetryFailed"
+            >
+              重试失败
+            </button>
+            <button
+              class="btn sm danger"
+              :disabled="!state.sliceHistory.length"
+              @click="onClearHistory"
+            >
+              清空
+            </button>
+          </template>
         </div>
 
-        <div v-if="!state.clips.length" class="muted">暂无任务</div>
-
-        <div v-for="t in state.clips" :key="t.id" class="range-item">
-          <div style="flex: 1 1 auto; min-width: 0">
-            <div style="font-size: 12px; font-variant-numeric: tabular-nums">
-              {{ formatTime(t.start) }} → {{ formatTime(t.end) }}
+        <!-- 任务列表 -->
+        <template v-if="tab === 'tasks'">
+          <div v-if="!state.clips.length" class="muted">暂无任务</div>
+          <div v-for="(t, i) in state.clips" :key="t.id" class="range-item">
+            <div class="order-ops">
+              <button
+                class="del"
+                :disabled="i === 0"
+                title="上移"
+                @click="onMove(t.id, -1)"
+              >
+                ▲
+              </button>
+              <button
+                class="del"
+                :disabled="i === state.clips.length - 1"
+                title="下移"
+                @click="onMove(t.id, 1)"
+              >
+                ▼
+              </button>
             </div>
-            <div class="muted" style="word-break: break-all">
-              {{ t.bvid || '（无BV号）' }} ·
-              <template v-if="t.segments && t.segments.length > 1">
-                <span class="badge-soft" style="margin-right: 4px">
-                  跨P {{ t.segments.map((s) => `P${s.page}`).join(' + ') }}
-                </span>
-              </template>
-              <template v-else>P{{ t.page }} ·</template>
-              {{ t.note }}
+            <div style="flex: 1 1 auto; min-width: 0">
+              <div style="font-size: 12px; font-variant-numeric: tabular-nums">
+                {{ formatTime(t.start) }} → {{ formatTime(t.end) }}
+              </div>
+              <div class="muted" style="word-break: break-all">
+                {{ t.bvid || '（无BV号）' }} ·
+                <template v-if="t.segments && t.segments.length > 1">
+                  <span class="badge-soft" style="margin-right: 4px">
+                    跨P {{ t.segments.map((s) => `P${s.page}`).join(' + ') }}
+                  </span>
+                </template>
+                <template v-else>P{{ t.page }} ·</template>
+              </div>
+              <input
+                v-if="editingId === t.id"
+                ref="noteEl"
+                v-model="editingNote"
+                class="input"
+                style="width: 100%; margin-top: 2px"
+                spellcheck="false"
+                @keydown.enter.prevent="commitRenameClip"
+                @keydown.esc.prevent="editingId = null"
+                @blur="commitRenameClip"
+              />
+              <div
+                v-else
+                class="note-text"
+                title="双击可改名（备注就是输出文件名）"
+                @dblclick="startRenameClip(t.id, t.note)"
+              >
+                {{ t.note }}
+              </div>
+            </div>
+            <button class="del" title="删除该任务" @click="onDeleteClip(t.id)">✕</button>
+          </div>
+        </template>
+
+        <!-- 切片历史 -->
+        <template v-else>
+          <div v-if="!state.sliceHistory.length" class="muted">还没有切片记录</div>
+          <div v-for="h in state.sliceHistory" :key="h.id" class="range-item">
+            <span
+              class="badge-soft"
+              :class="{ 'badge-err': h.status !== 'ok' }"
+              style="flex: 0 0 auto"
+            >
+              {{ STATUS_TEXT[h.status] }}
+            </span>
+            <div style="flex: 1 1 auto; min-width: 0">
+              <div class="note-text" :title="h.note">{{ h.note }}</div>
+              <div class="muted" style="word-break: break-all">
+                {{ h.bvid || '（无BV号）' }} · P{{ h.page }} ·
+                {{ formatTime(h.start) }} → {{ formatTime(h.end) }}
+              </div>
+              <div v-if="h.status === 'ok' && h.output" class="muted out-path">
+                <span>{{ h.output }}</span>
+                <button class="btn sm" @click="openOutput(h.output)">打开</button>
+              </div>
+              <div v-else-if="h.message" class="err-msg">{{ h.message }}</div>
             </div>
           </div>
-          <button class="del" title="删除该任务" @click="onDeleteClip(t.id)">✕</button>
-        </div>
+        </template>
       </div>
     </div>
 
@@ -246,6 +421,67 @@ watch(currentVideoTitle, (title) => {
 </template>
 
 <style scoped>
+/* 任务排序按钮：上下箭头竖排，占位极小 */
+.order-ops {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.order-ops .del {
+  font-size: 9px;
+  line-height: 1;
+  padding: 1px 3px;
+}
+
+.order-ops .del:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+/* 备注就是输出文件名，允许双击改名 */
+.note-text {
+  font-size: 12px;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.note-text:hover {
+  color: var(--accent);
+}
+
+.badge-err {
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 15%, transparent);
+}
+
+.out-path {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+}
+
+.out-path span {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  direction: rtl;
+  text-align: left;
+}
+
+.err-msg {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--danger);
+  word-break: break-all;
+}
+
 .slice-progress {
   padding: 10px 14px;
   border-top: 1px solid var(--border);

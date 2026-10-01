@@ -19,6 +19,9 @@ import {
 import { toCsv } from '../src/main/exporter'
 import { sanitizeFileName } from '../src/main/slice/filename'
 import { buildDiagnostics, redactSettings } from '../src/main/diagnostics'
+import { DEFAULT_NAME_TEMPLATE, compactDuration, fileStamp, renderNameTemplate } from '../src/shared/naming'
+import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
+import type { ClipTask } from '../src/shared/types'
 import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
 import * as constants from '../src/shared/constants'
 import {
@@ -615,6 +618,7 @@ function baseSettings(): AppSettings {
     readLine: true,
     sliceQuality: 80,
     sliceConcurrency: 3,
+    sliceNameTemplate: DEFAULT_NAME_TEMPLATE,
     ffmpegPath: '',
     sliceOutputDir: '',
     subtitleCacheDir: '',
@@ -656,6 +660,132 @@ test('未配置凭证时诊断包如实标注', () => {
   const report = redactSettings(baseSettings())
   assert.strictEqual(report.biliCookie, '（未配置）')
   assert.strictEqual(report.bridgeToken, '（未配置）')
+})
+
+/* -------------------------------- 命名模板 -------------------------------- */
+section('命名模板')
+
+const nameCtx = {
+  prefix: 'A-SOUL',
+  index: 3,
+  bvid: 'BV1xx411c7mD',
+  page: 2,
+  start: 80,
+  end: 205,
+  duration: 125,
+  title: '名场面合集'
+}
+
+test('默认模板 {prefix}_{index}', () => {
+  assert.strictEqual(renderNameTemplate('', nameCtx), 'A-SOUL_3')
+  assert.strictEqual(renderNameTemplate(DEFAULT_NAME_TEMPLATE, nameCtx), 'A-SOUL_3')
+})
+
+test('全部占位符都能替换', () => {
+  const out = renderNameTemplate(
+    '{index}-{prefix}-{bvid}-P{page}-{start}-{end}-{duration}-{title}',
+    nameCtx
+  )
+  assert.strictEqual(out, '3-A-SOUL-BV1xx411c7mD-P2-00-01-20-00-03-25-2m05s-名场面合集')
+})
+
+test('未知占位符原样保留（拼错了能一眼看出来，而不是悄悄变空）', () => {
+  assert.strictEqual(renderNameTemplate('{prefix}_{nope}', nameCtx), 'A-SOUL_{nope}')
+})
+
+test('时长格式化：不足一分钟不带 m 段', () => {
+  assert.strictEqual(compactDuration(9), '9s')
+  assert.strictEqual(compactDuration(60), '1m00s')
+  assert.strictEqual(compactDuration(125), '2m05s')
+})
+
+test('时间戳格式化与边界', () => {
+  assert.strictEqual(fileStamp(0), '00-00-00')
+  assert.strictEqual(fileStamp(3725), '01-02-05')
+  assert.strictEqual(fileStamp(-5), '00-00-00', '负数夹到 0')
+})
+
+test('模板里的换行 / 制表符会被压成空格（文件名不能带这些）', () => {
+  assert.strictEqual(renderNameTemplate('a\nb\tc', nameCtx), 'a b c')
+})
+
+/* ------------------------------ 切片任务 JSON ------------------------------ */
+section('切片任务 JSON 导入导出')
+
+const clipFixture: ClipTask[] = [
+  {
+    id: 1,
+    docId: 9,
+    bvid: 'BV1xx411c7mD',
+    page: 1,
+    start: 1,
+    end: 4,
+    note: '第一段',
+    createdAt: 1
+  },
+  {
+    id: 2,
+    docId: 9,
+    bvid: 'BV1xx411c7mD',
+    page: 2,
+    start: 10,
+    end: 20,
+    note: '跨P 段',
+    createdAt: 2,
+    segments: [
+      { page: 2, start: 10, end: 12 },
+      { page: 3, start: 0, end: 3 }
+    ]
+  }
+]
+
+test('导出的 JSON 可原样解析回来（跨P 分段不丢）', () => {
+  const parsed = parseClipTasksJson(serializeClipTasks(clipFixture))
+  assert.strictEqual(parsed.warnings.length, 0)
+  assert.strictEqual(parsed.tasks.length, 2)
+  assert.deepStrictEqual(parsed.tasks[0], {
+    bvid: 'BV1xx411c7mD',
+    page: 1,
+    start: 1,
+    end: 4,
+    note: '第一段'
+  })
+  assert.strictEqual(parsed.tasks[1].segments?.length, 2, '跨P 分段应保留')
+})
+
+test('导出不含本地 id 与文档关联（换台机器也不冲突）', () => {
+  const text = serializeClipTasks(clipFixture)
+  assert.ok(!text.includes('"docId"'), '不该带 docId')
+  assert.ok(!text.includes('"id"'), '不该带本地自增 id')
+  assert.ok(text.includes('srt-clip-helper/clip-tasks'), '应带信封标识')
+})
+
+test('坏条目只跳过并告警，不整份拒绝', () => {
+  const parsed = parseClipTasksJson(
+    JSON.stringify({
+      tasks: [
+        { bvid: 'BV1', page: 1, start: 0, end: 5, note: '好的' },
+        { bvid: 'BV2', start: 0, end: 5 }, // 缺 page → 默认 1，仍可用
+        { bvid: 'BV3', page: 1, start: 5, end: 5, note: '零长度' },
+        { bvid: 'BV4', page: 1, start: 'x', end: 5, note: '时间不是数字' },
+        'not-an-object'
+      ]
+    })
+  )
+  assert.strictEqual(parsed.tasks.length, 2, '只有两条可用')
+  assert.strictEqual(parsed.warnings.length, 3, '其余三条各记一条告警')
+  assert.strictEqual(parsed.tasks[1].page, 1, '缺 page 应默认 1')
+  assert.strictEqual(parsed.tasks[1].note, '导入_2', '缺 note 应补默认名')
+})
+
+test('也接受「直接就是数组」的形态', () => {
+  const parsed = parseClipTasksJson('[{"bvid":"BV1","page":1,"start":0,"end":3,"note":"x"}]')
+  assert.strictEqual(parsed.tasks.length, 1)
+})
+
+test('非法 JSON 与缺数组都抛错（由调用方提示用户）', () => {
+  assert.throws(() => parseClipTasksJson('{ not json'), /不是合法的 JSON/)
+  assert.throws(() => parseClipTasksJson('{"foo":1}'), /没有找到任务数组/)
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

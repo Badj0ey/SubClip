@@ -3,11 +3,13 @@ import type { IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
   BiliTarget,
+  ClipTask,
   Cue,
   OpResult,
   ParseResult,
   PullProgressInfo,
   SliceCheckResult,
+  SliceHistoryEntry,
   SliceProgressInfo,
   SliceRowLike,
   TreeNode
@@ -162,6 +164,7 @@ const api = {
       start: number
       end: number
       text: string
+      videoTitle?: string
     }>
     notePrefix?: string
   }): Promise<OpResult<{ count: number }>> => ipcRenderer.invoke('clips:addHits', payload),
@@ -275,6 +278,19 @@ const api = {
     ipcRenderer.invoke('data:diagnostics'),
   /** 清空全部数据（需要二次确认） */
   clearAllData: (): Promise<OpResult<{ cleared: number }>> => ipcRenderer.invoke('data:clearAll'),
+
+  /* 切片任务管理 / 历史 */
+  moveClip: (id: number, dir: -1 | 1): Promise<ClipTask[]> =>
+    ipcRenderer.invoke('clips:move', { id, dir }),
+  renameClip: (id: number, note: string): Promise<ClipTask[]> =>
+    ipcRenderer.invoke('clips:rename', { id, note }),
+  exportClipsJson: (): Promise<OpResult<{ path: string; count: number }>> =>
+    ipcRenderer.invoke('clips:exportJson'),
+  importClipsJson: (): Promise<OpResult<{ count: number; warnings: string[] }>> =>
+    ipcRenderer.invoke('clips:importJson'),
+  listSliceHistory: (limit?: number): Promise<SliceHistoryEntry[]> =>
+    ipcRenderer.invoke('slice:history', limit),
+  clearSliceHistory: (): Promise<boolean> => ipcRenderer.invoke('slice:clearHistory'),
 
   /* 系统 */
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:pickFiles'),

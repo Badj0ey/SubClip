@@ -114,6 +114,22 @@ export interface ClipTask {
   segments?: Array<{ page: number; start: number; end: number }>
 }
 
+/** 切片历史里的一条 */
+export interface SliceHistoryEntry {
+  id: number
+  clipId: number | null
+  note: string
+  bvid: string
+  page: number
+  start: number
+  end: number
+  segments?: Array<{ page: number; start: number; end: number }>
+  status: 'ok' | 'error' | 'canceled'
+  output: string
+  message: string
+  createdAt: number
+}
+
 /** 资源树节点（渲染进程用） */
 export interface TreeNode {
   key: string
@@ -145,6 +161,11 @@ export interface AppSettings {
   sliceQuality: number
   /** 切片并发下载数 */
   sliceConcurrency: number
+  /**
+   * 切片任务命名模板（备注字段即输出文件名）。
+   * 占位符见 `@shared/naming` 的 NAME_TEMPLATE_TOKENS。
+   */
+  sliceNameTemplate: string
   /** ffmpeg 可执行文件路径（留空则自动查找） */
   ffmpegPath: string
   /** 切片输出目录（留空则用切片表输出目录） */

@@ -10,6 +10,7 @@ import {
   DEFAULT_PORT
 } from '@shared/constants'
 import { normalizeShortcuts } from '@shared/shortcuts'
+import { DEFAULT_NAME_TEMPLATE } from '@shared/naming'
 
 export function defaultSettings(): AppSettings {
   return {
@@ -23,6 +24,7 @@ export function defaultSettings(): AppSettings {
     readLine: true,
     sliceQuality: 80,
     sliceConcurrency: 3,
+    sliceNameTemplate: DEFAULT_NAME_TEMPLATE,
     ffmpegPath: '',
     sliceOutputDir: '',
     subtitleCacheDir: join(app.getPath('userData'), APP_DATA_DIR, 'docs'),

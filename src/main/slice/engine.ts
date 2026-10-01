@@ -36,6 +36,8 @@ export interface SliceTaskInput {
   note: string
   /** 跨分P：多段依次裁剪后拼接（单段时留空） */
   segments?: SliceSegmentInput[]
+  /** 来源切片任务的 id，仅用于把结果写回历史（跑切片本身不需要） */
+  clipId?: number
 }
 
 export type SlicePhase = 'resolve' | 'download' | 'cut' | 'mux' | 'done' | 'error'
@@ -55,6 +57,17 @@ export interface SliceResult {
   failed: number
   outputs: string[]
   messages: string[]
+  /** 逐条结果：切片历史靠它把输出文件对回具体任务 */
+  entries: SliceEntryResult[]
+}
+
+export interface SliceEntryResult {
+  /** 在传入任务数组里的下标 */
+  index: number
+  note: string
+  status: 'ok' | 'error' | 'canceled'
+  output?: string
+  message?: string
 }
 
 /**
@@ -211,6 +224,7 @@ export async function runSliceTasks(
 
   const outputs: string[] = []
   const messages: string[] = []
+  const entries: SliceEntryResult[] = []
   let ok = 0
   let failed = 0
 
@@ -275,11 +289,21 @@ export async function runSliceTasks(
 
       ok++
       outputs.push(output)
+      entries.push({ index: i, note: label, status: 'ok', output })
       report('done', 100)
     } catch (err) {
-      if ((err as Error).name === 'AbortError' || signal.aborted) break
+      if ((err as Error).name === 'AbortError' || signal.aborted) {
+        entries.push({ index: i, note: label, status: 'canceled' })
+        break
+      }
       failed++
       messages.push(`${label}：${(err as Error).message}`)
+      entries.push({
+        index: i,
+        note: label,
+        status: 'error',
+        message: (err as Error).message
+      })
       onProgress({
         index: i,
         total: tasks.length,
@@ -291,5 +315,5 @@ export async function runSliceTasks(
     }
   }
 
-  return { ok, failed, outputs, messages }
+  return { ok, failed, outputs, messages, entries }
 }

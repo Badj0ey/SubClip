@@ -605,7 +605,80 @@ async function run(): Promise<void> {
     assert.strictEqual(db.buildTree().find((n) => n.type === 'tags'), undefined, '没有标签时不应有「标签」分组')
   })
 
-  /* ------------------------- 14. 备份 / 恢复 / 清空 ------------------------- */
+  /* ---------------------- 15. 切片任务排序 / 改名 / 历史 ---------------------- */
+  check('切片任务可上下移动，顺序会持久化', () => {
+    const up = db.upsertUploader(880003, '排序测试UP主')
+    const col = db.upsertCollection(up, null, '单视频')
+    const vid = db.upsertVideo(col, 'BV1ORDER001', '排序测试视频', {})
+    const doc = db.upsertDoc(vid, 1, 'zh-CN', '简体中文', 'o.srt', 'bilibili', [
+      cue(1, 0, 1, '排序测试字幕')
+    ])
+    db.addClipTasks(
+      ['A', 'B', 'C'].map((n, i) => ({
+        docId: doc.docId,
+        bvid: 'BV1ORDER001',
+        page: 1,
+        start: i,
+        end: i + 1,
+        note: `排序_${n}`
+      }))
+    )
+
+    const mine = (): string[] =>
+      db
+        .listClipTasks()
+        .filter((t) => t.bvid === 'BV1ORDER001')
+        .map((t) => t.note)
+
+    assert.deepStrictEqual(mine(), ['排序_A', '排序_B', '排序_C'], '新任务按加入顺序排列')
+
+    const b = db.listClipTasks().find((t) => t.note === '排序_B')!
+    db.moveClipTask(b.id, -1)
+    assert.deepStrictEqual(mine(), ['排序_B', '排序_A', '排序_C'], '上移应换位')
+
+    db.moveClipTask(b.id, 1)
+    assert.deepStrictEqual(mine(), ['排序_A', '排序_B', '排序_C'], '下移应换回来')
+
+    // 边界：第一条上移、最后一条下移都不该越界
+    const a = db.listClipTasks().find((t) => t.note === '排序_A')!
+    const c = db.listClipTasks().find((t) => t.note === '排序_C')!
+    db.moveClipTask(a.id, -1)
+    db.moveClipTask(c.id, 1)
+    assert.deepStrictEqual(mine(), ['排序_A', '排序_B', '排序_C'], '边界移动应被忽略')
+
+    // 改名（备注就是输出文件名）
+    db.updateClipTaskNote(b.id, '排序_改过名')
+    assert.strictEqual(db.listClipTasks().find((t) => t.id === b.id)?.note, '排序_改过名')
+
+    db.clearClipTasks()
+    assert.strictEqual(db.listClipTasks().filter((t) => t.bvid === 'BV1ORDER001').length, 0)
+    db.deleteUploader(up)
+  })
+
+  check('切片历史可记录、可查询，且任务被清空后历史仍在', () => {
+    db.clearSliceHistory()
+    assert.strictEqual(db.listSliceHistory().length, 0)
+
+    db.recordSliceHistory([
+      { clipId: 1, note: '历史_成功', bvid: 'BV1HIST001', page: 1, start: 0, end: 5, status: 'ok', output: 'D:/out/a.mp4', message: '' },
+      { clipId: 2, note: '历史_失败', bvid: 'BV1HIST001', page: 2, start: 5, end: 9, status: 'error', output: '', message: '下载失败' }
+    ])
+
+    const list = db.listSliceHistory()
+    assert.strictEqual(list.length, 2)
+    assert.strictEqual(list.filter((h) => h.status === 'error').length, 1, '失败状态应保留')
+    assert.strictEqual(list.find((h) => h.status === 'error')?.message, '下载失败')
+    assert.strictEqual(list.find((h) => h.status === 'ok')?.output, 'D:/out/a.mp4')
+
+    // 任务清空后历史不该消失（这就是 clip_id 不加外键的原因）
+    db.clearClipTasks()
+    assert.strictEqual(db.listSliceHistory().length, 2, '清空任务不应连带清掉历史')
+
+    db.clearSliceHistory()
+    assert.strictEqual(db.listSliceHistory().length, 0)
+  })
+
+  /* ------------------------- 16. 备份 / 恢复 / 清空 ------------------------- */
   check('备份是单个自洽文件（换一份库目录也能读到同样的数据）', () => {
     const backupFile = join(workDir, 'backup.db')
     db.backupTo(backupFile)

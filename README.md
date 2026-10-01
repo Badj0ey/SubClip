@@ -133,6 +133,7 @@ app/
 │   │   ├── constants.ts        # 端口 / 目录名等常量
 │   │   ├── time.ts             # 时间解析 / 格式化（内部统一用秒）
 │   │   ├── ranges.ts           # 时间坐标生成算法
+│   │   ├── naming.ts           # 切片任务命名模板（纯函数）
 │   │   ├── shortcuts.ts        # 快捷键动作表与解析
 │   │   └── bridge.ts           # 插件通信协议（与 extension/shared/protocol.js 对应）
 │   ├── main/                   # Electron 主进程
@@ -145,6 +146,8 @@ app/
 │   │   ├── srt.ts              # SRT 解析 / 生成 / 编码识别 / 批量编辑
 │   │   ├── bilibili.ts         # B站接口（WBI 签名 / 字幕）
 │   │   ├── exporter.ts         # 切片表 CSV / XLSX 导出
+│   │   ├── clipIO.ts           # 切片任务 JSON 导入导出（逐条校验，坏数据只跳过）
+│   │   ├── diagnostics.ts      # 诊断信息组装与脱敏（纯函数，便于单测）
 │   │   ├── slice/              # 本地切片（playurl / sidx / downloader / ffmpeg / engine / filename）
 │   │   └── settings.ts         # 设置持久化
 │   ├── preload/index.ts        # contextBridge 暴露 window.api
@@ -172,10 +175,10 @@ app/
 │   ├── shared/bilibili.js      # B站接口
 │   └── README.md               # 插件安装与说明
 └── tests/
-    ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验 + 导出/批量编辑 + 诊断脱敏（69 项）
+    ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验 + 导出/批量编辑 + 命名模板 + 任务 JSON + 诊断脱敏（80 项）
     ├── wbi.test.ts             # WBI 签名 / 协议 / 版本 / 扩展 ID 一致性（18 项）
     ├── sidx.test.ts            # 切片 SIDX 解析与区间计算（14 项）
-    ├── smoke.ts                # 端到端 + 迁移 + 检索 + 撤销删除 + 标签 + 备份恢复（29 项）
+    ├── smoke.ts                # 端到端 + 迁移 + 检索 + 撤销删除 + 标签 + 任务排序/历史 + 备份恢复（31 项）
     ├── bridge.smoke.ts         # 插件通信端到端 + 来源校验 / 配对令牌（27 项）
     ├── demo.srt                # 演示字幕
     ├── gen-large-srt.mjs       # 开发辅助：生成超大字幕文件
@@ -211,7 +214,7 @@ npm install
 npm run dev        # 开发模式（热更新）
 npm run build      # 构建到 out/
 npm run typecheck  # 类型检查（渲染进程 + 主进程 + 测试 + 插件脚本）
-npm test           # 运行全部测试（69 + 18 + 14 + 29 + 27 项）
+npm test           # 运行全部测试（80 + 18 + 14 + 31 + 27 项）
 ```
 
 调试辅助：
@@ -299,6 +302,19 @@ npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更�
 | ffmpeg.wasm 裁剪合成 | 调用**原生 ffmpeg**（`ffmpeg.ts`），速度快很多 |
 
 **关键优化**：不是下载整段视频再裁剪，而是先读 SIDX 索引，算出目标时间段对应的**字节区间**，只下载这一小段。切 10 秒片段通常只需下载几 MB。
+
+### 切片任务管理与历史
+
+右侧面板分「任务」与「历史」两个页签：
+
+| 能力 | 说明 |
+| --- | --- |
+| **任务排序** | 每条任务左侧的 ▲/▼ 调整顺序，顺序会持久化（`clips.sort_order`） |
+| **任务改名** | 双击备注即可改名 —— 备注就是切片输出的文件名 |
+| **JSON 导入 / 导出** | 把整份任务列表存成 JSON 或从 JSON 追加导入。解析时**逐条校验**，坏数据只跳过并告警，不整份拒绝 |
+| **命名模板** | 设置 → 本地切片 → 任务命名模板，支持 `{prefix}` `{index}` `{bvid}` `{page}` `{start}` `{end}` `{duration}` `{title}` |
+| **切片历史** | 每次跑完记录逐条结果（成功 / 失败 / 已取消、输出路径、错误原因）；成功项可直接打开输出文件 |
+| **重试失败** | 一键把历史里失败或被取消的任务重新加回任务列表，不必回去重新勾字幕 |
 
 ### 依赖：ffmpeg
 

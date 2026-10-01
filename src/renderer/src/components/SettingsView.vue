@@ -23,9 +23,19 @@ import {
   toast
 } from '../store'
 
+import { DEFAULT_NAME_TEMPLATE } from '@shared/naming'
+
 /** 重新拉一次统计（备份恢复 / 清空数据后用） */
 async function refreshStats(): Promise<void> {
   stats.value = await window.api.getStats()
+}
+
+function onNameTemplate(e: Event): void {
+  void save({ sliceNameTemplate: (e.target as HTMLInputElement).value })
+}
+
+function resetNameTemplate(): void {
+  void save({ sliceNameTemplate: DEFAULT_NAME_TEMPLATE })
 }
 
 const env = ref<Record<string, { path: string; exists: boolean }> | null>(null)
@@ -555,6 +565,28 @@ async function openOutputDir(): Promise<void> {
           />
           <span class="muted">{{ state.settings?.sliceConcurrency }}</span>
         </div>
+      </div>
+
+      <div class="field">
+        <label>任务命名模板</label>
+        <div class="row">
+          <input
+            :value="state.settings?.sliceNameTemplate"
+            class="input grow"
+            spellcheck="false"
+            placeholder="{prefix}_{index}"
+            @change="onNameTemplate"
+          />
+          <button class="btn sm" @click="resetNameTemplate">恢复默认</button>
+        </div>
+      </div>
+      <div class="hint">
+        备注字段就是切片输出的文件名。可用占位符：
+        <code>{prefix}</code> 前缀（默认视频标题）、<code>{index}</code> 序号、
+        <code>{bvid}</code>、<code>{page}</code> 分P、
+        <code>{start}</code> / <code>{end}</code> 时间戳（如 <code>00-01-20</code>）、
+        <code>{duration}</code> 时长（如 <code>1m20s</code>）、<code>{title}</code> 视频标题。
+        例：<code>{index}_{title}_{duration}</code>。
       </div>
 
       <div class="field">

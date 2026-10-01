@@ -4,6 +4,7 @@ import type {
   ClipTask,
   Cue,
   CueSearchHit,
+  SliceHistoryEntry,
   SubtitleDoc,
   TimeRange,
   TreeNode,
@@ -70,6 +71,8 @@ export const state = reactive({
   ffmpegPath: '',
   sliceRunning: false,
   sliceProgress: null as SliceProgressInfo | null,
+  /** 切片历史（最近 200 条），用于查失败与一键重试 */
+  sliceHistory: [] as SliceHistoryEntry[],
   sliceResult: null as { ok: number; failed: number; outputs: string[]; messages: string[] } | null,
 
   toast: { text: '', type: 'info', visible: false, timer: null } as ToastState
@@ -138,6 +141,7 @@ export async function initApp(): Promise<void> {
   })
   await loadTree()
   await loadClips()
+  await loadSliceHistory()
   await loadBridgeStatus()
   await refreshSliceCheck()
 }
@@ -488,7 +492,8 @@ export async function startSlice(): Promise<void> {
         start: t.start,
         end: t.end,
         note: t.note,
-        segments: t.segments
+        segments: t.segments,
+        clipId: t.id
       }))
     )
     if (!res.ok || !res.data) {
@@ -511,7 +516,86 @@ export async function startSlice(): Promise<void> {
   } finally {
     state.sliceRunning = false
     state.sliceProgress = null
+    await loadSliceHistory()
   }
+}
+
+/* ------------------------------- 切片任务管理 ------------------------------ */
+
+export async function loadSliceHistory(): Promise<void> {
+  state.sliceHistory = await window.api.listSliceHistory(200)
+}
+
+export async function moveClip(id: number, dir: -1 | 1): Promise<void> {
+  state.clips = await window.api.moveClip(id, dir)
+}
+
+export async function renameClip(id: number, note: string): Promise<void> {
+  state.clips = await window.api.renameClip(id, note)
+}
+
+export async function exportClipsJson(): Promise<void> {
+  const res = await window.api.exportClipsJson()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '导出失败', 'error')
+    return
+  }
+  toast(`已导出 ${res.data.count} 条任务：${res.data.path}`, 'success', 5600)
+}
+
+export async function importClipsJson(): Promise<void> {
+  const res = await window.api.importClipsJson()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '导入失败', 'error', 5200)
+    return
+  }
+  await loadClips()
+  toast(
+    `已导入 ${res.data.count} 条任务${res.data.warnings.length ? `（跳过 ${res.data.warnings.length} 条）` : ''}`,
+    'success',
+    5600
+  )
+  if (res.data.warnings.length) {
+    toast(res.data.warnings.slice(0, 3).join('\n'), 'error', 7000)
+  }
+}
+
+export function clearSliceHistory(): Promise<void> {
+  return window.api.clearSliceHistory().then(() => {
+    state.sliceHistory = []
+  })
+}
+
+/**
+ * 把失败（或被取消）的切片重新加回任务列表。
+ * 这是「跑 20 条挂了 3 条」时最省事的补救方式：不用回去重新勾字幕。
+ */
+export async function retryFailedSlices(): Promise<void> {
+  const failed = state.sliceHistory.filter((h) => h.status !== 'ok')
+  if (!failed.length) {
+    toast('没有失败的任务需要重试', 'info')
+    return
+  }
+  // 逐条带自己的 bvid / 分P，所以走 addClipsFromSearch 那条通道
+  //（clips:add 是「一个文档 + 多个时间范围」，这里恰好相反）
+  const added = await window.api.addClipsFromSearch({
+    hits: failed.map((h) => ({
+      docId: 0,
+      bvid: h.bvid,
+      page: h.page,
+      start: h.start,
+      end: h.end,
+      text: h.note,
+      videoTitle: h.note
+    })),
+    notePrefix: '重试'
+  })
+  if (!added.ok) {
+    toast(added.message || '重试失败', 'error')
+    return
+  }
+  await loadClips()
+  toast(`已把 ${added.data?.count ?? 0} 条失败任务重新加入列表`, 'success', 5200)
 }
 
 export async function cancelSlice(): Promise<void> {
@@ -742,7 +826,8 @@ export async function enqueueSearchHits(): Promise<void> {
       page: h.page,
       start: h.start,
       end: h.end,
-      text: h.text
+      text: h.text,
+      videoTitle: h.videoTitle
     })),
     notePrefix: state.searchNotePrefix || '检索'
   })

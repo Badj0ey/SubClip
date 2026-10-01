@@ -281,6 +281,24 @@ create table if not exists video_tags (
   primary key (video_id, tag_id)
 );
 create index if not exists idx_video_tags_tag on video_tags(tag_id);
+
+-- 切片历史：每次跑完切片记一条，失败的可据此重试。
+-- clip_id 刻意**不加外键**：任务常被清空，但历史要留着给人看。
+create table if not exists slice_history (
+  id integer primary key autoincrement,
+  clip_id integer,
+  note text not null,
+  bvid text not null default '',
+  page integer not null default 1,
+  start real not null default 0,
+  end real not null default 0,
+  segments text,
+  status text not null,
+  output text,
+  message text,
+  created_at integer not null
+);
+create index if not exists idx_slice_history_created on slice_history(created_at desc);
 `
 
 /* ---------------------------------- 状态 ---------------------------------- */
@@ -321,9 +339,37 @@ export function initDb(userDataDir: string, customCacheDir?: string): void {
   db.exec('pragma synchronous = NORMAL')
   db.exec('pragma foreign_keys = ON')
   db.exec(SCHEMA)
+  runSchemaMigrations()
 
   migrateFromJson(dataDir, userDataDir)
   rescueLegacyCacheDocs(userDataDir)
+}
+
+/**
+ * 补列迁移。
+ *
+ * `create table if not exists` 不会给**已存在**的表加新列，所以新增字段必须在这里补，
+ * 否则老用户的库会缺列，查询直接报「no such column」。
+ */
+function runSchemaMigrations(): void {
+  const handle = requireDb()
+  const hasColumn = (table: string, column: string): boolean => {
+    const cols = handle.prepare(`pragma table_info(${table})`).all() as unknown as Array<{
+      name: string
+    }>
+    return cols.some((c) => c.name === column)
+  }
+
+  // 切片任务的手工排序（0 起，列表按它升序）
+  if (!hasColumn('clips', 'sort_order')) {
+    handle.exec('alter table clips add column sort_order integer not null default 0')
+    // 老数据按原有顺序（创建时间倒序 → id 升序）填一遍，保持观感不变
+    const rows = handle
+      .prepare('select id from clips order by created_at desc, id asc')
+      .all() as unknown as Array<{ id: number }>
+    const upd = handle.prepare('update clips set sort_order = ? where id = ?')
+    rows.forEach((r, i) => upd.run(i, r.id))
+  }
 }
 
 /**
@@ -1581,12 +1627,20 @@ function toClip(r: ClipRow): ClipTask {
 export function addClipTasks(tasks: Omit<ClipTask, 'id' | 'createdAt'>[]): number {
   const handle = requireDb()
   const now = Date.now()
+  const nextOrder =
+    Number(
+      (
+        handle.prepare('select coalesce(max(sort_order), -1) + 1 as n from clips').get() as {
+          n: number
+        }
+      ).n
+    ) || 0
   const ins = handle.prepare(
-    `insert into clips (doc_id, bvid, page, start, end, note, segments, created_at)
-     values (?, ?, ?, ?, ?, ?, ?, ?)`
+    `insert into clips (doc_id, bvid, page, start, end, note, segments, created_at, sort_order)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
   )
   const run = (): number => {
-    for (const t of tasks) {
+    tasks.forEach((t, i) => {
       ins.run(
         t.docId,
         t.bvid,
@@ -1595,9 +1649,10 @@ export function addClipTasks(tasks: Omit<ClipTask, 'id' | 'createdAt'>[]): numbe
         t.end,
         t.note,
         t.segments && t.segments.length > 1 ? JSON.stringify(t.segments) : null,
-        now
+        now,
+        nextOrder + i
       )
-    }
+    })
     return tasks.length
   }
   return batchDepth > 0 ? run() : withTransaction(run)
@@ -1605,7 +1660,7 @@ export function addClipTasks(tasks: Omit<ClipTask, 'id' | 'createdAt'>[]): numbe
 
 export function listClipTasks(): ClipTask[] {
   const rows = requireDb()
-    .prepare('select * from clips order by created_at desc, id asc')
+    .prepare('select * from clips order by sort_order asc, id asc')
     .all() as unknown as ClipRow[]
   return rows.map(toClip)
 }
@@ -1616,6 +1671,124 @@ export function deleteClipTask(id: number): void {
 
 export function clearClipTasks(): void {
   requireDb().prepare('delete from clips').run()
+}
+
+/** 重命名任务的备注（即输出文件名） */
+export function updateClipTaskNote(id: number, note: string): void {
+  requireDb()
+    .prepare('update clips set note = ? where id = ?')
+    .run(String(note ?? '').slice(0, 120), id)
+}
+
+/**
+ * 上移 / 下移一条任务。
+ * 按当前顺序与相邻那条交换 sort_order，回来后重新编号，避免历史遗留的重复值让顺序随机。
+ */
+export function moveClipTask(id: number, dir: -1 | 1): void {
+  const handle = requireDb()
+  const rows = handle
+    .prepare('select id from clips order by sort_order asc, id asc')
+    .all() as unknown as Array<{ id: number }>
+  const at = rows.findIndex((r) => r.id === id)
+  if (at < 0) return
+  const to = at + dir
+  if (to < 0 || to >= rows.length) return
+
+  const ids = rows.map((r) => r.id)
+  ;[ids[at], ids[to]] = [ids[to], ids[at]]
+
+  const upd = handle.prepare('update clips set sort_order = ? where id = ?')
+  withTransaction(() => ids.forEach((cid, i) => upd.run(i, cid)))
+}
+
+/* -------------------------------- 切片历史 -------------------------------- */
+
+export interface SliceHistoryRow {
+  id: number
+  clipId: number | null
+  note: string
+  bvid: string
+  page: number
+  start: number
+  end: number
+  segments?: Array<{ page: number; start: number; end: number }>
+  status: 'ok' | 'error' | 'canceled'
+  output: string
+  message: string
+  createdAt: number
+}
+
+interface SliceHistoryDbRow {
+  id: number
+  clip_id: number | null
+  note: string
+  bvid: string
+  page: number
+  start: number
+  end: number
+  segments: string | null
+  status: string
+  output: string | null
+  message: string | null
+  created_at: number
+}
+
+export function recordSliceHistory(
+  entries: Array<Omit<SliceHistoryRow, 'id' | 'createdAt'>>
+): number {
+  if (!entries.length) return 0
+  const handle = requireDb()
+  const now = Date.now()
+  const ins = handle.prepare(
+    `insert into slice_history
+       (clip_id, note, bvid, page, start, end, segments, status, output, message, created_at)
+     values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  )
+  withTransaction(() => {
+    for (const e of entries) {
+      ins.run(
+        e.clipId ?? null,
+        e.note ?? '',
+        e.bvid ?? '',
+        e.page ?? 1,
+        e.start ?? 0,
+        e.end ?? 0,
+        e.segments && e.segments.length > 1 ? JSON.stringify(e.segments) : null,
+        e.status,
+        e.output ?? null,
+        e.message ?? null,
+        now
+      )
+    }
+  })
+  return entries.length
+}
+
+export function listSliceHistory(limit = 200): SliceHistoryRow[] {
+  const rows = requireDb()
+    .prepare('select * from slice_history order by created_at desc, id desc limit ?')
+    .all(Math.max(1, Math.min(2000, Math.trunc(limit)))) as unknown as SliceHistoryDbRow[]
+  return rows.map((r) => ({
+    id: r.id,
+    clipId: r.clip_id,
+    note: r.note,
+    bvid: r.bvid,
+    page: r.page,
+    start: r.start,
+    end: r.end,
+    segments: r.segments ? (JSON.parse(r.segments) as SliceHistoryRow['segments']) : undefined,
+    status: (r.status === 'ok' ? 'ok' : r.status === 'canceled' ? 'canceled' : 'error') as
+      | 'ok'
+      | 'error'
+      | 'canceled',
+    output: r.output ?? '',
+    message: r.message ?? '',
+    createdAt: r.created_at
+  }))
+}
+
+export function clearSliceHistory(): void {
+  requireDb().prepare('delete from slice_history').run()
 }
 
 /* ---------------------------------- 统计 ---------------------------------- */

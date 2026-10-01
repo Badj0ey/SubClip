@@ -18,6 +18,8 @@ import { APP_DATA_DIR } from '@shared/constants'
 import * as bili from './bilibili'
 import { bridge } from './bridge'
 import { buildDiagnostics } from './diagnostics'
+import { renderNameTemplate } from '@shared/naming'
+import { parseClipTasksJson, serializeClipTasks } from './clipIO'
 import * as db from './db'
 import { decodeBuffer, parseSrt, replaceInCues, shiftCues, toPlainText, toSrt, toVtt } from './srt'
 import {
@@ -338,6 +340,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ) => {
       const video = db.getVideo(db.getDoc(payload.docId)?.videoId ?? -1)
       const bvid = payload.bvid || video?.bvid || ''
+      const template = loadSettings().sliceNameTemplate
+      const prefix = payload.notePrefix || video?.title || 'clip'
       const rows = payload.ranges.map((r, i) => ({
         docId: payload.docId,
         bvid,
@@ -345,7 +349,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         page: r.segments?.[0]?.page ?? payload.page,
         start: r.start,
         end: r.end,
-        note: `${payload.notePrefix || video?.title || 'clip'}_${i + 1}`,
+        note: renderNameTemplate(template, {
+          prefix,
+          index: i + 1,
+          bvid,
+          page: r.segments?.[0]?.page ?? payload.page,
+          start: r.start,
+          end: r.end,
+          duration: Math.max(0, r.end - r.start),
+          title: video?.title ?? ''
+        }),
         segments: r.segments
       }))
       return { ok: true, data: { count: db.addClipTasks(rows) } }
@@ -399,12 +412,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
           start: number
           end: number
           text: string
+          videoTitle?: string
         }>
         notePrefix?: string
       }
     ) => {
       const hits = (payload?.hits ?? []).slice(0, 500)
       if (!hits.length) return { ok: false, message: '没有选中的检索结果' }
+      const template = loadSettings().sliceNameTemplate
       const prefix = sanitizeFileName(payload?.notePrefix || '检索').slice(0, 32)
       const rows = hits.map((h, i) => ({
         docId: h.docId,
@@ -412,14 +427,107 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         page: Number(h.page) || 1,
         start: Number(h.start) || 0,
         end: Number(h.end) || 0,
-        // 备注带上命中文本片段，便于在切片列表里认出是哪一句
-        note: `${prefix}_${String(i + 1).padStart(2, '0')}_${sanitizeFileName(h.text).slice(0, 24)}`
+        // 模板没用到 {title} 时，把命中文本拼在后面便于在切片列表里认出是哪一句
+        note: `${renderNameTemplate(template, {
+          prefix,
+          index: i + 1,
+          bvid: String(h.bvid ?? ''),
+          page: Number(h.page) || 1,
+          start: Number(h.start) || 0,
+          end: Number(h.end) || 0,
+          duration: Math.max(0, (Number(h.end) || 0) - (Number(h.start) || 0)),
+          title: String(h.videoTitle ?? '')
+        })}_${sanitizeFileName(h.text).slice(0, 20)}`
       }))
       return { ok: true, data: { count: db.addClipTasks(rows) } }
     }
   )
 
-  /* ---------------------------------- 设置 ---------------------------------- */
+  /* --------------------------- 切片任务管理 / 历史 --------------------------- */
+
+  ipcMain.handle('clips:move', (_e, payload: { id: number; dir: -1 | 1 }) => {
+    db.moveClipTask(payload.id, payload.dir === -1 ? -1 : 1)
+    return db.listClipTasks()
+  })
+
+  ipcMain.handle('clips:rename', (_e, payload: { id: number; note: string }) => {
+    db.updateClipTaskNote(payload.id, payload.note)
+    return db.listClipTasks()
+  })
+
+  /** 导出任务列表为 JSON（用户选路径） */
+  ipcMain.handle('clips:exportJson', async (): Promise<OpResult<{ path: string; count: number }>> => {
+    const tasks = db.listClipTasks()
+    if (!tasks.length) return { ok: false, message: '任务列表为空' }
+    const win = getWindow()
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const opts: SaveDialogOptions = {
+      title: '导出切片任务',
+      defaultPath: join(app.getPath('documents'), `切片任务-${stamp}.json`),
+      filters: [
+        { name: 'JSON', extensions: ['json'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    }
+    const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (res.canceled || !res.filePath) return { ok: false, message: '已取消' }
+    try {
+      await writeFile(res.filePath, serializeClipTasks(tasks), 'utf8')
+      approve(res.filePath)
+      return { ok: true, data: { path: res.filePath, count: tasks.length } }
+    } catch (err) {
+      return { ok: false, message: `导出失败：${(err as Error).message}` }
+    }
+  })
+
+  /** 从 JSON 导入任务（追加到现有列表） */
+  ipcMain.handle(
+    'clips:importJson',
+    async (): Promise<OpResult<{ count: number; warnings: string[] }>> => {
+      const win = getWindow()
+      const opts: OpenDialogOptions = {
+        title: '导入切片任务',
+        filters: [
+          { name: 'JSON', extensions: ['json'] },
+          { name: '全部文件', extensions: ['*'] }
+        ],
+        properties: ['openFile']
+      }
+      const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+      const file = res.canceled ? '' : res.filePaths[0]
+      if (!file) return { ok: false, message: '已取消' }
+      approve(file)
+      try {
+        const parsed = parseClipTasksJson(await readFile(file, 'utf8'))
+        if (!parsed.tasks.length) {
+          return { ok: false, message: `没有可导入的任务${parsed.warnings.length ? `（${parsed.warnings[0]}）` : ''}` }
+        }
+        // 导入的任务没有对应文档，docId 记 0（切片只需 bvid + 时间）
+        const count = db.addClipTasks(
+          parsed.tasks.map((t) => ({
+            docId: 0,
+            bvid: t.bvid,
+            page: t.page,
+            start: t.start,
+            end: t.end,
+            note: t.note,
+            segments: t.segments
+          }))
+        )
+        return { ok: true, data: { count, warnings: parsed.warnings } }
+      } catch (err) {
+        return { ok: false, message: `导入失败：${(err as Error).message}` }
+      }
+    }
+  )
+
+  ipcMain.handle('slice:history', (_e, limit?: number) => db.listSliceHistory(limit ?? 200))
+  ipcMain.handle('slice:clearHistory', () => {
+    db.clearSliceHistory()
+    return true
+  })
+
+  /* --------------------------------- 设置 ---------------------------------- */
 
   ipcMain.handle('settings:get', () => loadSettings())
   ipcMain.handle('settings:save', (_e, patch: Partial<AppSettings>) => {
@@ -470,6 +578,28 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         }
       }
       const result = await runSliceTasks(payload.tasks ?? [], push, controller.signal)
+      // 记切片历史：失败的任务可以据此一键重试
+      try {
+        db.recordSliceHistory(
+          result.entries.map((e, i) => {
+            const src = (payload.tasks ?? [])[i] ?? ({} as SliceTaskInput)
+            return {
+              clipId: (payload.tasks ?? [])[e.index]?.clipId ?? null,
+              note: e.note,
+              bvid: src.bvid ?? '',
+              page: src.page ?? 1,
+              start: src.start ?? 0,
+              end: src.end ?? 0,
+              segments: src.segments,
+              status: e.status,
+              output: e.output ?? '',
+              message: e.message ?? ''
+            }
+          })
+        )
+      } catch {
+        /* 历史写不进去不该让切片结果本身失败 */
+      }
       return { ok: true, data: result }
     } catch (err) {
       return { ok: false, message: (err as Error).message }
