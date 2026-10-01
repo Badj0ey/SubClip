@@ -1,8 +1,24 @@
 # SRT 字幕检索与视频切片辅助工具
 
+[English](README.en.md) | 简体中文
+
 桌面端字幕处理工具。围绕「**Bilibili 视频 → 获取字幕 → 字幕检索 → 选择片段 → 自动生成时间坐标 → 批量切片 → 输出视频片段**」这条工作流，覆盖「字幕检索 + 时间坐标生成 + 切片表导出 + **本机直接切片**」全流程，无需浏览器扩展参与。
 
-对应需求文档：`../SRT字幕检索与视频切片辅助工具_需求文档.docx`
+对应需求文档：[`docs/requirements.md`](docs/requirements.md)（由原始 `.docx` 转换而来，末尾附「与实现的对照」）
+
+## 界面
+
+**工作区**：左「资源树」/ 中「字幕阅读」/ 右「选择结果与切片任务」。勾选字幕即自动算出时间范围。
+
+![工作区](docs/images/workspace.png)
+
+**全库检索**：一次搜遍库里所有视频 / 分P 的字幕，命中可直接批量加入切片任务。
+
+![全库检索](docs/images/search.png)
+
+**字幕工具**：批量查找替换（支持正则）、时间轴平移 / 倍速、导出 SRT·VTT·TXT、复制带时间戳的链接。
+
+![字幕工具](docs/images/tools.png)
 
 ---
 
@@ -114,32 +130,34 @@ app/
 ├── src/
 │   ├── shared/                 # 三端共享
 │   │   ├── types.ts            # 数据模型与接口类型
-│   │   ├── constants.ts        # 默认路径等常量
+│   │   ├── constants.ts        # 端口 / 目录名等常量
 │   │   ├── time.ts             # 时间解析 / 格式化（内部统一用秒）
-│   │   └── ranges.ts           # 时间坐标生成算法
-│   ├── shared/
+│   │   ├── ranges.ts           # 时间坐标生成算法
+│   │   ├── shortcuts.ts        # 快捷键动作表与解析
 │   │   └── bridge.ts           # 插件通信协议（与 extension/shared/protocol.js 对应）
 │   ├── main/                   # Electron 主进程
 │   │   ├── index.ts            # 应用入口、窗口创建
-│   │   ├── ipc.ts              # IPC 注册（薄封装）
+│   │   ├── ipc.ts              # IPC 注册（薄封装 + 路径白名单）
 │   │   ├── services.ts         # 业务逻辑（可独立测试）
-│   │   ├── bridge.ts           # 本地 WebSocket 服务端（插件通信）
+│   │   ├── bridge.ts           # 本地 WebSocket 服务端（Origin 校验 / 令牌 / 限流）
 │   │   ├── wire.ts             # 插件事件 → 业务处理 的接线
-│   │   ├── db.ts               # 数据层 + 字幕缓存
-│   │   ├── srt.ts              # SRT 解析 / 生成 / 编码识别
+│   │   ├── db.ts               # 数据层（SQLite + FTS5，含老数据迁移）
+│   │   ├── srt.ts              # SRT 解析 / 生成 / 编码识别 / 批量编辑
 │   │   ├── bilibili.ts         # B站接口（WBI 签名 / 字幕）
 │   │   ├── exporter.ts         # 切片表 CSV / XLSX 导出
-│   │   ├── slice/              # 本地切片（playurl / sidx / downloader / ffmpeg / engine）
+│   │   ├── slice/              # 本地切片（playurl / sidx / downloader / ffmpeg / engine / filename）
 │   │   └── settings.ts         # 设置持久化
 │   ├── preload/index.ts        # contextBridge 暴露 window.api
 │   └── renderer/src/
 │       ├── App.vue             # 布局 + 快捷键
-│       ├── store.ts            # 响应式状态与动作
+│       ├── store.ts            # 响应式状态与动作（含撤销栈、全库检索）
 │       ├── styles.css          # 主题变量（浅色 / 深色）
 │       └── components/
 │           ├── ResourceTree.vue    # 左侧资源树
 │           ├── TreeNodeItem.vue    # 递归树节点
 │           ├── SubtitleReader.vue  # 中间字幕阅读区
+│           ├── SearchView.vue      # 全库检索页
+│           ├── EditToolsDialog.vue # 批量替换 / 时间轴 / 导出 / 复制
 │           ├── ClipPanel.vue       # 右侧选择结果 / 切片任务
 │           ├── SettingsView.vue    # 设置页
 │           ├── ImportDialog.vue    # 导入 SRT
@@ -164,11 +182,26 @@ app/
     └── shot.mjs                # 开发辅助：CDP 截图 / 求值
 ```
 
+根目录下的其它文件：
+
+| 文件 | 说明 |
+| --- | --- |
+| `README.md` / `README.en.md` | 中文 / 英文说明 |
+| `docs/requirements.md` | 需求文档（由原始 `.docx` 转换），末尾附「与实现的对照」 |
+| `docs/images/` | README 里用到的截图 |
+| `LICENSE` | MIT |
+| `THIRD-PARTY.md` | 随程序分发的依赖与移植代码的归属声明 |
+| `SECURITY.md` | 安全模型与漏洞报告方式 |
+| `CONTRIBUTING.md` | 开发约定与提交前检查清单 |
+| `electron-builder.yml` | 打包配置 |
+| `build/make-icon.mjs` | 生成应用图标（可复现，不用二进制设计文件） |
+| `build/make-extension-key.mjs` | 生成插件固定 ID 所需的公钥 |
+
 ---
 
 ## 四、安装与运行
 
-需要 **Node.js 20 或以上**（开发环境用的是 22 / 24；Electron 33 自带 Node 20）。
+需要 **Node.js 20 或以上**（开发环境用的是 22 / 24；Electron 36 自带 Node 22）。
 
 ```bash
 git clone <仓库地址>
