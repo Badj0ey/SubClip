@@ -3,7 +3,7 @@
  * 运行：npm run test:core
  */
 import assert from 'node:assert'
-import type { Cue } from '../src/shared/types'
+import type { AppSettings, Cue } from '../src/shared/types'
 import { formatTime, parseTime } from '../src/shared/time'
 import { buildRanges, normalizeRanges, totalDuration, type RangeCue } from '../src/shared/ranges'
 import {
@@ -18,6 +18,7 @@ import {
 } from '../src/main/srt'
 import { toCsv } from '../src/main/exporter'
 import { sanitizeFileName } from '../src/main/slice/filename'
+import { buildDiagnostics, redactSettings } from '../src/main/diagnostics'
 import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
 import * as constants from '../src/shared/constants'
 import {
@@ -596,6 +597,65 @@ test('cookies 缺少内容或超长时丢弃', () => {
 test('整条报文超过体积上限直接丢弃', () => {
   const huge = 'x'.repeat(BRIDGE_LIMITS.maxMessageBytes + 1)
   assert.strictEqual(parseClientMessage(huge), null)
+})
+
+/* -------------------------------- 诊断包脱敏 ------------------------------- */
+section('诊断包脱敏')
+
+/** 一份最小的设置对象（真实默认值来自 settings.ts，那里依赖 electron，测试里不能直接引） */
+function baseSettings(): AppSettings {
+  return {
+    theme: 'system',
+    fontSize: 15,
+    fontFamily: '',
+    lineHeight: 1.7,
+    treePaneWidth: 290,
+    taskPaneWidth: 380,
+    shortcuts: DEFAULT_SHORTCUTS,
+    readLine: true,
+    sliceQuality: 80,
+    sliceConcurrency: 3,
+    ffmpegPath: '',
+    sliceOutputDir: '',
+    subtitleCacheDir: '',
+    sliceToolDir: '',
+    outputDir: '',
+    port: 8765,
+    bridgeToken: '',
+    biliCookie: ''
+  }
+}
+
+test('诊断信息里绝不出现 Cookie 与配对令牌的内容', () => {
+  const settings: AppSettings = {
+    ...baseSettings(),
+    biliCookie: 'SESSDATA=this-must-never-leak; bili_jct=also-secret',
+    bridgeToken: 'super-secret-token'
+  }
+  const report = JSON.stringify(
+    buildDiagnostics({
+      appVersion: '0.1.0',
+      packaged: true,
+      versions: { electron: '36.0.0', chrome: '136', node: '22' },
+      platform: { platform: 'win32', arch: 'x64', release: '10.0' },
+      stats: { videos: 1 },
+      paths: {},
+      settings,
+      bridge: {},
+      recentPluginEvents: []
+    })
+  )
+
+  assert.ok(!report.includes('this-must-never-leak'), 'Cookie 内容不能出现在诊断包里')
+  assert.ok(!report.includes('bili_jct'), 'Cookie 的任何片段都不能出现')
+  assert.ok(!report.includes('super-secret-token'), '配对令牌不能出现在诊断包里')
+  assert.ok(report.includes('内容已隐去'), '应报告「已配置但隐去」')
+})
+
+test('未配置凭证时诊断包如实标注', () => {
+  const report = redactSettings(baseSettings())
+  assert.strictEqual(report.biliCookie, '（未配置）')
+  assert.strictEqual(report.bridgeToken, '（未配置）')
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

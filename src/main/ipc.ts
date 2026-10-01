@@ -4,8 +4,9 @@
  */
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
-import { existsSync } from 'node:fs'
+import { existsSync, rmSync, copyFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
+import * as os from 'node:os'
 import type {
   AppSettings,
   Cue,
@@ -16,6 +17,7 @@ import type {
 import { APP_DATA_DIR } from '@shared/constants'
 import * as bili from './bilibili'
 import { bridge } from './bridge'
+import { buildDiagnostics } from './diagnostics'
 import * as db from './db'
 import { decodeBuffer, parseSrt, replaceInCues, shiftCues, toPlainText, toSrt, toVtt } from './srt'
 import {
@@ -45,6 +47,15 @@ function extensionDirCandidates(): string[] {
   return [join(app.getAppPath(), 'extension'), join(process.resourcesPath ?? '', 'extension')].filter(
     (p): p is string => Boolean(p)
   )
+}
+
+/** 诊断包里用：某段信息取不到时不要因此整包失败 */
+function safe<T>(fn: () => T): T | { error: string } {
+  try {
+    return fn()
+  } catch (err) {
+    return { error: (err as Error).message }
+  }
 }
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
@@ -492,6 +503,159 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       sliceToolDir: probe(s.sliceToolDir),
       outputDir: probe(s.outputDir)
     }
+  })
+
+  /* --------------------------------- 数据管理 -------------------------------- */
+
+  /** 备份整库到用户选定的文件（单个自洽的 .db，拿走即可） */
+  ipcMain.handle('data:backup', async (): Promise<OpResult<{ path: string }>> => {
+    const win = getWindow()
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const opts: SaveDialogOptions = {
+      title: '备份字幕库',
+      defaultPath: join(app.getPath('documents'), `srt-tool-backup-${stamp}.db`),
+      filters: [
+        { name: 'SQLite 数据库', extensions: ['db'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    }
+    const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (res.canceled || !res.filePath) return { ok: false, message: '已取消' }
+    try {
+      // VACUUM INTO 不会覆盖已存在的文件，先把空的占位删掉
+      if (existsSync(res.filePath)) rmSync(res.filePath, { force: true })
+      db.backupTo(res.filePath)
+      approve(res.filePath)
+      return { ok: true, data: { path: res.filePath } }
+    } catch (err) {
+      return { ok: false, message: `备份失败：${(err as Error).message}` }
+    }
+  })
+
+  /** 从备份文件恢复整库（会先把当前库另存一份，失败则自动回滚） */
+  ipcMain.handle('data:restore', async (): Promise<OpResult<{ path: string; backup: string }>> => {
+    const win = getWindow()
+    const opts: OpenDialogOptions = {
+      title: '选择要恢复的备份文件',
+      filters: [
+        { name: 'SQLite 数据库', extensions: ['db'] },
+        { name: '全部文件', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    }
+    const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    const source = res.canceled ? '' : res.filePaths[0]
+    if (!source) return { ok: false, message: '已取消' }
+    approve(source)
+
+    if (!db.looksLikeSqliteFile(source)) {
+      return { ok: false, message: '这个文件不是本工具的数据库备份（文件头不是 SQLite）' }
+    }
+
+    const target = db.dbFilePath()
+    // 先关库并落盘，再把当前库另存一份，出问题好回滚
+    db.closeDb()
+    const safety = `${target}.before-restore-${Date.now()}`
+    try {
+      copyFileSync(target, safety)
+      copyFileSync(source, target)
+      // WAL/SHM 属于旧库，必须一起挪走，否则会与新库内容冲突
+      rmSync(`${target}-wal`, { force: true })
+      rmSync(`${target}-shm`, { force: true })
+      db.reopenDb()
+      db.stats() // 触发一次查询，确认新库确实能用
+      return { ok: true, data: { path: source, backup: safety } }
+    } catch (err) {
+      // 回滚到恢复前的那份
+      try {
+        copyFileSync(safety, target)
+        rmSync(`${target}-wal`, { force: true })
+        rmSync(`${target}-shm`, { force: true })
+      } catch {
+        /* ignore */
+      }
+      try {
+        db.reopenDb()
+      } catch {
+        /* ignore */
+      }
+      return { ok: false, message: `恢复失败，已回滚到原来的数据：${(err as Error).message}` }
+    }
+  })
+
+  /** 导出诊断包：方便用户报 bug 时附上，不包含 Cookie 内容 */
+  ipcMain.handle('data:diagnostics', async (): Promise<OpResult<{ path: string }>> => {
+    const win = getWindow()
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')
+    const opts: SaveDialogOptions = {
+      title: '导出诊断信息',
+      defaultPath: join(app.getPath('documents'), `srt-tool-diagnostics-${stamp}.json`),
+      filters: [
+        { name: 'JSON', extensions: ['json'] },
+        { name: '全部文件', extensions: ['*'] }
+      ]
+    }
+    const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+    if (res.canceled || !res.filePath) return { ok: false, message: '已取消' }
+
+    const s = loadSettings()
+    const probe = (p: string): { path: string; exists: boolean } => ({
+      path: p || '',
+      exists: Boolean(p) && existsSync(p)
+    })
+    const report = buildDiagnostics({
+      appVersion: app.getVersion(),
+      packaged: app.isPackaged,
+      versions: {
+        electron: process.versions.electron ?? '',
+        chrome: process.versions.chrome ?? '',
+        node: process.versions.node ?? ''
+      },
+      platform: { platform: process.platform, arch: process.arch, release: os.release() },
+      stats: safe(() => db.stats()),
+      paths: {
+        userData: app.getPath('userData'),
+        database: db.dbFilePath(),
+        outputDir: probe(s.outputDir),
+        sliceOutputDir: probe(s.sliceOutputDir),
+        ffmpeg: probe(s.ffmpegPath),
+        dataDir: probe(join(app.getPath('userData'), APP_DATA_DIR))
+      },
+      settings: s,
+      bridge: safe(() => {
+        const st = bridge.status()
+        return { running: st.running, port: st.port, error: st.error, clients: st.clients.length }
+      }),
+      recentPluginEvents: safe(() => {
+        const st = bridge.status()
+        return st.lastEvent ? [st.lastEvent] : []
+      })
+    })
+
+    try {
+      await writeFile(res.filePath, JSON.stringify(report, null, 2), 'utf8')
+      approve(res.filePath)
+      return { ok: true, data: { path: res.filePath } }
+    } catch (err) {
+      return { ok: false, message: `导出失败：${(err as Error).message}` }
+    }
+  })
+
+  /** 清空全部数据（不可撤销，需二次确认） */
+  ipcMain.handle('data:clearAll', async (): Promise<OpResult<{ cleared: number }>> => {
+    const win = getWindow()
+    const opts = {
+      type: 'warning' as const,
+      buttons: ['取消', '确认清空'],
+      defaultId: 0,
+      cancelId: 0,
+      title: '清空全部数据',
+      message: '确定要清空所有视频、字幕与切片任务吗？',
+      detail: '此操作不可撤销。建议先用「备份数据库」留一份。'
+    }
+    const res = win ? await dialog.showMessageBox(win, opts) : await dialog.showMessageBox(opts)
+    if (res.response !== 1) return { ok: false, message: '已取消' }
+    return { ok: true, data: { cleared: db.clearAllData() } }
   })
 
   /* --------------------------------- 系统交互 -------------------------------- */

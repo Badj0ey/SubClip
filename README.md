@@ -171,10 +171,10 @@ app/
 │   ├── shared/bilibili.js      # B站接口
 │   └── README.md               # 插件安装与说明
 └── tests/
-    ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验 + 导出/批量编辑（67 项）
+    ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验 + 导出/批量编辑 + 诊断脱敏（69 项）
     ├── wbi.test.ts             # WBI 签名 / 协议 / 版本 / 扩展 ID 一致性（18 项）
     ├── sidx.test.ts            # 切片 SIDX 解析与区间计算（14 项）
-    ├── smoke.ts                # Electron 端到端冒烟 + 迁移 + 全文检索（24 项）
+    ├── smoke.ts                # 端到端 + 迁移 + 检索 + 撤销删除 + 备份恢复（28 项）
     ├── bridge.smoke.ts         # 插件通信端到端 + 来源校验 / 配对令牌（27 项）
     ├── demo.srt                # 演示字幕
     ├── gen-large-srt.mjs       # 开发辅助：生成超大字幕文件
@@ -210,7 +210,7 @@ npm install
 npm run dev        # 开发模式（热更新）
 npm run build      # 构建到 out/
 npm run typecheck  # 类型检查（渲染进程 + 主进程 + 测试 + 插件脚本）
-npm test           # 运行全部测试（67 + 18 + 14 + 24 + 27 项）
+npm test           # 运行全部测试（69 + 18 + 14 + 28 + 27 项）
 ```
 
 调试辅助：
@@ -347,6 +347,16 @@ npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更�
 | 旧版数据（迁移后留档） | 同目录 `srt-tool.json.migrated-<时间戳>` 与 `docs\<docId>.json` |
 | 应用设置 | `%APPDATA%\srt-clip-helper\settings.json` |
 | 切片表输出 | 默认 `我的文档\subtitle-clips`，可在设置里改 |
+
+### 备份与恢复（设置 → 数据）
+
+- **备份数据库**：把整库导出成**单个** `.db` 文件（走 SQLite 的 `VACUUM INTO`，
+  连 WAL 里尚未落盘的内容一起带上，也不依赖 `-wal` / `-shm` 边车文件），拷到别的机器就能用。
+- **从备份恢复**：恢复前会先把当前库另存为 `srt-tool.db.before-restore-<时间戳>`，
+  恢复失败（文件不是 SQLite、或内容不可用）会**自动回滚**，不会把已有数据弄丢。
+- **导出诊断信息**：版本、运行时版本、系统、统计、各路径是否存在、配置项与插件连接状态。
+  **Cookie 与配对令牌只记录「是否配置」与长度，绝不写内容**（有单测锁住这一点），报 bug 时附上它最有用。
+- **清空全部数据**：需要二次确认，不可撤销（建议先备份）。
 
 ---
 

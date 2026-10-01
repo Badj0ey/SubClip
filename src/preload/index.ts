@@ -251,6 +251,18 @@ const api = {
     }) => void
   ) => subscribe('bridge:cookies', cb),
 
+  /* 数据管理 */
+  /** 备份整库到用户选定的文件 */
+  backupData: (): Promise<OpResult<{ path: string }>> => ipcRenderer.invoke('data:backup'),
+  /** 从备份文件恢复整库（失败会自动回滚） */
+  restoreData: (): Promise<OpResult<{ path: string; backup: string }>> =>
+    ipcRenderer.invoke('data:restore'),
+  /** 导出诊断信息（不含 Cookie 内容） */
+  exportDiagnostics: (): Promise<OpResult<{ path: string }>> =>
+    ipcRenderer.invoke('data:diagnostics'),
+  /** 清空全部数据（需要二次确认） */
+  clearAllData: (): Promise<OpResult<{ cleared: number }>> => ipcRenderer.invoke('data:clearAll'),
+
   /* 系统 */
   pickFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:pickFiles'),
   pickDir: (defaultPath?: string): Promise<string> => ipcRenderer.invoke('dialog:pickDir', defaultPath),

@@ -15,12 +15,18 @@ import {
   applyReadingStyle,
   applyTheme,
   loadBridgeStatus,
+  loadTree,
   openSliceOutput,
   refreshSliceCheck,
   restartBridge,
   state,
   toast
 } from '../store'
+
+/** 重新拉一次统计（备份恢复 / 清空数据后用） */
+async function refreshStats(): Promise<void> {
+  stats.value = await window.api.getStats()
+}
 
 const env = ref<Record<string, { path: string; exists: boolean }> | null>(null)
 const login = ref<{ loggedIn: boolean; name?: string }>({ loggedIn: false })
@@ -62,8 +68,7 @@ onMounted(async () => {
   cookieDraft.value = ''
   login.value = await window.api.loginStatus()
   extDir.value = await window.api.extensionDir()
-  await loadBridgeStatus()
-})
+  await loadBridgeStatus()})
 
 async function save(patch: Partial<AppSettings>): Promise<void> {
   state.settings = await window.api.saveSettings(patch)
@@ -140,8 +145,7 @@ async function onPort(e: Event): Promise<void> {
   await restartBridge(port)
 }
 
-/** 生成一个随机配对令牌（用 Web Crypto，避免引入额外依赖 + 不用 Math.random） */
-async function generateBridgeToken(): Promise<void> {
+/** 生成一个随机配对令牌（用 Web Crypto，避免引入额外依赖 + 不用 Math.random） */async function generateBridgeToken(): Promise<void> {
   const bytes = new Uint8Array(16)
   crypto.getRandomValues(bytes)
   const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
@@ -277,6 +281,47 @@ async function openDataDir(): Promise<void> {
   }
   const err = await window.api.openPath(dir)
   if (err) toast(err, 'error', 4200)
+}
+
+/* -------------------------------- 数据管理 -------------------------------- */
+
+async function doBackup(): Promise<void> {
+  const res = await window.api.backupData()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '备份失败', 'error', 4600)
+    return
+  }
+  toast(`已备份到：${res.data.path}`, 'success', 6000)
+}
+
+async function doRestore(): Promise<void> {
+  const res = await window.api.restoreData()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '恢复失败', 'error', 6000)
+    return
+  }
+  await refreshStats()
+  toast(`已从备份恢复。原数据已留档：${res.data.backup}`, 'success', 7000)
+}
+
+async function doDiagnostics(): Promise<void> {
+  const res = await window.api.exportDiagnostics()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '导出失败', 'error', 4600)
+    return
+  }
+  toast(`已导出诊断信息：${res.data.path}`, 'success', 6000)
+}
+
+async function doClearAll(): Promise<void> {
+  const res = await window.api.clearAllData()
+  if (!res.ok || !res.data) {
+    if (res.message !== '已取消') toast(res.message || '清空失败', 'error')
+    return
+  }
+  await refreshStats()
+  await loadTree()
+  toast(`已清空数据（${res.data.cleared} 条记录）`, 'success', 4600)
 }
 
 async function openOutputDir(): Promise<void> {
@@ -671,6 +716,29 @@ async function openOutputDir(): Promise<void> {
       </div>
       <div class="hint">
         所有数据都在本机，关闭软件不会丢失；每次改动都会立刻写入磁盘。
+      </div>
+
+      <div class="field">
+        <label>备份与恢复</label>
+        <div class="row">
+          <button class="btn" @click="doBackup">备份数据库…</button>
+          <button class="btn" @click="doRestore">从备份恢复…</button>
+          <button class="btn" @click="doDiagnostics">导出诊断信息…</button>
+        </div>
+      </div>
+      <div class="hint">
+        备份会把整库导出成**单个** `.db` 文件（用 SQLite 的 VACUUM INTO，连未落盘的内容一起带上），
+        换台机器拷过去就能用。恢复前会自动把当前库另存一份，恢复失败会自动回滚。
+        诊断信息只含版本、路径、统计与配置项（**Cookie 与配对令牌只记录是否配置，不写内容**），
+        报 bug 时附上它最有用。
+      </div>
+
+      <div class="field">
+        <label>危险操作</label>
+        <div class="row">
+          <button class="btn danger" @click="doClearAll">清空全部数据</button>
+          <span class="muted">删除所有视频、字幕与切片任务，需二次确认且不可撤销</span>
+        </div>
       </div>
 
       <h2>关于切片流程</h2>

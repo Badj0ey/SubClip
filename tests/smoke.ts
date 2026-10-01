@@ -6,6 +6,7 @@
 import { app } from 'electron'
 import assert from 'node:assert'
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -538,6 +539,53 @@ async function run(): Promise<void> {
     assert.ok(video)
     db.deleteVideo(video!.id)
     assert.strictEqual(db.searchCues('独角兽').length, 0, '被删视频的字幕不该还能搜到')
+  })
+
+  /* ------------------------- 13. 备份 / 恢复 / 清空 ------------------------- */
+  check('备份是单个自洽文件（换一份库目录也能读到同样的数据）', () => {
+    const backupFile = join(workDir, 'backup.db')
+    db.backupTo(backupFile)
+
+    assert.ok(existsSync(backupFile), '备份文件应生成')
+    assert.ok(db.looksLikeSqliteFile(backupFile), '备份应是合法的 SQLite 文件')
+    assert.ok(!existsSync(`${backupFile}-wal`), '备份不该依赖 -wal 边车文件')
+
+    const before = db.stats()
+    assert.ok(before.videos > 0, '备份前应已有数据')
+
+    // 清空：数据全没了，但表结构留着
+    const cleared = db.clearAllData()
+    assert.ok(cleared > 0, '清空应报告清掉的记录数')
+    assert.strictEqual(db.stats().videos, 0, '清空后视频应为 0')
+    assert.strictEqual(db.stats().docs, 0, '清空后文档应为 0')
+    assert.strictEqual(db.buildTree().length, 0, '清空后资源树应为空')
+    assert.strictEqual(db.searchCues('独角兽').length, 0, '清空后检索不应有结果')
+
+    // 把备份当成「换台机器」：放到一个全新的库目录里打开
+    const otherDir = mkdtempSync(join(tmpdir(), 'srt-tool-restore-'))
+    const otherData = join(otherDir, 'srt-tool-data')
+    mkdirSync(otherData, { recursive: true })
+    copyFileSync(backupFile, join(otherData, 'srt-tool.db'))
+    db.initDb(otherDir)
+    assert.strictEqual(db.stats().videos, before.videos, '恢复后视频数应一致')
+    assert.strictEqual(db.stats().docs, before.docs, '恢复后文档数应一致')
+    db.closeDb()
+    rmSync(otherDir, { recursive: true, force: true })
+
+    // 再按真实恢复流程把主库写回来（关库 → 覆盖 → 重开）
+    const mainData = join(workDir, 'srt-tool-data')
+    copyFileSync(backupFile, join(mainData, 'srt-tool.db'))
+    rmSync(join(mainData, 'srt-tool.db-wal'), { force: true })
+    rmSync(join(mainData, 'srt-tool.db-shm'), { force: true })
+    db.initDb(workDir)
+    assert.strictEqual(db.stats().videos, before.videos, '恢复后主库应回到备份时的状态')
+  })
+
+  check('非 SQLite 文件会被拒绝，不会被误当成备份导入', () => {
+    const fake = join(workDir, 'not-a-db.db')
+    writeFileSync(fake, '这不是数据库', 'utf8')
+    assert.strictEqual(db.looksLikeSqliteFile(fake), false)
+    assert.strictEqual(db.looksLikeSqliteFile(join(workDir, '不存在的文件.db')), false)
   })
 
   console.log(`\n通过 ${passed}，失败 ${failed}\n`)

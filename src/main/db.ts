@@ -197,6 +197,8 @@ let dbFile = ''
 let legacyCacheDir = ''
 /** 批量写入深度：>0 时复用外层事务 */
 let batchDepth = 0
+/** 记录 initDb 的参数，恢复备份后可以按同样的参数重开 */
+let initArgs: { userDataDir: string; cacheDir?: string } | null = null
 
 function requireDb(): DatabaseSync {
   if (!db) throw new Error('数据层尚未初始化（请先调用 initDb）')
@@ -211,6 +213,10 @@ function requireDb(): DatabaseSync {
  * @param customCacheDir 设置里指定的字幕缓存目录（**只用于迁移老数据**）
  */
 export function initDb(userDataDir: string, customCacheDir?: string): void {
+  // 防御：重复初始化时先关掉旧连接。
+  // 否则旧的 DatabaseSync 句柄会泄漏，还会一直锁着数据库文件（WAL 删不掉、文件被占用）。
+  if (db) closeDb()
+  initArgs = { userDataDir, cacheDir: customCacheDir }
   const dataDir = join(userDataDir, APP_DATA_DIR)
   mkdirSync(dataDir, { recursive: true })
   dbFile = join(dataDir, 'srt-tool.db')
@@ -462,6 +468,56 @@ export function closeDb(): void {
     /* ignore */
   }
   db = null
+}
+
+/* ------------------------------ 备份 / 恢复 / 诊断 ----------------------------- */
+
+/** 数据库文件路径（备份、恢复、诊断用） */
+export function dbFilePath(): string {
+  return dbFile
+}
+
+/** 按上次的参数重新打开数据库（恢复备份之后调用） */
+export function reopenDb(): void {
+  if (initArgs) initDb(initArgs.userDataDir, initArgs.cacheDir)
+}
+
+/**
+ * 导出成一个干净、自洽的数据库副本。
+ * 用 `VACUUM INTO` 而不是直接复制文件：它会带上 WAL 里还没落盘的内容，
+ * 并且目标文件不带 `-wal` / `-shm`，单个文件就能拿走。
+ */
+export function backupTo(target: string): void {
+  const handle = requireDb()
+  // VACUUM INTO 的路径是 SQL 表达式，单引号要转义（Windows 路径里少见但并非不可能）
+  handle.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`)
+}
+
+/** 是不是一个 SQLite 文件（只查文件头，不打开，避免坏文件把主进程带崩） */
+export function looksLikeSqliteFile(file: string): boolean {
+  try {
+    const head = readFileSync(file, { encoding: null }).subarray(0, 16).toString('latin1')
+    return head.startsWith('SQLite format 3')
+  } catch {
+    return false
+  }
+}
+
+/** 清空所有数据（保留表结构）。返回清掉的记录数。 */
+export function clearAllData(): number {
+  const handle = requireDb()
+  const before = stats()
+  withTransaction(() => {
+    // 顺序无关紧要（有外键级联），但显式清一遍更直观
+    handle.exec('delete from clips')
+    handle.exec('delete from cue_search')
+    handle.exec('delete from cues')
+    handle.exec('delete from docs')
+    handle.exec('delete from videos')
+    handle.exec('delete from collections')
+    handle.exec('delete from uploaders')
+  })
+  return before.uploaders + before.videos + before.docs + before.clips
 }
 
 /* --------------------------------- 正文读写 -------------------------------- */
