@@ -7,7 +7,10 @@ import { useVirtualList } from '../composables/useVirtualList'
 import {
   applyReadingStyle,
   clearSelection,
+  copyCueLink,
+  copyCueTexts,
   editRequest,
+  enqueueSingleCue,
   expandTo,
   invertSelection,
   matchedIndexes,
@@ -24,6 +27,8 @@ import {
   undoLastEdit
 } from '../store'
 import EditToolsDialog from './EditToolsDialog.vue'
+import ContextMenu from './ContextMenu.vue'
+import type { MenuItem } from './ContextMenu.vue'
 
 const showTools = ref(false)
 const canUndo = computed(() => undoDepth.value > 0)
@@ -328,6 +333,45 @@ onMounted(() => {
   void nextTick(() => applyPendingFocus())
 })
 
+/* --------------------------------- 右键菜单 -------------------------------- */
+
+const cueMenu = ref<{ x: number; y: number; cue: MergedCue } | null>(null)
+
+function onCueMenu(cue: MergedCue, event: MouseEvent): void {
+  cueMenu.value = { x: event.clientX, y: event.clientY, cue }
+}
+
+/**
+ * 右键操作的是「这一条」，所以复制类动作直接传该条，
+ * 不依赖光标位置 —— 否则右键第 30 行却复制了第 5 行，很容易误操作。
+ */
+const cueMenuItems = computed<MenuItem[]>(() => {
+  const cue = cueMenu.value?.cue
+  if (!cue) return []
+  return [
+    { label: '复制这句话', icon: '📋', action: () => void copyCueTexts([cue]) },
+    {
+      label: '复制带时间戳的链接',
+      icon: '🔗',
+      disabled: !state.video?.bvid,
+      action: () => void copyCueLink(cue)
+    },
+    { label: '编辑正文', icon: '✎', divider: true, action: () => void startEdit(cue) },
+    {
+      label: '勾选 / 取消这一条',
+      icon: '☑',
+      action: () => toggleSelect(cue.index)
+    },
+    {
+      label: '用这一条新建切片任务',
+      icon: '✂',
+      divider: true,
+      disabled: !state.video?.bvid,
+      action: () => void enqueueSingleCue(cue)
+    }
+  ]
+})
+
 function gotoMatch(dir: 1 | -1): void {
   const list = matchedIndexes.value
   if (!list.length) return
@@ -463,7 +507,7 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
 </script>
 
 <template>
-  <section class="pane pane-center">
+  <section class="pane pane-center" role="main" aria-label="字幕阅读区">
     <div class="sub-toolbar">
       <input
         id="search-input"
@@ -534,7 +578,14 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
         :style="{ top: `${READ_LINE_PERCENT}%` }"
       ></div>
 
-      <div ref="listEl" class="cue-list" @scroll.passive="onListScroll">
+      <div
+        ref="listEl"
+        class="cue-list"
+        role="listbox"
+        aria-multiselectable="true"
+        :aria-label="`字幕列表，共 ${cueCount} 条`"
+        @scroll.passive="onListScroll"
+      >
         <div :style="{ height: `${topPad}px` }"></div>
 
       <div
@@ -543,6 +594,8 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
         :data-vindex="startIndex + vi"
         :data-cue="cue.index"
         class="cue"
+        role="option"
+        :aria-selected="isChecked(cue)"
         :class="{
           checked: isChecked(cue),
           cursor: state.cursor === cue.index,
@@ -552,10 +605,12 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
         :data-page="isPageStart(startIndex + vi) ? pageLabel(cue.page) : null"
         @click="onRowClick(cue, $event)"
         @dblclick="onRowDblClick(cue, $event)"
+        @contextmenu.prevent="onCueMenu(cue, $event)"
       >
         <input
           type="checkbox"
           :checked="isChecked(cue)"
+          :aria-label="`勾选第 ${cue.index} 条字幕`"
           @click.stop="onRowClick(cue, $event)"
         />
         <span class="num">{{ cue.index }}</span>
@@ -587,7 +642,9 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
         <button
           v-if="editingIndex !== cue.index"
           class="row-op"
+          type="button"
           title="编辑正文（双击行也可）"
+          :aria-label="`编辑第 ${cue.index} 条字幕正文`"
           @click.stop="startEdit(cue)"
         >
           ✎
@@ -598,7 +655,9 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
       </div>
     </div>
 
-    <div v-if="state.cues.length" class="status-bar">
+    <ContextMenu v-if="cueMenu" :x="cueMenu.x" :y="cueMenu.y" :items="cueMenuItems" @close="cueMenu = null" />
+
+    <div v-if="state.cues.length" class="status-bar" role="status" aria-live="polite">
       <span>共 {{ state.cues.length }} 条</span>
       <span class="divider-v"></span>
       <span>已选 {{ state.selected.size }} 条</span>

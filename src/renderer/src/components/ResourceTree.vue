@@ -12,6 +12,8 @@ import {
 } from '../store'
 import TreeNodeItem from './TreeNodeItem.vue'
 import TagDialog from './TagDialog.vue'
+import ContextMenu from './ContextMenu.vue'
+import type { MenuItem } from './ContextMenu.vue'
 
 const kw = ref('')
 const favOnly = ref(false)
@@ -74,6 +76,60 @@ async function onRename(node: TreeNode, name: string): Promise<void> {
   toast('已重命名', 'success')
 }
 
+/* --------------------------------- 右键菜单 -------------------------------- */
+
+const menu = ref<{ x: number; y: number; node: TreeNode } | null>(null)
+
+function onMenu(node: TreeNode, event: MouseEvent): void {
+  menu.value = { x: event.clientX, y: event.clientY, node }
+}
+
+const menuItems = computed<MenuItem[]>(() => {
+  const node = menu.value?.node
+  if (!node) return []
+  const isTag = node.key.startsWith('tag:')
+  const isDoc = node.type === 'doc'
+  const items: MenuItem[] = [
+    {
+      label: isDoc ? '打开字幕' : '展开 / 折叠',
+      icon: isDoc ? '📄' : '▸',
+      action: () => {
+        if (isDoc) void onOpen(node)
+        else document.querySelector<HTMLElement>(`[data-key="${node.key}"]`)?.click()
+      }
+    },
+    {
+      label: node.favorite ? '取消收藏' : '收藏',
+      icon: node.favorite ? '★' : '☆',
+      action: () => void onFavorite(node)
+    },
+    {
+      label: '重命名',
+      icon: '✎',
+      action: () => {
+        // 让该行进入内联编辑：派发一次 dblclick 比自己操作 DOM 稳
+        document
+          .querySelector<HTMLElement>(`[data-key="${node.key}"] .label`)
+          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+      }
+    }
+  ]
+
+  if (node.type === 'video') {
+    items.push({ label: '打标签…', icon: '🏷', divider: true, action: () => onTag(node) })
+  }
+
+  items.push({
+    label: isTag ? '删除标签' : '删除',
+    icon: '✕',
+    danger: true,
+    divider: true,
+    action: () => void onDelete(node)
+  })
+  return items
+})
+
+
 /* --------------------------------- 标签 --------------------------------- */
 
 const tagTarget = ref<{ videoId: number; title: string } | null>(null)
@@ -94,7 +150,7 @@ async function refresh(): Promise<void> {
 </script>
 
 <template>
-  <aside class="pane pane-left">
+  <aside class="pane pane-left" role="navigation" aria-label="资源树">
     <div class="pane-head">
       <strong style="font-size: 13px">工作区</strong>
       <span class="grow"></span>
@@ -131,7 +187,7 @@ async function refresh(): Promise<void> {
         暂无内容<br />
         点击顶部「导入 SRT」或「BV 号拉取字幕」
       </div>
-      <div v-else class="tree">
+      <div v-else class="tree" role="tree" aria-label="视频资源树">
         <TreeNodeItem
           v-for="node in visibleTree"
           :key="node.key"
@@ -143,9 +199,18 @@ async function refresh(): Promise<void> {
           @favorite="onFavorite"
           @rename="onRename"
           @tag="onTag"
+          @menu="onMenu"
         />
       </div>
     </div>
+
+    <ContextMenu
+      v-if="menu"
+      :x="menu.x"
+      :y="menu.y"
+      :items="menuItems"
+      @close="menu = null"
+    />
 
     <TagDialog
       v-if="tagTarget"

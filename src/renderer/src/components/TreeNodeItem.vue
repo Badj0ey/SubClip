@@ -14,6 +14,7 @@ const emit = defineEmits<{
   (e: 'favorite', node: TreeNode): void
   (e: 'rename', node: TreeNode, name: string): void
   (e: 'tag', node: TreeNode): void
+  (e: 'menu', node: TreeNode, event: MouseEvent): void
 }>()
 
 /* ------------------------------- 内联重命名 ------------------------------- */
@@ -72,6 +73,36 @@ function onClick(): void {
   if (props.node.type === 'doc') emit('open', props.node)
   else toggle()
 }
+
+function onKeydown(e: KeyboardEvent): void {
+  // 只用键盘也能走遍资源树：Enter/Space 打开或展开，左右键收放
+  switch (e.key) {
+    case 'Enter':
+    case ' ':
+      e.preventDefault()
+      onClick()
+      break
+    case 'ArrowRight':
+      if (hasChildren.value && !isOpen.value) {
+        e.preventDefault()
+        toggle()
+      }
+      break
+    case 'ArrowLeft':
+      if (hasChildren.value && isOpen.value) {
+        e.preventDefault()
+        toggle()
+      }
+      break
+    case 'F2':
+      e.preventDefault()
+      void startRename()
+      break
+    default:
+      break
+  }
+}
+
 </script>
 
 <template>
@@ -79,12 +110,21 @@ function onClick(): void {
     <div
       class="tnode"
       :class="{ active: isActive }"
+      :data-key="node.key"
+      role="treeitem"
+      :aria-level="depth + 1"
+      :aria-expanded="hasChildren ? isOpen : undefined"
+      :aria-selected="isActive"
+      :aria-label="`${node.label}${node.subtitle ? `，${node.subtitle}` : ''}`"
+      tabindex="0"
       :style="{ paddingLeft: `${6 + depth * 13}px` }"
       :title="node.subtitle ? `${node.label}（${node.subtitle}）` : node.label"
       @click="onClick"
+      @keydown="onKeydown"
+      @contextmenu.prevent="emit('menu', node, $event)"
     >
-      <span class="arrow" :class="{ open: isOpen }">{{ hasChildren ? '▶' : '' }}</span>
-      <span class="ico">{{ icons[node.type] }}</span>
+      <span class="arrow" aria-hidden="true" :class="{ open: isOpen }">{{ hasChildren ? '▶' : '' }}</span>
+      <span class="ico" aria-hidden="true">{{ icons[node.type] }}</span>
 
       <input
         v-if="renaming"
@@ -107,20 +147,39 @@ function onClick(): void {
       <span v-if="!renaming" class="ops">
         <button
           v-if="node.type === 'video'"
+          type="button"
           title="打标签"
+          :aria-label="`给 ${node.label} 打标签`"
           @click.stop="emit('tag', node)"
         >
           🏷
         </button>
         <button
+          type="button"
           :class="{ fav: node.favorite }"
           :title="node.favorite ? '取消收藏' : '收藏'"
+          :aria-label="node.favorite ? `取消收藏 ${node.label}` : `收藏 ${node.label}`"
+          :aria-pressed="Boolean(node.favorite)"
           @click.stop="emit('favorite', node)"
         >
           {{ node.favorite ? '★' : '☆' }}
         </button>
-        <button title="重命名" @click.stop="startRename">✎</button>
-        <button title="删除" @click.stop="emit('delete', node)">✕</button>
+        <button
+          type="button"
+          title="重命名"
+          :aria-label="`重命名 ${node.label}`"
+          @click.stop="startRename"
+        >
+          ✎
+        </button>
+        <button
+          type="button"
+          title="删除"
+          :aria-label="`删除 ${node.label}`"
+          @click.stop="emit('delete', node)"
+        >
+          ✕
+        </button>
       </span>
     </div>
 
@@ -136,6 +195,7 @@ function onClick(): void {
         @favorite="(n) => emit('favorite', n)"
         @rename="(n, name) => emit('rename', n, name)"
         @tag="(n) => emit('tag', n)"
+        @menu="(n, ev) => emit('menu', n, ev)"
       />
     </template>
   </div>

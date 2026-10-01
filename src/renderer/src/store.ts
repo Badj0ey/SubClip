@@ -613,6 +613,28 @@ export async function openSliceOutput(): Promise<void> {
   if (err) toast(err, 'error', 4200)
 }
 
+/* -------------------------------- 拖拽导入 -------------------------------- */
+
+/**
+ * 把拖进窗口的字幕文件导入资源库。
+ * 路径校验在主进程做（只认 .srt/.vtt/.txt 且真实存在），这里只负责提示与刷新。
+ */
+export async function importDroppedSrt(paths: string[]): Promise<void> {
+  const res = await window.api.importDroppedSrt(paths)
+  if (!res.ok || !res.data) {
+    toast(res.message || '导入失败', 'error', 5200)
+    return
+  }
+  await loadTree()
+  const { imported, updated, failures } = res.data
+  toast(
+    `已导入 ${imported} 个，更新 ${updated} 个${failures.length ? `，跳过 ${failures.length} 个` : ''}`,
+    'success',
+    5200
+  )
+  if (failures.length) toast(failures.slice(0, 3).join('\n'), 'error', 7000)
+}
+
 /* ------------------------------ 删除与撤销删除 ------------------------------ */
 
 /**
@@ -719,11 +741,11 @@ export async function undoLastEdit(): Promise<void> {
 
 /* -------------------------------- 复制到剪贴板 ------------------------------- */
 
-/** 复制选中的字幕文本（没选中就复制全部），每行一句 */
-export async function copySelectedText(): Promise<void> {
-  const list = state.selected.size
-    ? state.cues.filter((c) => state.selected.has(c.index))
-    : state.cues
+/** 复制指定几条字幕的文本；不传就按当前选中（没选中则全部） */
+export async function copyCueTexts(cues?: MergedCue[]): Promise<void> {
+  const list =
+    cues ??
+    (state.selected.size ? state.cues.filter((c) => state.selected.has(c.index)) : state.cues)
   const text = list
     .map((c) => c.text.trim())
     .filter(Boolean)
@@ -736,20 +758,45 @@ export async function copySelectedText(): Promise<void> {
   toast(`已复制 ${list.length} 条字幕文本`, 'success')
 }
 
+export function copySelectedText(): Promise<void> {
+  return copyCueTexts()
+}
+
 /**
- * 复制当前光标所在那一条的 B站 链接（带分P 与时间戳）。
+ * 复制某一条字幕的 B站 链接（带分P 与时间戳）。
  * 直接粘到浏览器就能跳到那一刻，比手抄时间方便得多。
  */
-export async function copyTimestampLink(): Promise<void> {
+export async function copyCueLink(cue?: MergedCue): Promise<void> {
+  const target = cue ?? state.cues.find((c) => c.index === state.cursor)
   const video = state.video
-  const cue = state.cues.find((c) => c.index === state.cursor)
-  if (!video?.bvid || !cue) {
+  if (!video?.bvid || !target) {
     toast('需要先打开一个带 BV 号的视频', 'error')
     return
   }
-  const url = `https://www.bilibili.com/video/${video.bvid}?p=${cue.page}&t=${Math.max(0, Math.floor(cue.start))}`
+  const url = `https://www.bilibili.com/video/${video.bvid}?p=${target.page}&t=${Math.max(0, Math.floor(target.start))}`
   await window.api.copyText(url)
   toast(`已复制链接：${url}`, 'success', 4600)
+}
+
+export function copyTimestampLink(): Promise<void> {
+  return copyCueLink()
+}
+
+/** 单独把某一条字幕加进切片任务（右键菜单用） */
+export async function enqueueSingleCue(cue: MergedCue): Promise<void> {
+  const res = await window.api.addClips({
+    docId: cue.docId,
+    bvid: state.video?.bvid ?? '',
+    page: cue.page,
+    ranges: [{ start: cue.start, end: cue.end }],
+    notePrefix: state.video?.title || 'clip'
+  })
+  if (!res.ok) {
+    toast(res.message || '加入切片任务失败', 'error')
+    return
+  }
+  await loadClips()
+  toast('已加入 1 条切片任务', 'success')
 }
 
 /* -------------------------------- 全库检索 -------------------------------- */

@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type {
   AppSettings,
@@ -94,6 +94,29 @@ const api = {
       notes: string[]
     }>
   > => ipcRenderer.invoke('srt:import', { paths, bvid }),
+  /** 拖拽导入：主进程会自己校验扩展名与可读性，不走对话框白名单 */
+  importDroppedSrt: (
+    paths: string[]
+  ): Promise<
+    OpResult<{
+      imported: number
+      updated: number
+      failures: string[]
+      warnings: string[]
+      notes: string[]
+    }>
+  > => ipcRenderer.invoke('srt:importDropped', paths),
+  /**
+   * 取拖入文件的真实路径。
+   * Electron 32 起 `File.path` 被移除，只能用 preload 里的 webUtils 拿。
+   */
+  getPathForFile: (file: File): string => {
+    try {
+      return webUtils.getPathForFile(file)
+    } catch {
+      return ''
+    }
+  },
 
   /* B站 */
   loginStatus: (): Promise<{ loggedIn: boolean; name?: string; avatar?: string }> =>

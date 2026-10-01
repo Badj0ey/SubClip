@@ -156,7 +156,7 @@ watch(currentVideoTitle, (title) => {
 </script>
 
 <template>
-  <aside class="pane pane-right">
+  <aside class="pane pane-right" role="complementary" aria-label="选择结果与切片任务">
     <div class="pane-head">
       <strong style="font-size: 13px">选择结果 / 切片任务</strong>
       <span class="grow"></span>
@@ -296,16 +296,20 @@ watch(currentVideoTitle, (title) => {
             <div class="order-ops">
               <button
                 class="del"
+                type="button"
                 :disabled="i === 0"
                 title="上移"
+                :aria-label="`把「${t.note}」上移`"
                 @click="onMove(t.id, -1)"
               >
                 ▲
               </button>
               <button
                 class="del"
+                type="button"
                 :disabled="i === state.clips.length - 1"
                 title="下移"
+                :aria-label="`把「${t.note}」下移`"
                 @click="onMove(t.id, 1)"
               >
                 ▼
@@ -344,7 +348,15 @@ watch(currentVideoTitle, (title) => {
                 {{ t.note }}
               </div>
             </div>
-            <button class="del" title="删除该任务" @click="onDeleteClip(t.id)">✕</button>
+            <button
+              class="del"
+              type="button"
+              title="删除该任务"
+              :aria-label="`删除任务「${t.note}」`"
+              @click="onDeleteClip(t.id)"
+            >
+              ✕
+            </button>
           </div>
         </template>
 
@@ -415,7 +427,15 @@ watch(currentVideoTitle, (title) => {
       >
         {{ state.sliceRunning ? '切片中…' : `本地切片（${state.clips.length}）` }}
       </button>
-      <button class="btn icon" title="打开切片输出目录" @click="onOpenOutput">📁</button>
+      <button
+        class="btn icon"
+        type="button"
+        title="打开切片输出目录"
+        aria-label="打开切片输出目录"
+        @click="onOpenOutput"
+      >
+        📁
+      </button>
     </div>
   </aside>
 </template>

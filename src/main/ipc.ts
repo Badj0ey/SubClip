@@ -4,9 +4,12 @@
  */
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
-import { existsSync, rmSync, copyFileSync } from 'node:fs'
-import { join, resolve, sep } from 'node:path'
+import { existsSync, rmSync, copyFileSync, statSync } from 'node:fs'
+import { extname, join, resolve, sep } from 'node:path'
 import * as os from 'node:os'
+
+/** 允许导入 / 打开的字幕文件扩展名（拖拽导入靠它把关） */
+const SUBTITLE_EXTS = ['.srt', '.vtt', '.txt']
 import type {
   AppSettings,
   Cue,
@@ -242,6 +245,38 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         data.failures.push(`${rejected} 个路径未经文件选择对话框，已跳过`)
       }
       // 重复导入同一个文件时只会「更新」，所以新增 + 更新都算成功
+      return { ok: data.imported + data.updated > 0, data }
+    }
+  )
+
+  /**
+   * 拖拽导入。
+   *
+   * 拖进来的路径没经过「选择文件」对话框，所以这里**自己把关**：
+   * 只接受真实存在、且扩展名在白名单里的普通文件，然后才登记为已批准。
+   * 这样即便渲染进程被注入，也无法借这个入口去读任意本地文件（exe/dll 之类一律拒绝）。
+   */
+  ipcMain.handle(
+    'srt:importDropped',
+    async (_e, paths: string[]): Promise<OpResult<ImportSrtResult>> => {
+      const allowed: string[] = []
+      const rejected: string[] = []
+      for (const raw of (paths ?? []).slice(0, 200)) {
+        const p = typeof raw === 'string' ? raw : ''
+        const ext = extname(p).toLowerCase()
+        if (!p || !SUBTITLE_EXTS.includes(ext) || !existsSync(p) || !statSync(p).isFile()) {
+          rejected.push(p || '(空路径)')
+          continue
+        }
+        allowed.push(approve(p))
+      }
+      if (!allowed.length) {
+        return { ok: false, message: '拖入的文件里没有可识别的字幕文件（支持 .srt / .vtt / .txt）' }
+      }
+      const data = await importLocalSrt(allowed)
+      if (rejected.length) {
+        data.failures.push(`${rejected.length} 个文件格式不支持或不可读，已跳过`)
+      }
       return { ok: data.imported + data.updated > 0, data }
     }
   )

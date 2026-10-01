@@ -6,6 +6,7 @@ import {
   clearSelection,
   enqueueCurrentRanges,
   exportSlice,
+  importDroppedSrt,
   initApp,
   moveCursor,
   requestEditCurrent,
@@ -95,17 +96,76 @@ function resetPaneWidths(): void {
   void window.api.saveSettings({ treePaneWidth: 290, taskPaneWidth: 380 })
 }
 
+/* -------------------------------- 拖拽导入 -------------------------------- */
+
+/**
+ * 把 .srt / .vtt / .txt 拖进窗口即可导入。
+ *
+ * 用 dragenter/dragleave 计数而不是简单的 true/false：拖过子元素时会连发
+ * dragleave → 立刻变回 false，遮罩会闪。计数能避免这个抖动。
+ */
+const fileDragging = ref(false)
+let dragDepth = 0
+
+function hasFiles(e: DragEvent): boolean {
+  return Array.from(e.dataTransfer?.types ?? []).includes('Files')
+}
+
+function onDragEnter(e: DragEvent): void {
+  if (!hasFiles(e)) return
+  dragDepth++
+  fileDragging.value = true
+}
+
+function onDragOver(e: DragEvent): void {
+  if (!hasFiles(e)) return
+  // 不 preventDefault 的话浏览器会拒收，drop 事件根本不会触发
+  e.preventDefault()
+  if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy'
+}
+
+function onDragLeave(e: DragEvent): void {
+  if (!hasFiles(e)) return
+  dragDepth = Math.max(0, dragDepth - 1)
+  if (!dragDepth) fileDragging.value = false
+}
+
+async function onDrop(e: DragEvent): Promise<void> {
+  if (!hasFiles(e)) return
+  e.preventDefault()
+  dragDepth = 0
+  fileDragging.value = false
+
+  // Electron 32 起 File.path 被移除，路径只能从 preload 的 webUtils 取
+  const paths = Array.from(e.dataTransfer?.files ?? [])
+    .map((f) => window.api.getPathForFile(f))
+    .filter(Boolean)
+  if (!paths.length) {
+    toast('没能识别拖入文件的路径，请改用「导入 SRT」按钮', 'error', 5200)
+    return
+  }
+  await importDroppedSrt(paths)
+}
+
 /* --------------------------------- 生命周期 -------------------------------- */
 
 onMounted(async () => {
   await initApp()
   window.addEventListener('keydown', onKey)
   window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', onSystemTheme)
+  window.addEventListener('dragenter', onDragEnter)
+  window.addEventListener('dragover', onDragOver)
+  window.addEventListener('dragleave', onDragLeave)
+  window.addEventListener('drop', onDrop)
 })
 
 onUnmounted(() => {
   window.removeEventListener('keydown', onKey)
   window.matchMedia('(prefers-color-scheme: dark)').removeEventListener('change', onSystemTheme)
+  window.removeEventListener('dragenter', onDragEnter)
+  window.removeEventListener('dragover', onDragOver)
+  window.removeEventListener('dragleave', onDragLeave)
+  window.removeEventListener('drop', onDrop)
 })
 
 function onSystemTheme(): void {
@@ -290,8 +350,55 @@ function onImported(): void {
     <ImportDialog v-if="showImport" @close="showImport = false" @done="onImported" />
     <PullDialog v-if="showPull" @close="showPull = false" />
 
-    <div v-if="state.toast.visible" class="toast" :class="state.toast.type">
+    <!-- 拖拽导入遮罩 -->
+    <div v-if="fileDragging" class="drop-mask">
+      <div class="drop-box">
+        <div class="drop-ico">📄</div>
+        <div>松开即可导入字幕</div>
+        <div class="muted" style="font-size: 12px">支持 .srt / .vtt / .txt，可一次拖多个</div>
+      </div>
+    </div>
+
+    <div
+      v-if="state.toast.visible"
+      class="toast"
+      :class="state.toast.type"
+      role="status"
+      aria-live="polite"
+    >
       {{ state.toast.text }}
     </div>
   </div>
 </template>
+
+<style scoped>
+/* 整窗拖拽遮罩：pointer-events 必须关掉，否则它会挡住后面的 drop 事件 */
+.drop-mask {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: color-mix(in srgb, var(--bg) 72%, transparent);
+  backdrop-filter: blur(2px);
+  pointer-events: none;
+}
+
+.drop-box {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 26px 40px;
+  border: 2px dashed var(--accent);
+  border-radius: 12px;
+  background: var(--panel);
+  color: var(--text);
+  font-size: 14px;
+}
+
+.drop-ico {
+  font-size: 30px;
+}
+</style>
