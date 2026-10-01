@@ -11,14 +11,29 @@ import {
   expandTo,
   invertSelection,
   matchedIndexes,
+  pushUndo,
   ranges,
   registerScroller,
   selectAll,
   selectMatches,
   state,
   toggleSelect,
-  toast
+  toast,
+  undoDepth,
+  undoLabel,
+  undoLastEdit
 } from '../store'
+import EditToolsDialog from './EditToolsDialog.vue'
+
+const showTools = ref(false)
+const canUndo = computed(() => undoDepth.value > 0)
+
+async function doUndo(): Promise<void> {
+  await undoLastEdit()
+  // 撤销可能改动了正文高度，重算一次虚拟列表
+  await nextTick()
+  vlist.refresh()
+}
 
 /* --------------------------------- 虚拟滚动 -------------------------------- */
 
@@ -345,6 +360,8 @@ async function persist(cue: MergedCue): Promise<boolean> {
   if (busy) return false
   busy = true
   try {
+    // 记快照供「撤销」用（只改正文，序号不变）
+    await pushUndo(cue.docId, '编辑字幕正文')
     const ok = await window.api.updateMergedCue(cue.docId, cue.origIndex, cue.text)
     return ok !== false
   } catch (err) {
@@ -471,6 +488,20 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
       <button class="btn sm" title="反选" @click="invertSelection">反选</button>
       <button class="btn sm" title="清除选择" @click="clearSelection">清除</button>
 
+      <span class="divider-v"></span>
+
+      <button class="btn sm" title="批量替换 / 时间轴调整 / 导出 / 复制" @click="showTools = true">
+        字幕工具
+      </button>
+      <button
+        class="btn sm"
+        :disabled="!canUndo"
+        :title="undoLabel ? `撤销：${undoLabel}` : '没有可撤销的操作'"
+        @click="doUndo"
+      >
+        撤销
+      </button>
+
       <span class="grow"></span>
 
       <button
@@ -484,6 +515,8 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
       <button class="btn sm" title="减小字号" @click="changeFont(-1)">A−</button>
       <button class="btn sm" title="增大字号" @click="changeFont(1)">A+</button>
     </div>
+
+    <EditToolsDialog v-if="showTools" @close="showTools = false" />
 
     <div v-if="!state.cues.length" class="empty pane-body">
       <div class="empty-art">📄</div>

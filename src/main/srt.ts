@@ -121,6 +121,78 @@ export function toSrt(cues: Cue[]): string {
     .concat('\n')
 }
 
+/** 字幕列表 → WebVTT 文本（时间用点做小数分隔符，且不写序号） */
+export function toVtt(cues: Cue[]): string {
+  const lines = cues.map((c) => {
+    const from = formatTime(c.start, true).replace(',', '.')
+    const to = formatTime(c.end, true).replace(',', '.')
+    return `${from} --> ${to}\n${c.text.trim()}`
+  })
+  return `WEBVTT\n\n${lines.join('\n\n')}\n`
+}
+
+/** 字幕列表 → 纯文本（每行一句，用于做文案、喂给别的工具） */
+export function toPlainText(cues: Cue[]): string {
+  return cues
+    .map((c) => c.text.trim())
+    .filter(Boolean)
+    .join('\n')
+    .concat('\n')
+}
+
+/**
+ * 批量调整时间轴。
+ *
+ * @param offsetMs 整体平移毫秒数（可为负）
+ * @param scale 倍速缩放（1 = 不变），围绕第一条字幕的起点缩放，避免整段飘走
+ * @returns 新的字幕列表（不修改入参），起点会被夹到 >= 0
+ */
+export function shiftCues(cues: Cue[], offsetMs: number, scale = 1): Cue[] {
+  const offset = Number.isFinite(offsetMs) ? offsetMs / 1000 : 0
+  const k = Number.isFinite(scale) && scale > 0 ? scale : 1
+  const origin = cues.length ? cues[0].start : 0
+  const fix = (t: number): number => Math.max(0, Math.round((origin + (t - origin) * k + offset) * 1000) / 1000)
+  return cues.map((c) => ({ ...c, start: fix(c.start), end: fix(c.end) }))
+}
+
+/** 批量替换结果 */
+export interface ReplaceResult {
+  cues: Cue[]
+  /** 被改动的字幕条数 */
+  changed: number
+}
+
+/**
+ * 批量查找替换。
+ * @param useRegex 为正则模式；正则非法时抛错，由调用方提示用户
+ */
+export function replaceInCues(
+  cues: Cue[],
+  pattern: string,
+  replacement: string,
+  useRegex: boolean,
+  ignoreCase = false
+): ReplaceResult {
+  if (!pattern) return { cues, changed: 0 }
+
+  const re = useRegex
+    ? new RegExp(pattern, ignoreCase ? 'gi' : 'g')
+    : new RegExp(
+        // 非正则模式下把用户输入当字面量，特殊字符全部转义
+        pattern.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'),
+        ignoreCase ? 'gi' : 'g'
+      )
+
+  let changed = 0
+  const next = cues.map((c) => {
+    const text = c.text.replace(re, replacement)
+    if (text === c.text) return c
+    changed++
+    return { ...c, text }
+  })
+  return { cues: next, changed }
+}
+
 /** B站字幕 json（body: [{from,to,content}]）→ Cue[] */
 export function biliSubtitleToCues(json: unknown): Cue[] {
   const body = (json as { body?: Array<{ from: number; to: number; content: string }> })?.body

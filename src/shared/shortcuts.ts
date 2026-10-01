@@ -16,6 +16,7 @@ export type ShortcutAction =
   | 'clearSelection'
   | 'addClip'
   | 'exportCsv'
+  | 'undoEdit'
 
 export interface ShortcutDef {
   id: ShortcutAction
@@ -42,7 +43,8 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'selectAll', label: '全选', description: '选中全部字幕', fallback: 'Ctrl+A' },
   { id: 'clearSelection', label: '清除选择', description: '取消所有已选字幕', fallback: 'Escape' },
   { id: 'addClip', label: '加入切片任务', description: '把当前时间范围加入任务列表', fallback: 'Ctrl+Enter' },
-  { id: 'exportCsv', label: '导出切片表', description: '导出为 CSV', fallback: 'Ctrl+E' }
+  { id: 'exportCsv', label: '导出切片表', description: '导出为 CSV', fallback: 'Ctrl+E' },
+  { id: 'undoEdit', label: '撤销编辑', description: '回退最近一次字幕编辑', fallback: 'Ctrl+Z' }
 ]
 
 export type ShortcutMap = Record<ShortcutAction, string>

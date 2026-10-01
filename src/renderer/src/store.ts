@@ -529,6 +529,99 @@ export async function openSliceOutput(): Promise<void> {
   if (err) toast(err, 'error', 4200)
 }
 
+/* -------------------------------- 编辑撤销 -------------------------------- */
+
+interface UndoEntry {
+  docId: number
+  label: string
+  cues: Cue[]
+}
+
+/** 内存里的编辑撤销栈（最多 20 步，关掉应用即清空） */
+const undoStack: UndoEntry[] = []
+
+export const undoDepth = ref(0)
+export const undoLabel = ref('')
+
+function syncUndoState(): void {
+  undoDepth.value = undoStack.length
+  undoLabel.value = undoStack.length ? undoStack[undoStack.length - 1].label : ''
+}
+
+/**
+ * 在破坏性编辑之前记一份快照。
+ * 快照取的是**该文档自己的字幕**（不是合并列表），因此还原时直接写回即可。
+ */
+export async function pushUndo(docId: number, label: string): Promise<void> {
+  try {
+    const cues = await window.api.getCues(docId)
+    undoStack.push({ docId, label, cues })
+    while (undoStack.length > 20) undoStack.shift()
+  } catch {
+    /* 拿不到快照就不记，不影响编辑本身 */
+  }
+  syncUndoState()
+}
+
+/** 重新加载当前打开的文档（编辑/撤销后刷新阅读区） */
+export async function reloadActiveDoc(): Promise<void> {
+  const id = state.activeDocId
+  if (id == null) return
+  const merged = await window.api.loadMerged(id)
+  if (!merged) return
+  state.doc = merged.doc as SubtitleDoc
+  state.video = merged.video
+  state.docs = merged.docs as SubtitleDoc[]
+  state.cues = merged.cues as MergedCue[]
+}
+
+export async function undoLastEdit(): Promise<void> {
+  const entry = undoStack.pop()
+  syncUndoState()
+  if (!entry) {
+    toast('没有可撤销的操作', 'info')
+    return
+  }
+  await window.api.updateCues(entry.docId, entry.cues)
+  await reloadActiveDoc()
+  toast(`已撤销：${entry.label}`, 'success')
+}
+
+/* -------------------------------- 复制到剪贴板 ------------------------------- */
+
+/** 复制选中的字幕文本（没选中就复制全部），每行一句 */
+export async function copySelectedText(): Promise<void> {
+  const list = state.selected.size
+    ? state.cues.filter((c) => state.selected.has(c.index))
+    : state.cues
+  const text = list
+    .map((c) => c.text.trim())
+    .filter(Boolean)
+    .join('\n')
+  if (!text) {
+    toast('没有可复制的内容', 'error')
+    return
+  }
+  await window.api.copyText(text)
+  toast(`已复制 ${list.length} 条字幕文本`, 'success')
+}
+
+/**
+ * 复制当前光标所在那一条的 B站 链接（带分P 与时间戳）。
+ * 直接粘到浏览器就能跳到那一刻，比手抄时间方便得多。
+ */
+export async function copyTimestampLink(): Promise<void> {
+  const video = state.video
+  const cue = state.cues.find((c) => c.index === state.cursor)
+  if (!video?.bvid || !cue) {
+    toast('需要先打开一个带 BV 号的视频', 'error')
+    return
+  }
+  const url = `https://www.bilibili.com/video/${video.bvid}?p=${cue.page}&t=${Math.max(0, Math.floor(cue.start))}`
+  await window.api.copyText(url)
+  toast(`已复制链接：${url}`, 'success', 4600)
+}
+
 /* -------------------------------- 全库检索 -------------------------------- */
 
 /** 命中的稳定 key（跨文档时序号会重复，必须带上 docId） */

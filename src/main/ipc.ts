@@ -2,7 +2,7 @@
  * 主进程 IPC 注册中心（薄封装）。
  * 业务逻辑位于 services.ts，渲染进程通过 preload 暴露的 window.api 调用。
  */
-import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
 import { existsSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
@@ -17,7 +17,7 @@ import { APP_DATA_DIR } from '@shared/constants'
 import * as bili from './bilibili'
 import { bridge } from './bridge'
 import * as db from './db'
-import { decodeBuffer, parseSrt } from './srt'
+import { decodeBuffer, parseSrt, replaceInCues, shiftCues, toPlainText, toSrt, toVtt } from './srt'
 import {
   exportSlice,
   hasSubtitles,
@@ -32,7 +32,7 @@ import {
   type PullProgress
 } from './services'
 import { loadSettings, saveSettings } from './settings'
-import { readFile } from 'node:fs/promises'
+import { readFile, writeFile } from 'node:fs/promises'
 import { resolveFfmpeg } from './slice/ffmpeg'
 import { sanitizeFileName } from './slice/filename'
 import { runSliceTasks, type SliceProgress, type SliceTaskInput } from './slice/engine'
@@ -99,6 +99,102 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       target.text = payload.text
       db.updateDocCues(payload.docId, cues)
       return true
+    }
+  )
+
+  /* ----------------------------- 批量编辑 / 导出 ----------------------------- */
+
+  /** 批量查找替换（支持正则）。返回改动条数，界面据此决定是否提示。 */
+  ipcMain.handle(
+    'doc:replace',
+    (
+      _e,
+      payload: {
+        docId: number
+        pattern: string
+        replacement: string
+        useRegex: boolean
+        ignoreCase?: boolean
+      }
+    ): OpResult<{ changed: number; total: number }> => {
+      const cues = db.loadCues(payload.docId)
+      if (!cues.length) return { ok: false, message: '这个字幕文档是空的' }
+      let result
+      try {
+        result = replaceInCues(
+          cues,
+          String(payload.pattern ?? ''),
+          String(payload.replacement ?? ''),
+          Boolean(payload.useRegex),
+          Boolean(payload.ignoreCase)
+        )
+      } catch (err) {
+        return { ok: false, message: `正则表达式无效：${(err as Error).message}` }
+      }
+      if (!result.changed) return { ok: true, data: { changed: 0, total: cues.length } }
+      db.updateDocCues(payload.docId, result.cues)
+      return { ok: true, data: { changed: result.changed, total: cues.length } }
+    }
+  )
+
+  /** 整体平移 / 缩放时间轴 */
+  ipcMain.handle(
+    'doc:shift',
+    (
+      _e,
+      payload: { docId: number; offsetMs: number; scale?: number }
+    ): OpResult<{ count: number }> => {
+      const cues = db.loadCues(payload.docId)
+      if (!cues.length) return { ok: false, message: '这个字幕文档是空的' }
+      const next = shiftCues(cues, Number(payload.offsetMs) || 0, Number(payload.scale) || 1)
+      db.updateDocCues(payload.docId, next)
+      return { ok: true, data: { count: next.length } }
+    }
+  )
+
+  /**
+   * 导出字幕文件。
+   * 默认只导出当前文档；`includeAllPages` 为真时把同一视频的所有分P 合成一份。
+   */
+  ipcMain.handle(
+    'doc:exportAs',
+    async (
+      _e,
+      payload: { docId: number; format: 'srt' | 'vtt' | 'txt'; includeAllPages?: boolean }
+    ): Promise<OpResult<{ path: string; count: number }>> => {
+      const doc = db.getDoc(payload.docId)
+      if (!doc) return { ok: false, message: '字幕不存在' }
+      const video = db.getVideo(doc.videoId)
+      const docs = payload.includeAllPages ? db.listDocsByVideo(doc.videoId) : [doc]
+      const cues: Cue[] = []
+      for (const d of docs) cues.push(...db.loadCues(d.id))
+      if (!cues.length) return { ok: false, message: '没有可导出的字幕内容' }
+
+      const format: 'srt' | 'vtt' | 'txt' =
+        payload.format === 'vtt' ? 'vtt' : payload.format === 'txt' ? 'txt' : 'srt'
+      const content =
+        format === 'vtt' ? toVtt(cues) : format === 'txt' ? toPlainText(cues) : toSrt(cues)
+
+      const win = getWindow()
+      const base = sanitizeFileName(video?.title || doc.label || 'subtitle').slice(0, 60)
+      const defaultName = `${base}${payload.includeAllPages ? '_全部' : `_P${doc.page}`}.${format}`
+      const opts: SaveDialogOptions = {
+        title: '导出字幕',
+        defaultPath: join(app.getPath('documents'), defaultName),
+        filters: [
+          { name: format.toUpperCase(), extensions: [format] },
+          { name: '全部文件', extensions: ['*'] }
+        ]
+      }
+      const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
+      if (res.canceled || !res.filePath) return { ok: false, message: '已取消' }
+
+      try {
+        await writeFile(res.filePath, content, 'utf8')
+      } catch (err) {
+        return { ok: false, message: `写入失败：${(err as Error).message}` }
+      }
+      return { ok: true, data: { path: res.filePath, count: cues.length } }
     }
   )
 
@@ -484,6 +580,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
     const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
     return res.canceled ? '' : approve(res.filePath)
+  })
+
+  /** 写系统剪贴板。走主进程而不是渲染进程的 Clipboard API —— 后者在 file:// 下不保证可用。 */
+  ipcMain.handle('clipboard:write', (_e, text: string) => {
+    // 限制长度，避免渲染进程被注入后拿它做内存放大
+    clipboard.writeText(String(text ?? '').slice(0, 500_000))
+    return true
   })
 
   ipcMain.handle('shell:openPath', async (_e, target: string) => {

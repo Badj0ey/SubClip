@@ -13,7 +13,8 @@ import {
   selectAll,
   state,
   toggleSelect,
-  toast
+  toast,
+  undoLastEdit
 } from './store'
 import ResourceTree from './components/ResourceTree.vue'
 import SubtitleReader from './components/SubtitleReader.vue'
@@ -201,6 +202,10 @@ function onKey(e: KeyboardEvent): void {
     case 'exportCsv':
       e.preventDefault()
       void exportSlice('csv')
+      break
+    case 'undoEdit':
+      e.preventDefault()
+      void undoLastEdit()
       break
     default:
       break

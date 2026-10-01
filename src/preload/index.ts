@@ -44,6 +44,30 @@ const api = {
   getCues: (docId: number): Promise<Cue[]> => ipcRenderer.invoke('doc:cues', docId),
   updateCues: (docId: number, cues: Cue[]): Promise<boolean> =>
     ipcRenderer.invoke('doc:updateCues', docId, cues),
+  /** 批量查找替换（支持正则） */
+  replaceInDoc: (payload: {
+    docId: number
+    pattern: string
+    replacement: string
+    useRegex: boolean
+    ignoreCase?: boolean
+  }): Promise<OpResult<{ changed: number; total: number }>> =>
+    ipcRenderer.invoke('doc:replace', payload),
+  /** 整体平移 / 缩放时间轴 */
+  shiftDocTime: (payload: {
+    docId: number
+    offsetMs: number
+    scale?: number
+  }): Promise<OpResult<{ count: number }>> => ipcRenderer.invoke('doc:shift', payload),
+  /** 导出为 SRT / VTT / TXT */
+  exportDocAs: (payload: {
+    docId: number
+    format: 'srt' | 'vtt' | 'txt'
+    includeAllPages?: boolean
+  }): Promise<OpResult<{ path: string; count: number }>> =>
+    ipcRenderer.invoke('doc:exportAs', payload),
+  /** 写系统剪贴板（走主进程，不依赖 file:// 下的 Clipboard API） */
+  copyText: (text: string): Promise<boolean> => ipcRenderer.invoke('clipboard:write', text),
   getDocMeta: (docId: number): Promise<any> => ipcRenderer.invoke('doc:meta', docId),
 
   /** 合并加载同一视频的所有分P 字幕（连续阅读） */

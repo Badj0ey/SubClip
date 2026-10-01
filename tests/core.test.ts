@@ -6,7 +6,16 @@ import assert from 'node:assert'
 import type { Cue } from '../src/shared/types'
 import { formatTime, parseTime } from '../src/shared/time'
 import { buildRanges, normalizeRanges, totalDuration, type RangeCue } from '../src/shared/ranges'
-import { biliSubtitleToCues, decodeBuffer, parseSrt, toSrt } from '../src/main/srt'
+import {
+  biliSubtitleToCues,
+  decodeBuffer,
+  parseSrt,
+  replaceInCues,
+  shiftCues,
+  toPlainText,
+  toSrt,
+  toVtt
+} from '../src/main/srt'
 import { toCsv } from '../src/main/exporter'
 import { sanitizeFileName } from '../src/main/slice/filename'
 import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
@@ -389,6 +398,79 @@ test('空名与超长名有兜底', () => {
   assert.ok(long.length <= 96, `应被截断，实际 ${long.length}`)
   // 截断后不能留下点结尾
   assert.ok(!/[. ]$/.test(sanitizeFileName(`${'a'.repeat(95)}.`)))
+})
+
+/* ------------------------------ 字幕导出与批量编辑 ----------------------------- */
+section('字幕导出与批量编辑')
+
+const sample: Cue[] = [
+  { index: 1, start: 1, end: 3.5, text: '第一句' },
+  { index: 2, start: 3.6, end: 6, text: '第二句，含高光' }
+]
+
+test('导出 WebVTT：带 WEBVTT 头，毫秒用点分隔', () => {
+  const vtt = toVtt(sample)
+  assert.ok(vtt.startsWith('WEBVTT\n\n'), '应以 WEBVTT 头开始')
+  assert.ok(vtt.includes('00:00:01.000 --> 00:00:03.500'), '时间格式应为点分隔')
+  assert.ok(!vtt.includes('--> 00:00:03,500'), '不应残留 SRT 的逗号写法')
+  assert.ok(vtt.includes('第一句'))
+})
+
+test('导出纯文本：每行一句，不含时间轴', () => {
+  const txt = toPlainText(sample)
+  assert.strictEqual(txt, '第一句\n第二句，含高光\n')
+  assert.ok(!txt.includes('-->'))
+})
+
+test('时间轴整体平移（含负值夹到 0）', () => {
+  const forward = shiftCues(sample, 1500)
+  assert.strictEqual(forward[0].start, 2.5)
+  assert.strictEqual(forward[1].end, 7.5)
+
+  const backward = shiftCues(sample, -2000)
+  assert.strictEqual(backward[0].start, 0, '起点不应变成负数')
+  assert.strictEqual(backward[0].end, 1.5)
+  assert.strictEqual(backward[1].start, 1.6)
+})
+
+test('时间轴倍速缩放：围绕第一条起点，不影响入参', () => {
+  const scaled = shiftCues(sample, 0, 2)
+  assert.strictEqual(scaled[0].start, 1, '第一条起点是缩放原点，保持不变')
+  assert.strictEqual(scaled[0].end, 6)
+  assert.strictEqual(scaled[1].start, 6.2)
+  // 原数组不应被改动
+  assert.strictEqual(sample[0].start, 1)
+  assert.strictEqual(sample[1].end, 6)
+})
+
+test('纯文本替换：特殊字符按字面量处理', () => {
+  const res = replaceInCues(sample, '高光', '亮点', false)
+  assert.strictEqual(res.changed, 1)
+  assert.strictEqual(res.cues[1].text, '第二句，含亮点')
+  assert.strictEqual(res.cues[0].text, '第一句', '没命中的不应改动')
+
+  // 正则元字符不应被当成语法
+  const literal = replaceInCues([{ index: 1, start: 0, end: 1, text: 'a.b' }], 'a.b', 'X', false)
+  assert.strictEqual(literal.cues[0].text, 'X')
+})
+
+test('正则替换支持捕获组与忽略大小写', () => {
+  const cues: Cue[] = [{ index: 1, start: 0, end: 1, text: '第12句 and 第34句' }]
+  const grouped = replaceInCues(cues, '第(\\d+)句', '[$1]', true)
+  assert.strictEqual(grouped.cues[0].text, '[12] and [34]')
+
+  const ci = replaceInCues([{ index: 1, start: 0, end: 1, text: 'Hello WORLD' }], 'world', 'x', false, true)
+  assert.strictEqual(ci.cues[0].text, 'Hello x')
+})
+
+test('正则非法时抛错（由调用方提示用户）', () => {
+  assert.throws(() => replaceInCues(sample, '(', 'x', true), /Invalid|Unterminated|nothing to repeat/i)
+})
+
+test('空模式不产生任何改动', () => {
+  const res = replaceInCues(sample, '', 'x', false)
+  assert.strictEqual(res.changed, 0)
+  assert.strictEqual(res.cues, sample)
 })
 
 /* ------------------------------ 插件消息校验 ------------------------------ */
