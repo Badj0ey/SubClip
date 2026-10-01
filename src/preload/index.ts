@@ -12,6 +12,7 @@ import type {
   SliceHistoryEntry,
   SliceProgressInfo,
   SliceRowLike,
+  SubtitleDoc,
   TreeNode
 } from '@shared/types'
 import type { BridgePageInfo, BridgeStatus } from '@shared/bridge'
@@ -78,6 +79,9 @@ const api = {
 
   /** 合并加载同一视频的所有分P 字幕（连续阅读） */
   loadMerged: (docId: number): Promise<any> => ipcRenderer.invoke('doc:loadMerged', docId),
+  /** 同一视频的全部字幕轨（双语对照用） */
+  listSiblingDocs: (docId: number): Promise<SubtitleDoc[]> =>
+    ipcRenderer.invoke('doc:siblings', docId),
   /** 按来源文档写回某一条字幕 */
   updateMergedCue: (docId: number, origIndex: number, text: string): Promise<boolean> =>
     ipcRenderer.invoke('doc:updateMergedCue', { docId, origIndex, text }),

@@ -113,8 +113,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
    */
   ipcMain.handle('doc:loadMerged', (_e, docId: number) => loadMergedDoc(docId))
 
-  /** 保存合并列表中的某一条（按 docId 写回对应文档） */
-  ipcMain.handle(
+  /**
+   * 同一视频的所有字幕轨（含不同语言）。
+   * 双语对照要用它列出「可以拿来跟当前字幕并排看的另一条轨」——
+   * 合并阅读每分P 只取一条，所以另一条不在 state.docs 里。
+   */
+  ipcMain.handle('doc:siblings', (_e, docId: number) => {
+    const doc = db.getDoc(docId)
+    if (!doc) return []
+    return db.listDocsByVideo(doc.videoId)
+  })
+
+  /** 保存合并列表中的某一条（按 docId 写回对应文档） */  ipcMain.handle(
     'doc:updateMergedCue',
     (_e, payload: { docId: number; origIndex: number; text: string }) => {
       const cues = db.loadCues(payload.docId)

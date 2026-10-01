@@ -7,6 +7,7 @@ import { useVirtualList } from '../composables/useVirtualList'
 import {
   applyReadingStyle,
   clearSelection,
+  compareTextFor,
   copyCueLink,
   copyCueTexts,
   editRequest,
@@ -19,6 +20,7 @@ import {
   registerScroller,
   selectAll,
   selectMatches,
+  setCompareDoc,
   state,
   toggleSelect,
   toast,
@@ -333,6 +335,19 @@ onMounted(() => {
   void nextTick(() => applyPendingFocus())
 })
 
+/* -------------------------------- 双语对照 -------------------------------- */
+
+/** 只在开启对照、且该条确实有对应文本时才渲染第二列 */
+function compareText(cue: MergedCue): string {
+  if (state.compareDocId == null) return ''
+  return compareTextFor(cue)
+}
+
+function onCompareChange(e: Event): void {
+  const raw = (e.target as HTMLSelectElement).value
+  void setCompareDoc(raw ? Number(raw) : null)
+}
+
 /* --------------------------------- 右键菜单 -------------------------------- */
 
 const cueMenu = ref<{ x: number; y: number; cue: MergedCue } | null>(null)
@@ -534,6 +549,23 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
 
       <span class="divider-v"></span>
 
+      <!-- 双语对照：只在当前视频确实有多条字幕轨时才出现 -->
+      <template v-if="state.siblingDocs.length > 1">
+        <select
+          class="input"
+          style="width: 132px; padding: 2px 5px"
+          :value="state.compareDocId ?? ''"
+          aria-label="选择对照字幕轨"
+          @change="onCompareChange"
+        >
+          <option value="">不对照</option>
+          <option v-for="d in state.siblingDocs" :key="d.id" :value="d.id">
+            P{{ d.page }} {{ d.label }}
+          </option>
+        </select>
+        <span class="divider-v"></span>
+      </template>
+
       <button class="btn sm" title="批量替换 / 时间轴调整 / 导出 / 复制" @click="showTools = true">
         字幕工具
       </button>
@@ -600,7 +632,8 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
           checked: isChecked(cue),
           cursor: state.cursor === cue.index,
           'read-line': readLineIndex === cue.index,
-          'page-start': isPageStart(startIndex + vi)
+          'page-start': isPageStart(startIndex + vi),
+          'has-alt': Boolean(compareText(cue))
         }"
         :data-page="isPageStart(startIndex + vi) ? pageLabel(cue.page) : null"
         @click="onRowClick(cue, $event)"
@@ -637,6 +670,11 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
             <mark v-if="seg.m">{{ seg.t }}</mark>
             <template v-else>{{ seg.t }}</template>
           </template>
+        </span>
+
+        <!-- 双语对照：对照轨的同一句显示在右侧一列 -->
+        <span v-if="compareText(cue)" class="text-alt" :title="compareText(cue)">
+          {{ compareText(cue) }}
         </span>
 
         <button
@@ -741,6 +779,26 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
   font-size: 36px;
   opacity: 0.3;
   margin-bottom: 8px;
+}
+
+/*
+ * 双语对照的第二列。
+ * 用虚线分隔 + 稍暗的颜色，让「哪一列是原文」一眼可辨，而不是两列糊成一片。
+ */
+.text-alt {
+  flex: 0 0 40%;
+  min-width: 0;
+  padding-left: 10px;
+  border-left: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-size: 0.94em;
+  line-height: 1.6;
+  word-break: break-word;
+}
+
+/* 开启对照时原文列收窄，两列才排得下 */
+.cue.has-alt .text {
+  flex: 1 1 56%;
 }
 
 .cue-editor {

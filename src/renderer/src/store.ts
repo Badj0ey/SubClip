@@ -62,6 +62,16 @@ export const state = reactive({
   /** 用 `${docId}:${index}` 作 key，避免跨文档时序号撞车 */
   searchSelected: new Set<string>(),
   searching: false,
+  /* 双语对照 */
+  /** 同一视频的全部字幕轨（含不同语言） */
+  siblingDocs: [] as SubtitleDoc[],
+  /** 对照轨的 docId；为 null 表示未开启对照 */
+  compareDocId: null as number | null,
+  /** 对照轨属于哪个分P（对照只在同一分P 内有意义） */
+  comparePage: null as number | null,
+  /** 对照轨的正文 */
+  compareCues: [] as Cue[],
+
   /** 是否已经搜过一次（用于区分「还没搜」和「没结果」） */
   searchDone: false,
   searchNotePrefix: '检索',
@@ -298,6 +308,8 @@ export async function openDoc(docId: number, key = '', focusOrigIndex?: number):
     state.focusNonce++
     if (key) state.activeKey = key
     state.view = 'library'
+    // 换文档了，对照轨要跟着重算（不在同一视频里就自动关掉）
+    await loadSiblingDocs()
   } finally {
     state.loading = false
   }
@@ -611,6 +623,63 @@ export async function openSliceOutput(): Promise<void> {
   }
   const err = await window.api.openPath(dir)
   if (err) toast(err, 'error', 4200)
+}
+
+/* -------------------------------- 双语对照 -------------------------------- */
+
+/**
+ * 列出同一视频的全部字幕轨，供「对照」下拉选择。
+ * 合并阅读每分P 只取一条轨，所以另一条语言不在 state.docs 里，必须单独查。
+ */
+export async function loadSiblingDocs(): Promise<void> {
+  const id = state.doc?.id
+  state.siblingDocs = id == null ? [] : await window.api.listSiblingDocs(id)
+  // 当前对照轨已不在这个视频里（比如换视频了）就自动关掉
+  if (state.compareDocId != null && !state.siblingDocs.some((d) => d.id === state.compareDocId)) {
+    state.compareDocId = null
+    state.comparePage = null
+    state.compareCues = []
+  }
+}
+
+/** 开启 / 关闭对照，或换一条对照轨 */
+export async function setCompareDoc(docId: number | null): Promise<void> {
+  if (docId == null) {
+    state.compareDocId = null
+    state.comparePage = null
+    state.compareCues = []
+    return
+  }
+  const doc = state.siblingDocs.find((d) => d.id === docId)
+  state.compareDocId = docId
+  state.comparePage = doc?.page ?? null
+  state.compareCues = (await window.api.getCues(docId)) as Cue[]
+}
+
+/**
+ * 找出与某条合并字幕对应的对照文本。
+ *
+ * 前提是「同一分P」—— 拿 P1 的中文去对 P2 的英文没有意义，所以分P 不同直接返回空。
+ * 优先按相同原始序号匹配（翻译轨通常与原文轨一一对应）；
+ * 对不上时退化为时间重叠最多的那条。
+ */
+export function compareTextFor(cue: MergedCue): string {
+  if (!state.compareCues.length || state.comparePage == null) return ''
+  if (state.comparePage !== cue.page) return ''
+
+  const exact = state.compareCues.find((c) => c.index === cue.origIndex)
+  if (exact) return exact.text
+
+  let best = ''
+  let bestScore = -1
+  for (const c of state.compareCues) {
+    const overlap = Math.min(cue.end, c.end) - Math.max(cue.start, c.start)
+    if (overlap > bestScore) {
+      bestScore = overlap
+      best = c.text
+    }
+  }
+  return bestScore > 0 ? best : ''
 }
 
 /* -------------------------------- 拖拽导入 -------------------------------- */

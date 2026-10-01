@@ -788,6 +788,61 @@ test('非法 JSON 与缺数组都抛错（由调用方提示用户）', () => {
   assert.throws(() => parseClipTasksJson('{"foo":1}'), /没有找到任务数组/)
 })
 
+/* ------------------------------ 双语对照对齐 ------------------------------ */
+section('双语对照对齐')
+
+/** 复刻 store 里 compareTextFor 的匹配规则（那边依赖响应式状态，这里单独验证算法） */
+function alignCompare(
+  cue: { page: number; origIndex: number; start: number; end: number },
+  comparePage: number | null,
+  pool: Array<{ index: number; start: number; end: number; text: string }>
+): string {
+  if (!pool.length || comparePage == null) return ''
+  if (comparePage !== cue.page) return ''
+  const exact = pool.find((c) => c.index === cue.origIndex)
+  if (exact) return exact.text
+  let best = ''
+  let bestScore = -1
+  for (const c of pool) {
+    const overlap = Math.min(cue.end, c.end) - Math.max(cue.start, c.start)
+    if (overlap > bestScore) {
+      bestScore = overlap
+      best = c.text
+    }
+  }
+  return bestScore > 0 ? best : ''
+}
+
+const enPool = [
+  { index: 1, start: 0, end: 3, text: 'Hello' },
+  { index: 2, start: 4, end: 7, text: 'World' }
+]
+
+test('同一分P 且序号相同 → 直接取对照轨那一条', () => {
+  assert.strictEqual(
+    alignCompare({ page: 1, origIndex: 2, start: 4, end: 7 }, 1, enPool),
+    'World'
+  )
+})
+
+test('序号对不上时按时间重叠最多的匹配', () => {
+  const shifted = [{ index: 9, start: 5, end: 8, text: 'Overlap' }]
+  assert.strictEqual(alignCompare({ page: 1, origIndex: 2, start: 4, end: 7 }, 1, shifted), 'Overlap')
+})
+
+test('完全没有时间重叠 → 不硬凑，返回空', () => {
+  const far = [{ index: 9, start: 100, end: 110, text: 'Far' }]
+  assert.strictEqual(alignCompare({ page: 1, origIndex: 2, start: 4, end: 7 }, 1, far), '')
+})
+
+test('分P 不同就不对照（拿 P1 中文对 P2 英文没有意义）', () => {
+  assert.strictEqual(alignCompare({ page: 1, origIndex: 1, start: 0, end: 3 }, 2, enPool), '')
+})
+
+test('未选择对照轨 → 返回空', () => {
+  assert.strictEqual(alignCompare({ page: 1, origIndex: 1, start: 0, end: 3 }, null, enPool), '')
+})
+
 /* --------------------------------- 快捷键 -------------------------------- */
 section('快捷键')
 
