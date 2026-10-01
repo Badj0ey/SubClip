@@ -17,6 +17,7 @@ import type { BiliVideoInfo } from '@shared/types'
 import * as bili from '../bilibili'
 import { loadSettings } from '../settings'
 import { downloadRange, downloadRangesConcurrent } from './downloader'
+import { sanitizeFileName } from './filename'
 import { concatVideos, cutAndMux, resolveFfmpeg } from './ffmpeg'
 import { getPlayInfo, type DashStream, type PlayInfo } from './playurl'
 import { buildChunks, computeRange, parallelFactor, parseSidx, splitRange } from './sidx'
@@ -56,14 +57,20 @@ export interface SliceResult {
   messages: string[]
 }
 
-function sanitize(name: string): string {
-  return (
-    String(name || 'clip')
-      .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
-      .replace(/\s+/g, ' ')
-      .trim()
-      .slice(0, 96) || 'clip'
-  )
+/**
+ * 尽力删除临时文件。
+ * 取消切片时 ffmpeg 的子进程可能还没释放句柄，`rmSync` 会抛 EBUSY/EPERM；
+ * 以前这个异常会往外冒，被当成「该任务切片失败」，还在输出目录里留下 .m4s 垃圾。
+ */
+function safeRemove(...paths: Array<string | null | undefined>): void {
+  for (const p of paths) {
+    if (!p) continue
+    try {
+      rmSync(p, { force: true })
+    } catch {
+      /* 句柄未释放时删不掉，忽略即可，不该让整个任务失败 */
+    }
+  }
 }
 
 /** 下载某个流在 [startSec, endSec] 内需要的字节，返回分片数据与裁剪参数 */
@@ -183,8 +190,7 @@ async function sliceSegment(
       signal: ctx.signal
     })
   } finally {
-    rmSync(videoFile, { force: true })
-    if (audioFile) rmSync(audioFile, { force: true })
+    safeRemove(videoFile, audioFile)
   }
 }
 
@@ -238,7 +244,7 @@ export async function runSliceTasks(
 
     try {
       report('resolve', 3)
-      const output = join(outDir, `${sanitize(label)}.mp4`)
+      const output = join(outDir, `${sanitizeFileName(label)}.mp4`)
 
       if (segments.length === 1) {
         await sliceSegment(ctx, task.bvid, segments[0], output, stamp)
@@ -263,7 +269,7 @@ export async function runSliceTasks(
             await concatVideos(ffmpeg, temps, output, { signal, reencode: true })
           }
         } finally {
-          for (const t of temps) rmSync(t, { force: true })
+          safeRemove(...temps)
         }
       }
 

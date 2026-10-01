@@ -40,10 +40,21 @@ export async function downloadRange(
       if (!res.ok) throw new Error(`下载失败 HTTP ${res.status}`)
 
       const raw = Buffer.from(await res.arrayBuffer())
-      const out =
-        res.status !== 206 && raw.length > end - start + 1
-          ? raw.subarray(start, end + 1)
-          : raw
+      let out: Buffer
+      if (res.status === 206) {
+        // 服务器按 Range 返回，直接用
+        out = raw
+      } else {
+        // 200：服务器忽略了 Range，可能返回整个文件（能自己裁），也可能被中间层截断。
+        // 以前这里不校验长度，短包会被当成完整数据一路拼下去，
+        // 最后只在 ffmpeg 阶段报一个看不懂的错。宁可在这里明确失败。
+        if (raw.length < end + 1) {
+          throw new Error(
+            `服务器未按 Range 返回且数据不完整：需要到第 ${end} 字节，实际只收到 ${raw.length} 字节`
+          )
+        }
+        out = raw.subarray(start, end + 1)
+      }
 
       onBytes?.(out.length)
       return out

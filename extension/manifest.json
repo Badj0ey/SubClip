@@ -2,6 +2,7 @@
   "manifest_version": 3,
   "name": "SRT 字幕助手 · B站桥接",
   "version": "0.1.0",
+  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoQH17z4OwKMxvRX6hwYjHoB1cGyr6RzAqMPTkumS1NGRyQes0l5sc7nep5yksRHtf6GFu/nCYdZCRgVI1+pmVbipsnj4XlBOpC1cVSMc4y5mb38P7wa7V3CHamk+i1dSJISlKsdLQL1XacgoYoXQVxWu1JtDXgVSR2TNyLQ+1sCyli6G3pi2sKmCl5ryoIh1yaTpDW/7kv+G7qIZv1PpMkE3oCWc2XoGDSvO2n5FKYK4FK2YU7GTGRm9Mz6wpfII3jllhDvOfDgcwiQXZfsjv5qWNcp/adZeg4/FaZVtR1WczqXKqwAlsljxcguNGQTELpY5kV4Z8RNXNMShJ11WNQIDAQAB",
   "description": "检测 B 站视频 / 合集 / 收藏夹 / 投稿页面，把视频信息与字幕同步到本地「SRT 字幕检索与视频切片辅助工具」。",
   "minimum_chrome_version": "116",
   "permissions": ["storage", "alarms", "declarativeNetRequest", "scripting", "cookies"],

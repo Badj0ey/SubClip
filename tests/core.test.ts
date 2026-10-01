@@ -8,6 +8,8 @@ import { formatTime, parseTime } from '../src/shared/time'
 import { buildRanges, normalizeRanges, totalDuration, type RangeCue } from '../src/shared/ranges'
 import { biliSubtitleToCues, decodeBuffer, parseSrt, toSrt } from '../src/main/srt'
 import { toCsv } from '../src/main/exporter'
+import { sanitizeFileName } from '../src/main/slice/filename'
+import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
 import * as constants from '../src/shared/constants'
 import {
   DEFAULT_SHORTCUTS,
@@ -348,6 +350,170 @@ test('共享常量里不再内置开发机绝对路径', () => {
   }
   assert.strictEqual(constants.DEFAULT_PORT, 8765)
   assert.strictEqual(constants.APP_DATA_DIR, 'srt-tool-data')
+})
+
+/* ------------------------------ 切片输出文件名 ----------------------------- */
+section('切片输出文件名净化')
+
+test('普通名字原样保留', () => {
+  assert.strictEqual(sanitizeFileName('A-SOUL-开场片段'), 'A-SOUL-开场片段')
+})
+
+test('非法字符替换成下划线（目录穿越被消解）', () => {
+  assert.strictEqual(sanitizeFileName('a/b\\c:d*e?f'), 'a_b_c_d_e_f')
+  assert.strictEqual(sanitizeFileName('..\\..\\Windows\\evil'), '.._.._Windows_evil')
+  assert.ok(!sanitizeFileName('..\\..\\evil').includes('\\'))
+})
+
+test('去掉结尾的点和空格（Windows 会悄悄吞掉，导致上报的文件名与实际不符）', () => {
+  assert.strictEqual(sanitizeFileName('clip.'), 'clip')
+  assert.strictEqual(sanitizeFileName('clip...'), 'clip')
+  assert.strictEqual(sanitizeFileName('clip   '), 'clip')
+  assert.strictEqual(sanitizeFileName('clip. . '), 'clip')
+})
+
+test('Windows 保留设备名加前缀避开', () => {
+  for (const n of ['CON', 'con', 'NUL', 'COM1', 'LPT9', 'aux', 'prn']) {
+    assert.strictEqual(sanitizeFileName(n), `_${n}`)
+  }
+  // 只是以保留名开头、但不是保留名的，不该被改
+  assert.strictEqual(sanitizeFileName('console'), 'console')
+  assert.strictEqual(sanitizeFileName('COM10'), 'COM10')
+})
+
+test('空名与超长名有兜底', () => {
+  assert.strictEqual(sanitizeFileName(''), 'clip')
+  assert.strictEqual(sanitizeFileName('   '), 'clip')
+  assert.strictEqual(sanitizeFileName('...'), 'clip')
+  const long = sanitizeFileName('长'.repeat(200))
+  assert.ok(long.length <= 96, `应被截断，实际 ${long.length}`)
+  // 截断后不能留下点结尾
+  assert.ok(!/[. ]$/.test(sanitizeFileName(`${'a'.repeat(95)}.`)))
+})
+
+/* ------------------------------ 插件消息校验 ------------------------------ */
+section('插件消息校验（安全边界）')
+
+const hello = { bvid: 'BV1GJ411x7h7' }
+const sub = (extra: Record<string, unknown> = {}): string =>
+  JSON.stringify({
+    type: 'subtitle',
+    payload: {
+      bvid: hello.bvid,
+      page: 1,
+      lang: 'zh-CN',
+      label: '简体中文',
+      cues: [{ from: 1, to: 2, content: '正常字幕' }],
+      ...extra
+    }
+  })
+
+test('合法消息通过并规整字段', () => {
+  const msg = parseClientMessage(sub())
+  assert.ok(msg && msg.type === 'subtitle')
+  if (msg?.type !== 'subtitle') throw new Error('unreachable')
+  assert.strictEqual(msg.payload.bvid, hello.bvid)
+  assert.strictEqual(msg.payload.cues.length, 1)
+})
+
+test('非法 JSON / 非对象 / 未知类型一律丢弃', () => {
+  assert.strictEqual(parseClientMessage('这不是 JSON'), null)
+  assert.strictEqual(parseClientMessage('[]'), null)
+  assert.strictEqual(parseClientMessage('null'), null)
+  assert.strictEqual(parseClientMessage('{"payload":{}}'), null)
+  assert.strictEqual(parseClientMessage('{"type":"no-such-type"}'), null)
+})
+
+test('BV 号必须合法，否则整条丢弃（防止 bvid 为空的垃圾条目）', () => {
+  assert.strictEqual(parseClientMessage(sub({ bvid: '' })), null)
+  assert.strictEqual(parseClientMessage(sub({ bvid: '不是BV' })), null)
+  assert.strictEqual(parseClientMessage(sub({ bvid: 'BV1GJ411x7h' })), null) // 少一位
+})
+
+test('字幕正文按上限截断，空白与非法时间被剔除', () => {
+  const raw = JSON.stringify({
+    type: 'subtitle',
+    payload: {
+      bvid: hello.bvid,
+      page: 1,
+      lang: 'zh-CN',
+      label: 'x',
+      cues: [
+        { from: 1, to: 2, content: '好的' },
+        { from: 1, to: 2, content: '   ' }, // 空白 → 丢
+        { from: Number.NaN, to: 2, content: 'NaN 起点' }, // → 丢
+        { from: -5, to: 2, content: '负起点' }, // → 丢
+        null,
+        '字符串项',
+        { from: 3, to: 1, content: '终点早于起点' } // to 回退成 from
+      ]
+    }
+  })
+  const msg = parseClientMessage(raw)
+  assert.ok(msg && msg.type === 'subtitle')
+  if (msg?.type !== 'subtitle') throw new Error('unreachable')
+  assert.strictEqual(msg.payload.cues.length, 2, '只应保留两条合法字幕')
+  assert.strictEqual(msg.payload.cues[0].content, '好的')
+  assert.strictEqual(msg.payload.cues[1].from, 3)
+  assert.strictEqual(msg.payload.cues[1].to, 3, '终点早于起点时应回退为起点')
+})
+
+test('超长字幕正文被截断而不是原样入库', () => {
+  const msg = parseClientMessage(
+    sub({ cues: [{ from: 0, to: 1, content: 'x'.repeat(5000) }] })
+  )
+  assert.ok(msg && msg.type === 'subtitle')
+  if (msg?.type !== 'subtitle') throw new Error('unreachable')
+  assert.ok(msg.payload.cues[0].content.length <= BRIDGE_LIMITS.maxCueText)
+})
+
+test('page-info 兼容旧插件的 mid 字段并归一成 uid', () => {
+  const raw = JSON.stringify({
+    type: 'page-info',
+    payload: {
+      pageType: 'video',
+      bvid: hello.bvid,
+      title: '标题',
+      url: 'https://www.bilibili.com/video/BV1GJ411x7h7',
+      page: 2,
+      uploader: { mid: 12345, name: 'UP主', avatar: null }
+    }
+  })
+  const msg = parseClientMessage(raw)
+  assert.ok(msg && msg.type === 'page-info')
+  if (msg?.type !== 'page-info') throw new Error('unreachable')
+  assert.strictEqual(msg.payload.uploader.uid, 12345)
+  assert.strictEqual(msg.payload.page, 2)
+  assert.strictEqual(msg.payload.pageType, 'video')
+})
+
+test('page-info 的 pageType 只接受枚举值', () => {
+  const raw = JSON.stringify({
+    type: 'page-info',
+    payload: { pageType: '不存在的类型', bvid: '', title: '', url: '', page: 0, uploader: {} }
+  })
+  const msg = parseClientMessage(raw)
+  assert.ok(msg && msg.type === 'page-info')
+  if (msg?.type !== 'page-info') throw new Error('unreachable')
+  assert.strictEqual(msg.payload.pageType, 'unknown')
+  assert.strictEqual(msg.payload.page, 1, 'page 至少为 1')
+})
+
+test('cookies 缺少内容或超长时丢弃', () => {
+  const build = (cookie: string): string =>
+    JSON.stringify({ type: 'cookies', payload: { cookie, loggedIn: true, count: 1 } })
+  assert.strictEqual(parseClientMessage(build('')), null)
+  assert.strictEqual(parseClientMessage(JSON.stringify({ type: 'cookies', payload: {} })), null)
+  assert.strictEqual(
+    parseClientMessage(build('SESSDATA=' + 'x'.repeat(BRIDGE_LIMITS.maxCookie + 10))),
+    null
+  )
+  assert.ok(parseClientMessage(build('SESSDATA=abc')))
+})
+
+test('整条报文超过体积上限直接丢弃', () => {
+  const huge = 'x'.repeat(BRIDGE_LIMITS.maxMessageBytes + 1)
+  assert.strictEqual(parseClientMessage(huge), null)
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

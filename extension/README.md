@@ -94,9 +94,18 @@ B 站的登录凭证 `SESSDATA` 通常是 `SameSite=Lax`。而 service worker �
 
 与桌面端共享，定义见 `shared/protocol.js`（桌面端对应 `src/shared/bridge.ts`）：
 
-- **当前协议版本：2**（`hello-ack` 回包里带 `protocol` 字段，可据此确认两端一致）
+- **当前协议版本：3**（`hello-ack` 回包里带 `protocol` 字段，可据此确认两端一致）
 - v2 的改动：UP主 字段由 `uploader.mid` 改为 `uploader.uid`（B站接口里仍叫 `owner.mid`）。
   桌面端读取时会兼容旧字段名，所以插件没更新也不会立刻坏掉。
+- v3 的改动：桌面端会**校验握手来源**，只放行本扩展；`hello` 里新增可选 `token`（配对令牌）。
+  扩展 ID 由 `manifest.json` 的 `key` 字段钉死为 `lmchilpnlhdfbpjklnfpfgkbddcdekpl`，
+  桌面端的白名单与它一一对应（`npm run test:wbi` 会校验两者一致）。
+
+> **为什么必须校验来源**：WebSocket 握手不受 CORS 约束，任何网页都能连 `ws://127.0.0.1:端口`。
+> 只绑回环地址挡不住本机网页，所以来源校验是这里的关键一道闸门。
+
+如果要启用配对令牌：在桌面端「设置 → 浏览器插件通信 → 配对令牌」点「生成」，
+把生成的值粘贴到插件弹窗的「配对令牌」里保存即可（留空表示不校验）。
 
 | 方向 | 消息 |
 | --- | --- |

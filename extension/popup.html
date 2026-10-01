@@ -19,7 +19,15 @@
         <input id="port" type="number" min="1" max="65535" />
         <button id="btnSavePort" class="ghost">保存</button>
       </div>
+      <div class="row" style="margin-top: 6px">
+        <label>配对令牌</label>
+        <input id="token" type="text" placeholder="留空即可" spellcheck="false" />
+        <button id="btnSaveToken" class="ghost">保存</button>
+      </div>
       <div class="hint" id="hint"></div>
+      <div class="hint">
+        桌面端「设置 → 浏览器插件通信」里如果填了令牌，这里要填一样的值；留空则只做来源校验。
+      </div>
     </section>
 
     <section class="card">

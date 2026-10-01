@@ -38,6 +38,23 @@
 
 插件安装与使用见 [`extension/README.md`](extension/README.md)。
 
+#### 本地服务的安全模型（重要）
+
+WebSocket 握手**不受 CORS 约束** —— 只绑 `127.0.0.1` 挡得住外部主机，**挡不住本机网页**：
+用户访问的任何一个页面都能向 `ws://127.0.0.1:8765` 发起连接。所以本地服务自带三道闸门：
+
+| 闸门 | 作用 |
+| --- | --- |
+| **Origin 白名单** | 只放行固定 ID 的自家扩展（`manifest.json` 的 `key` 字段把扩展 ID 钉死为 `lmchilpnlhdfbpjklnfpfgkbddcdekpl`）。来源不符时回一条说明并立即断开，不给任何数据 |
+| **逐类型消息校验** | 所有入站消息都要过 `parseClientMessage`：BV 号格式、时间必须是有限数、字幕条数与字符串长度都有上限，超限一律丢弃 |
+| **maxPayload + 速率限制** | 单帧上限 512 KB（`ws` 默认是 100 MiB，一条畸形帧就能打爆主进程内存）；单连接每秒消息数超限即断开 |
+
+另外提供**可选的配对令牌**（设置 → 浏览器插件通信）：生成随机串后，插件必须在握手时带上同样的值才能提交数据。
+默认留空 —— 来历不明的网页已经过不了 Origin 白名单，令牌主要用来防「本机其它程序伪造 Origin」这类更边缘的情况。
+
+> 渲染进程也不被无条件信任：主进程只读写「用户本人在系统对话框里选过的路径」，
+> 「打开」按钮限制在应用自己的几个目录内，并拒绝可执行扩展名。
+
 ### Phase 4：UI 打磨、自定义快捷键、虚拟滚动、正文编辑 ✅
 
 | 需求（文档 7 / 9） | 实现情况 |
@@ -132,11 +149,11 @@ app/
 │   ├── shared/bilibili.js      # B站接口
 │   └── README.md               # 插件安装与说明
 └── tests/
-    ├── core.test.ts            # 核心逻辑 + 快捷键单测（45 项）
-    ├── wbi.test.ts             # 插件 WBI 签名 / MD5 正确性 + 协议与版本一致性（17 项）
+    ├── core.test.ts            # 核心逻辑 + 快捷键 + 文件名净化 + 协议校验（59 项）
+    ├── wbi.test.ts             # WBI 签名 / 协议 / 版本 / 扩展 ID 一致性（18 项）
     ├── sidx.test.ts            # 切片 SIDX 解析与区间计算（14 项）
     ├── smoke.ts                # Electron 端到端冒烟测试（21 项）
-    ├── bridge.smoke.ts         # 插件通信端到端测试（21 项）
+    ├── bridge.smoke.ts         # 插件通信端到端 + 来源校验 / 配对令牌（27 项）
     ├── demo.srt                # 演示字幕
     ├── gen-large-srt.mjs       # 开发辅助：生成超大字幕文件
     ├── fake-plugin.mjs         # 开发辅助：模拟插件客户端
@@ -156,7 +173,7 @@ npm install
 npm run dev        # 开发模式（热更新）
 npm run build      # 构建到 out/
 npm run typecheck  # 类型检查（渲染进程 + 主进程 + 测试 + 插件脚本）
-npm test           # 运行全部测试（45 + 17 + 14 + 21 + 21 项）
+npm test           # 运行全部测试（59 + 18 + 14 + 21 + 27 项）
 ```
 
 调试辅助：
@@ -288,7 +305,7 @@ npm run dist:dir   # 只解包、不生成安装包（验证打包配置时更�
 
 - **B 站接口**：非公开稳定 API，站点改版后可能需要更新 `src/main/bilibili.ts` 与 `extension/shared/bilibili.js`。仅处理当前账号有权访问的字幕，不绕过付费 / 私密 / 地区限制。
 - **插件页面选择器**：B 站前端改版可能导致 `extension/content.js` 的 DOM 选择器失效，届时需同步更新。UP主 UID 读不到时，该条会先按昵称分组，补上页面信息后才会并到真实 UP主 下。
-- **插件协议版本**：当前为 v2（`uploader.mid` → `uploader.uid`）。桌面端兼容旧字段名，但**改了协议记得两边一起更新**（`src/shared/bridge.ts` ↔ `extension/shared/protocol.js`），`npm run test:wbi` 会校验两边版本号一致。
+- **插件协议版本**：当前为 **v3**（v2 把 UP主 字段 `uploader.mid` 改为 `uploader.uid`；v3 加入握手来源校验与配对令牌，并收紧消息校验）。桌面端兼容旧的 `mid` 字段名，但**改了协议记得两边一起更新**（`src/shared/bridge.ts` ↔ `extension/shared/protocol.js`），`npm run test:wbi` 会校验版本号与扩展 ID 一致。
 - **推送陌生 BV 号时会多一次接口调用**：本地没有该 BV 号时需要先查一次视频信息才能归对分组；未登录 / 断网时会退化成「未关联」占位，之后可自动归位。
 - **MV3 保活**：service worker 被浏览器回收后，靠 `chrome.alarms` 每分钟唤醒重连，极端情况下有约 1 分钟的重连空窗。
 - **批量编辑**：目前只能逐条编辑正文；批量替换 / 时间轴微调尚未提供。

@@ -11,8 +11,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { TreeNode } from '../src/shared/types'
+import { BRIDGE_ALLOWED_ORIGINS } from '../src/shared/bridge'
 import { bridge } from '../src/main/bridge'
 import * as db from '../src/main/db'
+import { loadSettings } from '../src/main/settings'
 import { wireBridge } from '../src/main/wire'
 
 const PORT = 18765
@@ -351,6 +353,67 @@ async function run(): Promise<void> {
     assert.strictEqual(s.clients.length, 1)
   })
 
+  /* --------------------------- 握手来源校验（安全） -------------------------- */
+  // 对应历史上真实存在过的漏洞：任意网页都能连本地服务并改写桌面端存的登录凭证。
+  const cookieBefore = loadSettings().biliCookie
+  const evilInbox: any[] = []
+  const evil = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://evil.example' })
+  evil.on('open', () => {
+    try {
+      evil.send(
+        JSON.stringify({
+          type: 'cookies',
+          payload: { cookie: 'SESSDATA=attacker-controlled', loggedIn: true, count: 1 }
+        })
+      )
+    } catch {
+      /* 服务端可能已经断开 */
+    }
+  })
+  evil.on('message', (raw) => evilInbox.push(JSON.parse(raw.toString())))
+  evil.on('error', () => {
+    /* 被主动断开是预期行为 */
+  })
+  await new Promise<void>((resolve) => {
+    evil.on('close', () => resolve())
+    setTimeout(resolve, 3000)
+  })
+
+  check('拒绝来历不明的网页来源（Origin 白名单）', () => {
+    const ack = evilInbox.find((m) => m.type === 'hello-ack')
+    assert.ok(ack, '应收到一条用于说明拒绝原因的 hello-ack')
+    assert.strictEqual(ack.rejected, true, 'hello-ack 应标记 rejected')
+    assert.strictEqual(evil.readyState, WebSocket.CLOSED, '连接应被关闭')
+  })
+
+  check('被拒绝的网页改不了桌面端的登录凭证', () => {
+    assert.strictEqual(loadSettings().biliCookie, cookieBefore, 'biliCookie 不应被改写')
+  })
+
+  check('被拒绝的连接不计入在线插件', () => {
+    assert.strictEqual(bridge.status().clients.length, 1, '只应剩原来那个客户端')
+  })
+
+  const goodInbox: any[] = []
+  const good = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: BRIDGE_ALLOWED_ORIGINS[0] })
+  good.on('message', (raw) => goodInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    good.on('open', () => resolve())
+    good.on('error', reject)
+  })
+  await wait(300)
+
+  check('放行自家扩展的固定来源（chrome-extension://<固定 ID>）', () => {
+    const ack = goodInbox.find((m) => m.type === 'hello-ack')
+    assert.ok(ack, '应收到 hello-ack')
+    assert.notStrictEqual(ack.rejected, true, '不应被拒绝')
+    assert.strictEqual(good.readyState, WebSocket.OPEN, '连接应保持打开')
+    assert.strictEqual(bridge.status().clients.length, 2)
+  })
+
+  good.close()
+  await wait(250)
+
   /* ------------------------------ 反向请求下发 ----------------------------- */
   check('可向插件下发字幕抓取请求', () => {
     const ok = bridge.requestSubtitles('BV1GJ411x7h7', 2, 999)
@@ -400,6 +463,83 @@ async function run(): Promise<void> {
   check('停止后状态为未运行', () => {
     assert.strictEqual(bridge.status().running, false)
   })
+
+  /* ------------------------------- 配对令牌 ------------------------------- */
+  bridge.configure({ token: 'test-secret' })
+  bridge.start(PORT)
+  await wait(400)
+
+  const targetVideo = db.findVideoByBvid('BV1GJ411x7h7')
+  assert.ok(targetVideo, '测试视频应已存在')
+  const pageDocs = (): number[] => db.listDocsByVideo(targetVideo!.id).map((d) => d.page)
+
+  const noTokenInbox: any[] = []
+  const noToken = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  noToken.on('message', (raw) => noTokenInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    noToken.on('open', () => resolve())
+    noToken.on('error', reject)
+  })
+  noToken.send(JSON.stringify({ type: 'hello', version: '1.0.0', browser: 'Edge' }))
+  noToken.send(
+    JSON.stringify({
+      type: 'subtitle',
+      payload: {
+        bvid: 'BV1GJ411x7h7',
+        page: 9,
+        lang: 'xx',
+        label: '未认证',
+        cues: [{ from: 0, to: 1, content: '不应入库' }]
+      }
+    })
+  )
+  await wait(500)
+
+  check('设了配对令牌后，不带令牌的连接只能握手、不能提交数据', () => {
+    const ack = noTokenInbox.find((m) => m.type === 'hello-ack')
+    assert.strictEqual(ack?.tokenRequired, true, 'hello-ack 应提示需要令牌')
+    assert.ok(
+      noTokenInbox.some((m) => m.type === 'ack' && m.ok === false),
+      '应收到明确的拒绝回执'
+    )
+    assert.ok(!pageDocs().includes(9), '未认证连接推来的字幕不应入库')
+  })
+
+  const withTokenInbox: any[] = []
+  const withToken = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  withToken.on('message', (raw) => withTokenInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    withToken.on('open', () => resolve())
+    withToken.on('error', reject)
+  })
+  withToken.send(
+    JSON.stringify({ type: 'hello', version: '1.0.0', browser: 'Edge', token: 'test-secret' })
+  )
+  withToken.send(
+    JSON.stringify({
+      type: 'subtitle',
+      payload: {
+        bvid: 'BV1GJ411x7h7',
+        page: 9,
+        lang: 'xx',
+        label: '已认证',
+        cues: [{ from: 0, to: 1, content: '应入库' }]
+      }
+    })
+  )
+  await waitFor(() => pageDocs().includes(9))
+  await wait(200)
+
+  check('带正确令牌的连接可以正常提交数据', () => {
+    const ack = withTokenInbox.find((m) => m.type === 'hello-ack' && !m.rejected)
+    assert.ok(ack, '应收到正常握手回包')
+    assert.ok(pageDocs().includes(9), '已认证连接推来的字幕应入库')
+  })
+
+  noToken.close()
+  withToken.close()
+  await wait(250)
+  bridge.configure({ token: '' })
 
   db.closeDb()
   console.log(`\n通过 ${passed}，失败 ${failed}\n`)

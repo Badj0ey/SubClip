@@ -140,6 +140,20 @@ async function onPort(e: Event): Promise<void> {
   await restartBridge(port)
 }
 
+/** 生成一个随机配对令牌（用 Web Crypto，避免引入额外依赖 + 不用 Math.random） */
+async function generateBridgeToken(): Promise<void> {
+  const bytes = new Uint8Array(16)
+  crypto.getRandomValues(bytes)
+  const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
+  await save({ bridgeToken: token })
+  toast('已生成配对令牌，请在插件弹窗里填入同样的值', 'success', 5200)
+}
+
+async function clearBridgeToken(): Promise<void> {
+  await save({ bridgeToken: '' })
+  toast('已清除配对令牌（恢复为只做来源校验）', 'success')
+}
+
 async function onRestartBridge(): Promise<void> {
   await restartBridge(state.settings?.port)
 }
@@ -539,6 +553,24 @@ async function openOutputDir(): Promise<void> {
 
       <div v-if="state.bridge?.error" class="hint" style="color: var(--danger)">
         {{ state.bridge.error }}
+      </div>
+
+      <div class="field">
+        <label>配对令牌</label>
+        <div class="row">
+          <input
+            :value="state.settings?.bridgeToken"
+            class="input grow"
+            spellcheck="false"
+            placeholder="可选，留空表示只做来源校验"
+          />
+          <button class="btn" @click="generateBridgeToken">生成</button>
+          <button class="btn" @click="clearBridgeToken">清除</button>
+        </div>
+      </div>
+      <div class="hint">
+        本地服务已默认校验握手来源，只放行本项目插件，普通网页连不进来。
+        若还想防本机其它程序伪造来源，可在这里生成一个随机令牌，并在插件弹窗的「配对令牌」里填同样的值。
       </div>
 
       <div class="field">

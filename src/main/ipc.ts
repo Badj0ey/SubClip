@@ -5,7 +5,7 @@
 import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
 import { existsSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve, sep } from 'node:path'
 import type {
   AppSettings,
   Cue,
@@ -13,6 +13,7 @@ import type {
   ParseResult,
   SliceRowLike
 } from '@shared/types'
+import { APP_DATA_DIR } from '@shared/constants'
 import * as bili from './bilibili'
 import { bridge } from './bridge'
 import * as db from './db'
@@ -37,6 +38,13 @@ import { runSliceTasks, type SliceProgress, type SliceTaskInput } from './slice/
 
 /** 当前运行的切片任务（同一时刻只允许一个） */
 let sliceAbort: AbortController | null = null
+
+/** 插件目录的可能位置（开发态在工程里，打包后在 resources 下） */
+function extensionDirCandidates(): string[] {
+  return [join(app.getAppPath(), 'extension'), join(process.resourcesPath ?? '', 'extension')].filter(
+    (p): p is string => Boolean(p)
+  )
+}
 
 export function registerIpc(getWindow: () => BrowserWindow | null): void {
   /* ------------------------------- 资源树 / 统计 ------------------------------ */
@@ -96,6 +104,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   /* -------------------------------- 本地 SRT -------------------------------- */
 
   ipcMain.handle('srt:preview', async (_e, path: string): Promise<ParseResult> => {
+    // 只读用户在本会话里用「选择文件」对话框亲自选过的路径
+    if (!isApproved(path)) throw new Error('该路径未经过文件选择对话框，已拒绝读取')
     const buf = await readFile(path)
     const { text } = decodeBuffer(buf as Buffer)
     return parseSrt(text)
@@ -104,7 +114,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle(
     'srt:import',
     async (_e, payload: { paths: string[]; bvid?: string }): Promise<OpResult<ImportSrtResult>> => {
-      const data = await importLocalSrt(payload.paths ?? [], payload.bvid)
+      const paths = (payload.paths ?? []).filter((p) => isApproved(p))
+      const rejected = (payload.paths ?? []).length - paths.length
+      if (!paths.length) {
+        return { ok: false, message: '这些路径未经过文件选择对话框，已拒绝导入' }
+      }
+      const data = await importLocalSrt(paths, payload.bvid)
+      if (rejected > 0) {
+        data.failures.push(`${rejected} 个路径未经文件选择对话框，已跳过`)
+      }
       // 重复导入同一个文件时只会「更新」，所以新增 + 更新都算成功
       return { ok: data.imported + data.updated > 0, data }
     }
@@ -220,8 +238,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle(
     'clips:export',
-    (_e, payload: { rows: SliceRowLike[]; format: 'csv' | 'xlsx'; outPath?: string }) =>
-      exportSlice(payload.rows, payload.format, payload.outPath)
+    (_e, payload: { rows: SliceRowLike[]; format: 'csv' | 'xlsx'; outPath?: string }) => {
+      // 只信白名单里的格式，避免「声明 csv 实际写 xlsx」这类错配
+      const format = payload.format === 'xlsx' ? 'xlsx' : 'csv'
+      // outPath 必须来自「另存为」对话框；否则忽略，回退到设置里的输出目录
+      const outPath =
+        payload.outPath && isApproved(payload.outPath) ? payload.outPath : undefined
+      return exportSlice(payload.rows ?? [], format, outPath)
+    }
   )
 
   /* ---------------------------------- 设置 ---------------------------------- */
@@ -230,8 +254,12 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('settings:save', (_e, patch: Partial<AppSettings>) => {
     const before = loadSettings()
     const after = saveSettings(patch)
-    // 端口变化时自动重启本地服务
-    if (patch.port !== undefined && Number(patch.port) !== before.port) {
+    // 端口或配对令牌变化时都要重启本地服务（令牌要重新装到服务上）
+    const portChanged = patch.port !== undefined && Number(patch.port) !== before.port
+    const tokenChanged =
+      patch.bridgeToken !== undefined && after.bridgeToken !== before.bridgeToken
+    if (portChanged || tokenChanged) {
+      bridge.configure({ token: after.bridgeToken })
       bridge.start(after.port)
     }
     return after
@@ -287,12 +315,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   /** 浏览器插件所在目录（便于用户加载扩展） */
   ipcMain.handle('bridge:extensionDir', () => {
-    const candidates = [
-      join(app.getAppPath(), 'extension'),
-      join(process.resourcesPath ?? '', 'extension')
-    ]
+    const candidates = extensionDirCandidates()
     for (const dir of candidates) {
-      if (dir && existsSync(dir)) return { path: dir, exists: true }
+      if (existsSync(dir)) return { path: dir, exists: true }
     }
     return { path: candidates[0] ?? '', exists: false }
   })
@@ -311,18 +336,61 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   /* --------------------------------- 系统交互 -------------------------------- */
 
+  /*
+   * 渲染进程传来的路径默认**不可信**：
+   * 只要渲染进程被注入（XSS / 恶意依赖），它就能借主进程的权限读写任意文件、
+   * 甚至用 shell.openPath 启动任意 exe。所以规定：
+   *   - 文件读写只认「本会话里用户亲自在系统对话框里选过的路径」；
+   *   - 打开目录只允许打开应用自己的那几个目录，且拒绝可执行扩展名。
+   */
+  const approvedPaths = new Set<string>()
+
+  const approve = (p: string): string => {
+    if (p) approvedPaths.add(resolve(p))
+    return p
+  }
+
+  const isApproved = (p: string): boolean => Boolean(p) && approvedPaths.has(resolve(p))
+
+  /** 允许用「打开目录」打开的根目录 */
+  const allowedOpenRoots = (): string[] => {
+    const s = loadSettings()
+    return [
+      s.outputDir,
+      s.sliceOutputDir,
+      s.subtitleCacheDir,
+      s.sliceToolDir,
+      join(app.getPath('userData'), APP_DATA_DIR),
+      ...extensionDirCandidates()
+    ]
+      .filter(Boolean)
+      .map((p) => resolve(p))
+  }
+
+  /** 双击就执行的危险扩展名，一律不允许通过「打开」直接启动 */
+  const BLOCKED_EXT =
+    /\.(exe|com|bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|msi|msp|scr|lnk|reg|hta|cpl|dll|sys|jar)$/i
+
+  const isSafeToOpen = (target: string): boolean => {
+    const full = resolve(target)
+    if (BLOCKED_EXT.test(full)) return false
+    return allowedOpenRoots().some((root) => full === root || full.startsWith(root + sep))
+  }
+
   ipcMain.handle('dialog:pickFiles', async () => {
     const win = getWindow()
     const opts: OpenDialogOptions = {
       title: '选择字幕文件',
       filters: [
-        { name: '字幕文件', extensions: ['srt', 'txt', 'vtt', 'ass', 'lrc'] },
+        // 只列真正能解析的格式：解析器认 `-->` 时间轴（SRT / WebVTT）。
+        // 早期这里还列了 ass / lrc，但解析器并不支持，用户选了必然失败。
+        { name: '字幕文件', extensions: ['srt', 'txt', 'vtt'] },
         { name: '全部文件', extensions: ['*'] }
       ],
       properties: ['openFile', 'multiSelections']
     }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    return res.canceled ? [] : res.filePaths
+    return res.canceled ? [] : res.filePaths.map(approve)
   })
 
   ipcMain.handle('dialog:pickFfmpeg', async () => {
@@ -335,7 +403,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
           : [{ name: '全部文件', extensions: ['*'] }]
     }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    return res.canceled ? '' : res.filePaths[0]
+    return res.canceled ? '' : approve(res.filePaths[0])
   })
 
   ipcMain.handle('dialog:pickDir', async (_e, defaultPath?: string) => {
@@ -346,22 +414,25 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       properties: ['openDirectory', 'createDirectory']
     }
     const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
-    return res.canceled ? '' : res.filePaths[0]
+    return res.canceled ? '' : approve(res.filePaths[0])
   })
 
   ipcMain.handle('dialog:saveFile', async (_e, payload: { defaultName: string; format: string }) => {
     const win = getWindow()
+    // 只在白名单里取扩展名，避免渲染进程塞进任意字符串
+    const ext = payload.format === 'xlsx' ? 'xlsx' : 'csv'
     const opts: SaveDialogOptions = {
       title: '导出切片表',
       defaultPath: payload.defaultName,
-      filters: [{ name: payload.format.toUpperCase(), extensions: [payload.format] }]
+      filters: [{ name: ext.toUpperCase(), extensions: [ext] }]
     }
     const res = win ? await dialog.showSaveDialog(win, opts) : await dialog.showSaveDialog(opts)
-    return res.canceled ? '' : res.filePath
+    return res.canceled ? '' : approve(res.filePath)
   })
 
   ipcMain.handle('shell:openPath', async (_e, target: string) => {
     if (!target) return '路径为空'
+    if (!isSafeToOpen(target)) return `拒绝打开该路径（不在允许的目录内）：${target}`
     if (!existsSync(target)) return `路径不存在：${target}`
     return shell.openPath(target)
   })

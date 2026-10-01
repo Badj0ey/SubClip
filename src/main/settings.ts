@@ -31,6 +31,7 @@ export function defaultSettings(): AppSettings {
     sliceToolDir: '',
     outputDir: join(app.getPath('documents'), 'subtitle-clips'),
     port: DEFAULT_PORT,
+    bridgeToken: '',
     biliCookie: ''
   }
 }

@@ -10,7 +10,7 @@ import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { DEFAULT_PORT, PROTOCOL_VERSION } from '../extension/shared/protocol.js'
-import { BRIDGE_PROTOCOL_VERSION } from '../src/shared/bridge'
+import { BRIDGE_EXTENSION_ID, BRIDGE_PROTOCOL_VERSION } from '../src/shared/bridge'
 
 interface WbiBundle {
   md5: (input: string) => string
@@ -196,6 +196,27 @@ check('应用与浏览器插件的版本号一致', () => {
     manifest.version,
     pkg.version,
     `package.json=${pkg.version} 与 extension/manifest.json=${manifest.version} 不一致`
+  )
+})
+
+check('manifest 的 key 推导出的扩展 ID 与桌面端白名单一致', () => {
+  // 桌面端只放行固定 ID 的扩展；改了 manifest 的 key 就必须同步改 BRIDGE_EXTENSION_ID，
+  // 否则插件会被自己人挡在门外，而且现象很难排查。
+  const manifest = JSON.parse(
+    readFileSync(join(process.cwd(), 'extension', 'manifest.json'), 'utf8')
+  )
+  assert.ok(manifest.key, 'manifest 缺少 key 字段：扩展 ID 会随安装路径变化，无法校验来源')
+
+  const digest = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest()
+  let id = ''
+  for (let i = 0; i < 16; i++) {
+    id += String.fromCharCode(97 + (digest[i] >> 4))
+    id += String.fromCharCode(97 + (digest[i] & 0x0f))
+  }
+  assert.strictEqual(
+    id,
+    BRIDGE_EXTENSION_ID,
+    `manifest 推导出的 ID=${id}，与 BRIDGE_EXTENSION_ID=${BRIDGE_EXTENSION_ID} 不一致`
   )
 })
 

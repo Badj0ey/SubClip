@@ -43,6 +43,7 @@ function renderStatus(status) {
     ? `已连接桌面端${status.serverVersion ? ` v${status.serverVersion}` : ''}`
     : '未连接桌面端'
   $('port').value = status.port
+  $('token').value = status.token || ''
   $('hint').textContent = status.connected
     ? '本地服务运行中，页面信息与字幕会自动同步。'
     : status.lastError || '请先启动桌面端「SRT 字幕检索与视频切片辅助工具」。'
@@ -218,6 +219,10 @@ $('btnReconnect').addEventListener('click', async () => {
 
 $('btnSavePort').addEventListener('click', async () => {
   renderStatus(await ask({ type: 'set-port', port: Number($('port').value) || 8765 }))
+})
+
+$('btnSaveToken').addEventListener('click', async () => {
+  renderStatus(await ask({ type: 'set-token', token: $('token').value }))
 })
 
 $('btnSyncCookies').addEventListener('click', async (e) => {

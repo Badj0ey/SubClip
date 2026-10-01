@@ -18,6 +18,8 @@ let reconnectTimer = null
 const state = {
   connected: false,
   port: DEFAULT_PORT,
+  /** 与桌面端约定的配对令牌（桌面端没设就留空） */
+  token: '',
   serverVersion: '',
   lastError: '',
   lastPage: null,
@@ -39,6 +41,7 @@ function getStatus() {
   return {
     connected: state.connected,
     port: state.port,
+    token: state.token,
     serverVersion: state.serverVersion,
     lastError: state.lastError,
     lastPage: state.lastPage,
@@ -120,7 +123,8 @@ function connect() {
     sendToServer({
       type: 'hello',
       version: chrome.runtime.getManifest().version,
-      browser: detectBrowser()
+      browser: detectBrowser(),
+      ...(state.token ? { token: state.token } : {})
     })
 
   }
@@ -146,14 +150,26 @@ function connect() {
 function handleServerMessage(msg) {
   switch (msg.type) {
     case 'hello-ack':
+      // 桌面端会校验握手来源，来源不在白名单时直接告知并断开
+      if (msg.rejected) {
+        state.serverVersion = ''
+        state.lastError = '桌面端拒绝了本次连接（来源校验未通过）'
+        pushEvent('连接被桌面端拒绝：扩展 ID 与桌面端白名单不一致', 'error')
+        break
+      }
       state.serverVersion = msg.version || ''
-      pushEvent(`握手成功（桌面端 v${msg.version}）`)
+      if (msg.tokenRequired && !state.token) {
+        state.lastError = '桌面端已开启配对令牌，请在下面填写'
+        pushEvent('桌面端要求配对令牌，请在「配对令牌」里填入桌面端设置页显示的值', 'warn')
+      } else {
+        pushEvent(`握手成功（桌面端 v${msg.version}）`)
+      }
       break
     case 'request-subtitles':
       void fetchAndSend(msg.bvid, msg.page, msg.cid)
       break
     case 'ack':
-      if (msg.message) pushEvent(msg.message)
+      if (msg.message) pushEvent(msg.message, msg.ok === false ? 'warn' : 'info')
       break
     default:
       break
@@ -454,8 +470,9 @@ async function checkLogin(tabId) {
 /* --------------------------------- 生命周期 -------------------------------- */
 
 async function bootstrap() {
-  const stored = await chrome.storage.local.get(['port'])
+  const stored = await chrome.storage.local.get(['port', 'token'])
   state.port = Number(stored.port) || DEFAULT_PORT
+  state.token = typeof stored.token === 'string' ? stored.token : ''
   await ensureHeaderRules()
   connect()
   chrome.alarms.create(ALARM_NAME, { periodInMinutes: 1 })
@@ -486,6 +503,25 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const port = Number(msg.port) || DEFAULT_PORT
       state.port = port
       chrome.storage.local.set({ port })
+      if (ws) {
+        try {
+          ws.close()
+        } catch {
+          /* ignore */
+        }
+        ws = null
+      }
+      state.connected = false
+      reconnectDelay = 1000
+      connect()
+      sendResponse(getStatus())
+      return true
+    }
+
+    case 'set-token': {
+      // 配对令牌改了要重连，重新握手时才带得上新值
+      state.token = typeof msg.token === 'string' ? msg.token.trim() : ''
+      chrome.storage.local.set({ token: state.token })
       if (ws) {
         try {
           ws.close()

@@ -75,6 +75,8 @@ app.whenReady().then(() => {
   const settings = loadSettings()
   // 被纠正过的路径（例如历史遗留的 cache 目录）写回文件，避免每次启动都要修正
   saveSettings({ subtitleCacheDir: settings.subtitleCacheDir })
+  // 启动本地服务前先装上配对令牌（留空即不校验，只靠 Origin 白名单）
+  bridge.configure({ token: settings.bridgeToken })
   bridge.start(settings.port)
 
   registerIpc(() => mainWindow)

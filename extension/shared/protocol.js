@@ -3,7 +3,7 @@
  * 对应桌面端的 src/shared/bridge.ts，改动时请同步两边。
  */
 
-export const PROTOCOL_VERSION = 2
+export const PROTOCOL_VERSION = 3
 export const SERVER_NAME = 'srt-clip-helper'
 export const DEFAULT_PORT = 8765
 
