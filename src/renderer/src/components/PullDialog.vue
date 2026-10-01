@@ -4,9 +4,18 @@ import type { BiliTarget, PullProgressInfo } from '@shared/types'
 import { formatTime } from '@shared/time'
 import { loadTree, state, toast } from '../store'
 
+const props = withDefaults(
+  defineProps<{
+    /** 打开时预填的目标地址（插件检测到合集/收藏夹时用），会立刻自动解析 */
+    prefillUrl?: string
+    /** 预填来源的说明，例如「浏览器插件检测到合集」 */
+    prefillNote?: string
+  }>(),
+  { prefillUrl: '', prefillNote: '' }
+)
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-const input = ref('')
+const input = ref(props.prefillUrl)
 const resolving = ref(false)
 const target = ref<BiliTarget | null>(null)
 const chosen = ref<Set<string>>(new Set())
@@ -54,6 +63,8 @@ onMounted(() => {
   offProgress = window.api.onPullProgress((p) => {
     progress.value = p
   })
+  // 从插件带过来的地址：直接解析，省掉用户再粘一次
+  if (props.prefillUrl) void resolve()
 })
 
 onUnmounted(() => {
@@ -175,6 +186,11 @@ async function openSettings(): Promise<void> {
     <div class="modal modal-lg">
       <h3>拉取字幕</h3>
 
+      <div v-if="prefillNote" class="hint" style="margin-left: 0; color: var(--accent)">
+        {{ prefillNote }}：已自动解析出下面这些视频。<strong>逐条确认要拉哪些</strong>，
+        再点「开始拉取」——同一个视频会拉取它的<strong>全部分P</strong>。
+      </div>
+
       <div class="field">
         <label>链接 / BV号</label>
         <div class="row">
@@ -275,7 +291,7 @@ async function openSettings(): Promise<void> {
           :disabled="pulling || !target || !chosen.size"
           @click="pull"
         >
-          {{ pulling ? '拉取中…' : `拉取选中字幕（${chosen.size}）` }}
+          {{ pulling ? '拉取中…' : `拉取选中字幕（${chosen.size}）· 每个视频含全部分P` }}
         </button>
       </div>
     </div>

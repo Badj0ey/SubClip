@@ -4,12 +4,26 @@
  */
 import * as bili from './bilibili'
 import { bridge } from './bridge'
-import { ingestPageInfo, ingestSubtitle } from './services'
-import { saveSettings } from './settings'
+import { ingestPageInfo, ingestSubtitle, pullSubtitles } from './services'
+import { loadSettings, saveSettings } from './settings'
 
 export type PushFn = (channel: string, payload: unknown) => void
 
 let wired = false
+
+/**
+ * 插件上报的「合集 / 收藏夹 / 投稿页」。
+ * 这类页面没有具体 BV 号，桌面端不建条目，而是交给界面提示用户「是否批量拉取」。
+ */
+export interface CollectionHint {
+  pageType: string
+  /** 合集 / 收藏夹 / 系列的 id */
+  seasonId: number | null
+  uid: number | null
+  title: string
+  /** 原始页面地址，直接喂给 resolveTarget 解析（省得在两边各拼一次 URL） */
+  url: string
+}
 
 export function wireBridge(push: PushFn): void {
   if (wired) return
@@ -19,11 +33,67 @@ export function wireBridge(push: PushFn): void {
 
   bridge.on('page-info', (payload) => {
     try {
+      // 合集 / 收藏夹 / 投稿页没有具体视频：不要建一条空条目，
+      // 而是把「这里有整包内容」告诉界面，由用户决定要不要批量拉。
+      if (!String(payload?.bvid ?? '').trim()) {
+        const hint: CollectionHint = {
+          pageType: payload?.pageType ?? 'unknown',
+          seasonId: payload?.seasonId ?? null,
+          uid: payload?.uploader?.uid ?? null,
+          title: payload?.seasonTitle?.trim() || payload?.title?.trim() || '',
+          url: payload?.url ?? ''
+        }
+        push('bridge:page-info', {
+          info: payload,
+          videoId: null,
+          message: '检测到合集 / 收藏夹 / 投稿页，等待用户确认是否批量拉取'
+        })
+        if (hint.url) push('bridge:collection', hint)
+        return
+      }
+
       const res = ingestPageInfo(payload)
       push('bridge:page-info', { info: payload, videoId: res.videoId, message: res.message })
     } catch (err) {
       push('bridge:log', { level: 'error', message: `页面信息入库失败：${(err as Error).message}` })
     }
+  })
+
+  /**
+   * 插件请桌面端拉某个视频的字幕。
+   * 这里是「不管用户在哪个分P 触发，都拉该视频全部分P」的落点 ——
+   * `pullSubtitles` 内部会遍历 `info.pages` 并按「分P + 语言」跳过已有的。
+   */
+  bridge.on('pull-request', (payload) => {
+    void (async () => {
+      const bvid = String(payload?.bvid ?? '').trim()
+      if (!bvid) return
+
+      // 桌面端要自己直连 B 站接口，必须先有登录态
+      if (!loadSettings().biliCookie.trim()) {
+        push('bridge:pull', {
+          bvid,
+          ok: false,
+          needCookie: true,
+          message: '桌面端还没有 B 站登录状态，请先在浏览器插件里点「同步登录状态到桌面端」'
+        })
+        return
+      }
+
+      try {
+        const res = await pullSubtitles(
+          [{ bvid, title: String(payload?.title ?? '') }],
+          (p) => push('bridge:pull-progress', p)
+        )
+        push('bridge:pull', { bvid, ok: true, ...res })
+      } catch (err) {
+        push('bridge:pull', {
+          bvid,
+          ok: false,
+          message: `拉取失败：${(err as Error).message}`
+        })
+      }
+    })()
   })
 
   bridge.on('subtitle', (payload) => {

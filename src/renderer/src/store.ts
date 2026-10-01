@@ -11,7 +11,7 @@ import type {
   VideoItem
 } from '@shared/types'
 import type { BridgeStatus } from '@shared/bridge'
-import type { MergedCue, SliceProgressInfo } from '@shared/types'
+import type { MergedCue, PullProgressInfo, SliceProgressInfo } from '@shared/types'
 import { buildRanges } from '@shared/ranges'
 
 interface ToastState {
@@ -75,6 +75,21 @@ export const state = reactive({
   /** 是否已经搜过一次（用于区分「还没搜」和「没结果」） */
   searchDone: false,
   searchNotePrefix: '检索',
+
+  /* 插件联动 */
+  /**
+   * 插件浏览到合集 / 收藏夹时待用户确认的批量拉取。
+   * App.vue 看到它就打开预填好的「拉取字幕」对话框。
+   */
+  pendingCollection: null as {
+    pageType: string
+    seasonId: number | null
+    uid: number | null
+    title: string
+    url: string
+  } | null,
+  /** 插件请求拉取时的进度（用于顶部提示） */
+  pluginPull: null as PullProgressInfo | null,
 
   /* 本地切片 */
   ffmpegReady: false,
@@ -158,6 +173,14 @@ export async function initApp(): Promise<void> {
 
 /* ------------------------------ 浏览器插件通信 ----------------------------- */
 
+/**
+ * 已经自动询问过的合集（key = 类型:合集id:uid）。
+ *
+ * 用户在合集里翻分P 时页面会反复变化、反复上报同一个合集，
+ * 不去重的话对话框会一直弹。
+ */
+const askedCollections = new Set<string>()
+
 export async function loadBridgeStatus(): Promise<void> {
   try {
     state.bridge = await window.api.bridgeStatus()
@@ -217,6 +240,56 @@ function setupBridgeListeners(): void {
 
   window.api.onBridgeLog(({ level, message }) => {
     if (level === 'error' || level === 'warn') toast(message, 'error', 4200)
+  })
+
+  /* ---------------- 插件浏览到合集 / 收藏夹：问用户是否批量拉取 ---------------- */
+
+  window.api.onBridgeCollection((hint) => {
+    if (!hint?.url) return
+    // 同一个合集只自动问一次：用户在合集里翻分P 时会反复触发页面变化
+    const key = `${hint.pageType}:${hint.seasonId ?? ''}:${hint.uid ?? ''}`
+    if (askedCollections.has(key)) return
+    askedCollections.add(key)
+
+    state.pendingCollection = { ...hint }
+    toast(
+      `插件检测到${hint.pageType === 'favlist' ? '收藏夹' : hint.pageType === 'space' ? 'UP主投稿页' : '合集'}，已列出可拉取的视频`,
+      'info',
+      5200
+    )
+  })
+
+  /* -------------------- 插件请求拉取某视频字幕（全部分P） -------------------- */
+
+  window.api.onBridgePullProgress((p) => {
+    state.pluginPull = p
+  })
+
+  window.api.onBridgePull((p) => {
+    state.pluginPull = null
+    if (!p.ok) {
+      if (p.needCookie) {
+        toast(p.message || '桌面端缺少 B站登录状态', 'error', 8000)
+      } else {
+        toast(p.message || '拉取失败', 'error', 6000)
+      }
+      return
+    }
+    void loadTree()
+    const { docs = 0, updated = 0, failed = 0, skipped = 0, videos = 0 } = p
+    const parts: string[] = []
+    if (docs) parts.push(`新增 ${docs} 条`)
+    if (updated) parts.push(`更新 ${updated} 条`)
+    if (skipped) parts.push(`${skipped} 个已齐全跳过`)
+    if (failed) parts.push(`${failed} 个失败`)
+    toast(
+      parts.length
+        ? `插件请求拉取完成：${parts.join('，')}（${videos} 个视频）`
+        : '没有拉到新字幕，本地可能已是最新',
+      docs + updated > 0 ? 'success' : 'info',
+      5600
+    )
+    if (p.messages?.length) toast(p.messages.slice(0, 2).join('\n'), 'error', 7000)
   })
 
   window.api.onDataWarning(({ message }) => {

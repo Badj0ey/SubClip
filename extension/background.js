@@ -5,7 +5,7 @@
  *   3. 响应字幕抓取请求：把「需要 Cookie 的接口调用」交给页面上下文执行，
  *      字幕文件本体（CDN 资源，不需要 Cookie）由扩展侧下载
  */
-import { DEFAULT_PORT, detectBrowser, parse } from './shared/protocol.js'
+import { DEFAULT_PORT, PROTOCOL_VERSION, detectBrowser, parse } from './shared/protocol.js'
 import { fetchSubtitleJson } from './shared/bilibili.js'
 
 const RECONNECT_MAX = 30_000
@@ -21,6 +21,12 @@ const state = {
   /** 与桌面端约定的配对令牌（桌面端没设就留空） */
   token: '',
   serverVersion: '',
+  /**
+   * 桌面端上报的协议版本。
+   * 用来做能力协商：桌面端对不认识的客户端消息是**静默丢弃**的，
+   * 不看版本号的话插件会以为发送成功、实际什么都不会发生。
+   */
+  serverProtocol: 0,
   lastError: '',
   lastPage: null,
   lastSync: null,
@@ -158,9 +164,16 @@ function handleServerMessage(msg) {
         break
       }
       state.serverVersion = msg.version || ''
+      state.serverProtocol = Number(msg.protocol) || 0
       if (msg.tokenRequired && !state.token) {
         state.lastError = '桌面端已开启配对令牌，请在下面填写'
         pushEvent('桌面端要求配对令牌，请在「配对令牌」里填入桌面端设置页显示的值', 'warn')
+      } else if (state.serverProtocol < PROTOCOL_VERSION) {
+        pushEvent(
+          `桌面端协议 v${state.serverProtocol} 低于插件所需的 v${PROTOCOL_VERSION}，` +
+            '「让桌面端拉取全部分P」等功能不可用，请更新桌面端',
+          'warn'
+        )
       } else {
         pushEvent(`握手成功（桌面端 v${msg.version}）`)
       }
@@ -559,6 +572,42 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
     case 'fetch-subtitles': {
       fetchAndSend(msg.bvid, msg.page, msg.cid).then(sendResponse)
+      return true
+    }
+
+    /**
+     * 请桌面端拉取该视频的字幕。
+     *
+     * 与 fetch-subtitles 的区别：抓取动作交给桌面端做，因此会**拉取全部分P**
+     * （桌面端的 pullSubtitles 会遍历 pages，并按「分P + 语言」跳过已有的）。
+     * 插件只把「是哪个视频」告诉桌面端即可，不必在页面里循环调接口、拖慢浏览器。
+     */
+    case 'pull-video': {
+      const page = state.livePage || state.lastPage
+      const bvid = msg.bvid || page?.bvid
+      if (!bvid) {
+        sendResponse({ ok: false, message: '当前页面没有识别到 BV 号' })
+        return true
+      }
+      // 桌面端对不认识的客户端消息是静默丢弃的，先按协议版本判断能力，
+      // 否则插件会报「发送成功」而桌面端什么都不会做
+      if (state.connected && state.serverProtocol < PROTOCOL_VERSION) {
+        sendResponse({
+          ok: false,
+          message: `桌面端协议 v${state.serverProtocol} 不支持该功能，请更新桌面端`
+        })
+        return true
+      }
+      const sent = sendToServer({
+        type: 'pull-request',
+        payload: { bvid, page: Number(msg.page || page?.page || 1), title: page?.title || '' }
+      })
+      if (!sent) {
+        sendResponse({ ok: false, message: '桌面端未连接，请先启动桌面端并重连' })
+        return true
+      }
+      pushEvent(`已请桌面端拉取 ${bvid} 的全部分P`)
+      sendResponse({ ok: true, message: `已请桌面端拉取 ${bvid} 的全部分P，进度见桌面端顶部` })
       return true
     }
 

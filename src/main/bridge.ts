@@ -341,7 +341,8 @@ export class BridgeServer extends EventEmitter {
 
       case 'page-info':
       case 'subtitle':
-      case 'cookies': {
+      case 'cookies':
+      case 'pull-request': {
         if (!this.requireAuth(client)) break
 
         if (msg.type === 'page-info') {
@@ -355,6 +356,18 @@ export class BridgeServer extends EventEmitter {
           this.touch(`收到字幕：${msg.payload.bvid} P${msg.payload.page} ${msg.payload.label}`)
           this.emit('subtitle', msg.payload, client.id)
           this.sendTo(client, { type: 'ack', ok: true, message: '字幕已接收' })
+          break
+        }
+
+        if (msg.type === 'pull-request') {
+          // 先回 ack 再干活：拉取是异步的、可能几十秒，不能让插件一直挂在握手超时上
+          this.touch(`插件请求拉取字幕：${msg.payload.bvid}（将拉取该视频全部分P）`)
+          this.sendTo(client, {
+            type: 'ack',
+            ok: true,
+            message: `已收到请求，正在拉取 ${msg.payload.bvid} 的全部分P…`
+          })
+          this.emit('pull-request', msg.payload, client.id)
           break
         }
 

@@ -10,7 +10,15 @@
  *   2. 所有入站消息都经过本文件的**逐类型校验**，不合法直接丢弃，不信任任何字段。
  */
 
-export const BRIDGE_PROTOCOL_VERSION = 3
+/**
+ * 协议版本。
+ * v3：加入握手来源校验与配对令牌，并收紧消息校验。
+ * v4：新增 `pull-request`（插件请桌面端拉取某视频的全部分P）。
+ *
+ * 注意：桌面端对**不认识的消息类型是静默丢弃**的，所以插件必须靠 hello-ack 里的
+ * `protocol` 做能力协商，不能只看「发送是否成功」。
+ */
+export const BRIDGE_PROTOCOL_VERSION = 4
 export const BRIDGE_SERVER_NAME = 'srt-clip-helper'
 
 /**
@@ -91,11 +99,26 @@ export interface BridgeCookies {
 
 /* ----------------------------- 插件 → 桌面端 ----------------------------- */
 
+/**
+ * 插件请桌面端「把这个视频的字幕拉下来」。
+ *
+ * 之所以不让插件自己去抓：桌面端的 `pullSubtitles` 会**遍历该视频的全部分P**
+ * 并按「分P + 语言」去重，插件那边做同样的事会把浏览器页面拖慢。
+ * 插件只负责说明「是哪个视频」，抓取交给桌面端。
+ */
+export interface BridgePullRequest {
+  bvid: string
+  /** 用户当时所在的分P（仅用于提示，实际会拉全部分P） */
+  page: number
+  title?: string
+}
+
 export type ClientMessage =
   | { type: 'hello'; version: string; browser: string; token?: string }
   | { type: 'page-info'; payload: BridgePageInfo }
   | { type: 'subtitle'; payload: BridgeSubtitle }
   | { type: 'cookies'; payload: BridgeCookies }
+  | { type: 'pull-request'; payload: BridgePullRequest }
   | { type: 'log'; level: 'info' | 'warn' | 'error'; message: string }
   | { type: 'ping' }
 
@@ -299,6 +322,21 @@ export function parseClientMessage(raw: string): ClientMessage | null {
     case 'subtitle': {
       const payload = parseSubtitle(obj.payload)
       return payload ? { type: 'subtitle', payload } : null
+    }
+
+    case 'pull-request': {
+      if (!isObject(obj.payload)) return null
+      const bvid = str(obj.payload.bvid, 32)
+      // 没有合法 BV 号就没法拉，直接丢弃（宁可让插件那边超时，也不要发起一次无意义的抓取）
+      if (!BV_RE.test(bvid)) return null
+      return {
+        type: 'pull-request',
+        payload: {
+          bvid,
+          page: Math.max(1, Math.trunc(num(obj.payload.page, 1))),
+          title: str(obj.payload.title, BRIDGE_LIMITS.maxLabel)
+        }
+      }
     }
 
     default:

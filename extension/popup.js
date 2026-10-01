@@ -263,22 +263,18 @@ $('btnFetch').addEventListener('click', async (e) => {
     return
   }
   btn.disabled = true
-  btn.textContent = '抓取中…'
-  // 先把视频信息同步过去，再抓字幕，避免桌面端缺少视频条目
+  btn.textContent = '已请求…'
+  // 先把页面信息同步过去，桌面端才知道这个视频归属哪个 UP主 / 合集
   await ask({ type: 'sync-now' })
-  const res = await ask({
-    type: 'fetch-subtitles',
-    bvid: page.bvid,
-    page: page.page || 1,
-    cid: page.cid || null
-  })
+  // 只要 BV 号：抓取交给桌面端，这样不管在哪个分P 触发，都会拉该视频的全部分P
+  const res = await ask({ type: 'pull-video', bvid: page.bvid, page: page.page || 1 })
   btn.disabled = false
-  btn.textContent = '同时拉取字幕'
-  if (res?.ok) {
-    renderStatus(await ask({ type: 'get-status' }))
-  } else {
-    $('tracks').textContent = res?.message || '抓取失败'
-  }
+  btn.textContent = '让桌面端拉取全部分P'
+  renderStatus(await ask({ type: 'get-status' }))
+  $('tracks').textContent = res?.ok
+    ? res.message
+    : res?.message || '请求失败'
+  $('tracks').style.color = res?.ok ? '' : 'var(--err)'
 })
 
 refresh()

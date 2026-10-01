@@ -118,6 +118,18 @@ header strong {
   color: var(--err);
 }
 
+/* 按钮下方的说明文字 */
+.note {
+  font-size: 11px;
+  color: var(--dim);
+  line-height: 1.6;
+  padding: 0 2px 2px;
+}
+
+.note strong {
+  color: var(--fg);
+}
+
 .pill {
   font-size: 11px;
   padding: 2px 9px;

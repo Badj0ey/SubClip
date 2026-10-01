@@ -23,7 +23,8 @@ import { DEFAULT_NAME_TEMPLATE, compactDuration, fileStamp, renderNameTemplate }
 import { joinCueText, mergeCues, splitCue } from '../src/shared/cues'
 import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
 import type { ClipTask } from '../src/shared/types'
-import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
+import { BRIDGE_LIMITS, BRIDGE_PROTOCOL_VERSION, parseClientMessage } from '../src/shared/bridge'
+import { PROTOCOL_VERSION } from '../extension/shared/protocol.js'
 import * as constants from '../src/shared/constants'
 import {
   DEFAULT_SHORTCUTS,
@@ -931,6 +932,49 @@ test('拆分：找不到序号时原样返回', () => {
   const res = splitCue(mergeFixture, 99, 3)
   assert.strictEqual(res.ok, false)
   assert.strictEqual(res.cues, mergeFixture)
+})
+
+/* ------------------------ 插件「请桌面端拉取」协议 ------------------------ */
+section('插件拉取请求')
+
+test('合法的 pull-request 通过，并规整分P 与标题', () => {
+  const msg = parseClientMessage(
+    JSON.stringify({
+      type: 'pull-request',
+      payload: { bvid: 'BV1xx411c7mD', page: 3, title: '某个视频' }
+    })
+  )
+  assert.ok(msg, '应被接受')
+  assert.strictEqual(msg!.type, 'pull-request')
+  const p = (msg as { payload: { bvid: string; page: number; title: string } }).payload
+  assert.strictEqual(p.bvid, 'BV1xx411c7mD')
+  assert.strictEqual(p.page, 3)
+  assert.strictEqual(p.title, '某个视频')
+})
+
+test('分P 非法时归一为 1（不因为一个坏字段丢掉整条请求）', () => {
+  const msg = parseClientMessage(
+    JSON.stringify({ type: 'pull-request', payload: { bvid: 'BV1xx411c7mD', page: 'x' } })
+  )
+  assert.ok(msg)
+  assert.strictEqual((msg as { payload: { page: number } }).payload.page, 1)
+})
+
+test('BV 号不合法时整条丢弃（不要发起一次注定失败的抓取）', () => {
+  assert.strictEqual(
+    parseClientMessage(JSON.stringify({ type: 'pull-request', payload: { bvid: 'not-a-bv' } })),
+    null
+  )
+  assert.strictEqual(
+    parseClientMessage(JSON.stringify({ type: 'pull-request', payload: { bvid: '' } })),
+    null
+  )
+  assert.strictEqual(parseClientMessage(JSON.stringify({ type: 'pull-request' })), null)
+})
+
+test('协议版本两边一致且已升到 4', () => {
+  assert.strictEqual(BRIDGE_PROTOCOL_VERSION, PROTOCOL_VERSION)
+  assert.strictEqual(BRIDGE_PROTOCOL_VERSION, 4)
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

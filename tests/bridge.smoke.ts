@@ -541,6 +541,101 @@ async function run(): Promise<void> {
   await wait(250)
   bridge.configure({ token: '' })
 
+  /* --------------------- 合集页检测 与 插件「请桌面端拉取」 --------------------- */
+
+  const pullInbox: any[] = []
+  const pullWs = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  pullWs.on('message', (raw) => pullInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    pullWs.on('open', () => resolve())
+    pullWs.on('error', reject)
+  })
+  pullWs.send(JSON.stringify({ type: 'hello', version: '1.0.0', browser: 'Edge' }))
+  await wait(250)
+
+  const videosBeforeCollection = db.stats().videos
+  pushes.length = 0
+
+  // 合集页：没有具体 BV 号
+  pullWs.send(
+    JSON.stringify({
+      type: 'page-info',
+      payload: {
+        pageType: 'favlist',
+        bvid: '',
+        title: '我的收藏夹',
+        url: 'https://space.bilibili.com/12345/favlist?fid=678',
+        page: 1,
+        seasonId: 678,
+        seasonTitle: '我的收藏夹',
+        uploader: { uid: 12345, name: '测试UP主', avatar: null }
+      }
+    })
+  )
+  await waitFor(() => pushes.some((p) => p.channel === 'bridge:collection'))
+  await wait(200)
+
+  check('合集 / 收藏夹页面不再被建出空视频条目', () => {
+    assert.strictEqual(db.stats().videos, videosBeforeCollection, '不应多出一条空视频')
+  })
+
+  check('合集 / 收藏夹页面会通知界面（交给用户确认是否批量拉取）', () => {
+    const ev = pushes.find((p) => p.channel === 'bridge:collection')
+    assert.ok(ev, '应推送 bridge:collection')
+    const hint = ev!.payload as { pageType: string; seasonId: number; uid: number; url: string }
+    assert.strictEqual(hint.pageType, 'favlist')
+    assert.strictEqual(hint.seasonId, 678)
+    assert.strictEqual(hint.uid, 12345)
+    // 带上原始地址，桌面端直接喂给 resolveTarget，不必在两边各拼一次 URL
+    assert.ok(hint.url.includes('favlist'), `应带原始地址，实际：${hint.url}`)
+  })
+
+  check('合集页面的 page-info 也会回 ack（插件不会一直等）', () => {
+    assert.ok(
+      pullInbox.some((m) => m.type === 'ack' && m.ok === true),
+      '应收到 ack'
+    )
+  })
+
+  /* ------------------------ pull-request：拉取全部分P ------------------------ */
+
+  pushes.length = 0
+  pullWs.send(
+    JSON.stringify({
+      type: 'pull-request',
+      payload: { bvid: 'BV1GJ411x7h7', page: 3, title: '测试视频标题' }
+    })
+  )
+  await waitFor(() => pushes.some((p) => p.channel === 'bridge:pull'))
+  await wait(250)
+
+  check('拉取请求会立刻回 ack，不让插件挂在握手超时上', () => {
+    const ack = pullInbox.find((m) => m.type === 'ack' && /全部分P/.test(m.message ?? ''))
+    assert.ok(ack, `应收到「正在拉取全部分P」的 ack，实际：${JSON.stringify(pullInbox)}`)
+  })
+
+  check('桌面端没有登录态时明确告知需要同步，而不是静默失败', () => {
+    const ev = pushes.find((p) => p.channel === 'bridge:pull')
+    assert.ok(ev, '应推送 bridge:pull')
+    const res = ev!.payload as { ok: boolean; needCookie?: boolean; message?: string }
+    assert.strictEqual(res.ok, false)
+    assert.strictEqual(res.needCookie, true, '应标记为缺登录态，界面据此引导去同步')
+    assert.ok(/同步登录状态|登录/.test(res.message ?? ''), `提示应可操作，实际：${res.message}`)
+  })
+
+  check('非法 BV 号的拉取请求被丢弃，不会发起无意义的抓取', () => {
+    const before = pushes.filter((p) => p.channel === 'bridge:pull').length
+    pullWs.send(JSON.stringify({ type: 'pull-request', payload: { bvid: 'not-a-bv' } }))
+    assert.strictEqual(
+      pushes.filter((p) => p.channel === 'bridge:pull').length,
+      before,
+      '不应因坏数据推送事件'
+    )
+  })
+
+  pullWs.close()
+  await wait(200)
+
   db.closeDb()
   console.log(`\n通过 ${passed}，失败 ${failed}\n`)
 

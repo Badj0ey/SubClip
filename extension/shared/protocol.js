@@ -3,7 +3,13 @@
  * 对应桌面端的 src/shared/bridge.ts，改动时请同步两边。
  */
 
-export const PROTOCOL_VERSION = 3
+/**
+ * 协议版本。
+ * v4：新增 `pull-request`（插件请桌面端拉取某视频的**全部分P**）。
+ *     桌面端对不认识的消息类型是静默丢弃的，所以插件必须靠这个版本号
+ *     判断能力是否可用，否则会误报成功。
+ */
+export const PROTOCOL_VERSION = 4
 export const SERVER_NAME = 'srt-clip-helper'
 export const DEFAULT_PORT = 8765
 
@@ -14,6 +20,23 @@ export const PAGE_TYPE = {
   FAVLIST: 'favlist',
   SPACE: 'space',
   UNKNOWN: 'unknown'
+}
+
+/**
+ * 插件 → 桌面端的消息类型（与 bridge.ts 的 ClientMessage 一一对应）。
+ *
+ * `PULL_REQUEST` 是让桌面端去拉某个视频的字幕：插件只说「是哪个 BV」，
+ * 抓取由桌面端完成 —— 这样不管用户在哪个分P 触发，都会拉到该视频的全部分P，
+ * 也不会因为在页面里循环调接口而拖慢浏览器。
+ */
+export const CLIENT_MESSAGE = {
+  HELLO: 'hello',
+  PAGE_INFO: 'page-info',
+  SUBTITLE: 'subtitle',
+  COOKIES: 'cookies',
+  PULL_REQUEST: 'pull-request',
+  LOG: 'log',
+  PING: 'ping'
 }
 
 export function buildHello(browser) {

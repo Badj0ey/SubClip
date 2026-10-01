@@ -29,6 +29,21 @@ import PullDialog from './components/PullDialog.vue'
 const showImport = ref(false)
 const showPull = ref(false)
 
+/** 插件检测到合集 / 收藏夹时，在对话框顶部说明来源 */
+const collectionNote = computed(() => {
+  const c = state.pendingCollection
+  if (!c) return ''
+  const kind =
+    c.pageType === 'favlist' ? '收藏夹' : c.pageType === 'space' ? 'UP主投稿页' : '合集 / 系列'
+  return `浏览器插件检测到${kind}${c.title ? `《${c.title}》` : ''}`
+})
+
+/** 关闭拉取对话框：两个入口（手动按钮 / 插件检测）都要复位 */
+function closePull(): void {
+  showPull.value = false
+  state.pendingCollection = null
+}
+
 const themeLabel: Record<string, string> = {
   light: '浅色',
   dark: '深色',
@@ -292,6 +307,16 @@ function onImported(): void {
         {{ pluginOnline ? '🔌 已连接' : '🔌 未连接' }}
       </span>
 
+      <!-- 插件请求拉取时的进度：这一步可能几十秒，得让用户看到还在动 -->
+      <span
+        v-if="state.pluginPull"
+        class="plugin-badge on"
+        :title="`正在为插件请求拉取字幕：${state.pluginPull.title || ''}`"
+      >
+        ⏳ {{ state.pluginPull.current }}/{{ state.pluginPull.total }}
+        {{ state.pluginPull.title ? `· ${state.pluginPull.title}` : '' }}
+      </span>
+
       <button class="btn" title="导入本地 SRT 字幕文件" @click="showImport = true">导入 SRT</button>
       <button
         class="btn primary"
@@ -353,7 +378,12 @@ function onImported(): void {
     </div>
 
     <ImportDialog v-if="showImport" @close="showImport = false" @done="onImported" />
-    <PullDialog v-if="showPull" @close="showPull = false" />
+    <PullDialog
+      v-if="showPull || state.pendingCollection"
+      :prefill-url="state.pendingCollection?.url ?? ''"
+      :prefill-note="collectionNote"
+      @close="closePull"
+    />
 
     <!-- 拖拽导入遮罩 -->
     <div v-if="fileDragging" class="drop-mask">

@@ -258,6 +258,34 @@ const api = {
   onBridgeStatus: (cb: (s: BridgeStatus) => void) => subscribe('bridge:status', cb),
   onBridgePageInfo: (cb: (p: { info: BridgePageInfo; videoId: number | null; message?: string }) => void) =>
     subscribe('bridge:page-info', cb),
+  /** 插件浏览到合集 / 收藏夹 / 投稿页：界面据此询问是否批量拉取 */
+  onBridgeCollection: (
+    cb: (p: {
+      pageType: string
+      seasonId: number | null
+      uid: number | null
+      title: string
+      url: string
+    }) => void
+  ) => subscribe('bridge:collection', cb),
+  /** 插件请求拉取某个视频的结果（成功或失败） */
+  onBridgePull: (
+    cb: (p: {
+      bvid: string
+      ok: boolean
+      /** 桌面端缺登录态时为 true，界面据此引导去同步 */
+      needCookie?: boolean
+      message?: string
+      docs?: number
+      updated?: number
+      videos?: number
+      failed?: number
+      skipped?: number
+      messages?: string[]
+    }) => void
+  ) => subscribe('bridge:pull', cb),
+  onBridgePullProgress: (cb: (p: PullProgressInfo) => void) =>
+    subscribe('bridge:pull-progress', cb),
   onBridgeSubtitle: (
     cb: (p: {
       bvid: string
