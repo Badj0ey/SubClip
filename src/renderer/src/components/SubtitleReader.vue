@@ -15,12 +15,17 @@ import {
   expandTo,
   invertSelection,
   matchedIndexes,
+  mergeSelectedCues,
   pushUndo,
   ranges,
+  redoDepth,
+  redoLabel,
+  redoLastEdit,
   registerScroller,
   selectAll,
   selectMatches,
   setCompareDoc,
+  splitCueAt,
   state,
   toggleSelect,
   toast,
@@ -34,10 +39,17 @@ import type { MenuItem } from './ContextMenu.vue'
 
 const showTools = ref(false)
 const canUndo = computed(() => undoDepth.value > 0)
+const canRedo = computed(() => redoDepth.value > 0)
 
 async function doUndo(): Promise<void> {
   await undoLastEdit()
   // 撤销可能改动了正文高度，重算一次虚拟列表
+  await nextTick()
+  vlist.refresh()
+}
+
+async function doRedo(): Promise<void> {
+  await redoLastEdit()
   await nextTick()
   vlist.refresh()
 }
@@ -363,7 +375,12 @@ function onCueMenu(cue: MergedCue, event: MouseEvent): void {
 const cueMenuItems = computed<MenuItem[]>(() => {
   const cue = cueMenu.value?.cue
   if (!cue) return []
-  return [
+  // 合并只对「当前文档里被勾选的条」生效，所以先数一下
+  const pickedHere = state.cues.filter((c) => state.selected.has(c.index) && c.docId === cue.docId)
+  const canMerge = pickedHere.length >= 2 && state.selected.has(cue.index)
+  const mid = (cue.start + cue.end) / 2
+
+  const items: MenuItem[] = [
     { label: '复制这句话', icon: '📋', action: () => void copyCueTexts([cue]) },
     {
       label: '复制带时间戳的链接',
@@ -378,6 +395,19 @@ const cueMenuItems = computed<MenuItem[]>(() => {
       action: () => toggleSelect(cue.index)
     },
     {
+      label: canMerge ? `合并选中的 ${pickedHere.length} 条` : '合并选中的条（先勾选 ≥2 条）',
+      icon: '⇥',
+      disabled: !canMerge,
+      divider: true,
+      action: () => void mergeSelectedCues()
+    },
+    {
+      label: `从 ${mid.toFixed(2)}s 处拆成两条`,
+      icon: '⇤',
+      disabled: cue.end - cue.start < 0.1,
+      action: () => void splitCueAt(cue, mid)
+    },
+    {
       label: '用这一条新建切片任务',
       icon: '✂',
       divider: true,
@@ -385,6 +415,7 @@ const cueMenuItems = computed<MenuItem[]>(() => {
       action: () => void enqueueSingleCue(cue)
     }
   ]
+  return items
 })
 
 function gotoMatch(dir: 1 | -1): void {
@@ -572,10 +603,18 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
       <button
         class="btn sm"
         :disabled="!canUndo"
-        :title="undoLabel ? `撤销：${undoLabel}` : '没有可撤销的操作'"
+        :title="undoLabel ? `撤销：${undoLabel}（Ctrl+Z）` : '没有可撤销的操作'"
         @click="doUndo"
       >
         撤销
+      </button>
+      <button
+        class="btn sm"
+        :disabled="!canRedo"
+        :title="redoLabel ? `重做：${redoLabel}（Ctrl+Y）` : '没有可重做的操作'"
+        @click="doRedo"
+      >
+        重做
       </button>
 
       <span class="grow"></span>

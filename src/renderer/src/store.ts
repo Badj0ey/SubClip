@@ -760,18 +760,26 @@ interface UndoEntry {
 
 /** 内存里的编辑撤销栈（最多 20 步，关掉应用即清空） */
 const undoStack: UndoEntry[] = []
+/** 重做栈：撤销时把「撤销前的状态」压进来 */
+const redoStack: UndoEntry[] = []
 
 export const undoDepth = ref(0)
 export const undoLabel = ref('')
+export const redoDepth = ref(0)
+export const redoLabel = ref('')
 
 function syncUndoState(): void {
   undoDepth.value = undoStack.length
   undoLabel.value = undoStack.length ? undoStack[undoStack.length - 1].label : ''
+  redoDepth.value = redoStack.length
+  redoLabel.value = redoStack.length ? redoStack[redoStack.length - 1].label : ''
 }
 
 /**
  * 在破坏性编辑之前记一份快照。
  * 快照取的是**该文档自己的字幕**（不是合并列表），因此还原时直接写回即可。
+ *
+ * 新编辑一旦发生，重做链就断了（这是撤销/重做的通用语义）。
  */
 export async function pushUndo(docId: number, label: string): Promise<void> {
   try {
@@ -781,6 +789,7 @@ export async function pushUndo(docId: number, label: string): Promise<void> {
   } catch {
     /* 拿不到快照就不记，不影响编辑本身 */
   }
+  redoStack.length = 0
   syncUndoState()
 }
 
@@ -798,14 +807,82 @@ export async function reloadActiveDoc(): Promise<void> {
 
 export async function undoLastEdit(): Promise<void> {
   const entry = undoStack.pop()
-  syncUndoState()
   if (!entry) {
+    syncUndoState()
     toast('没有可撤销的操作', 'info')
     return
   }
+  // 把「撤销前」的状态压进重做栈，才能再重做回来
+  try {
+    const current = await window.api.getCues(entry.docId)
+    redoStack.push({ docId: entry.docId, label: entry.label, cues: current })
+  } catch {
+    /* 拿不到当前状态就不支持重做这一步，撤销本身照做 */
+  }
   await window.api.updateCues(entry.docId, entry.cues)
   await reloadActiveDoc()
+  syncUndoState()
   toast(`已撤销：${entry.label}`, 'success')
+}
+
+export async function redoLastEdit(): Promise<void> {
+  const entry = redoStack.pop()
+  if (!entry) {
+    syncUndoState()
+    toast('没有可重做的操作', 'info')
+    return
+  }
+  // 与撤销对称：把当前状态压回撤销栈
+  try {
+    const current = await window.api.getCues(entry.docId)
+    undoStack.push({ docId: entry.docId, label: entry.label, cues: current })
+  } catch {
+    /* 同上 */
+  }
+  await window.api.updateCues(entry.docId, entry.cues)
+  await reloadActiveDoc()
+  syncUndoState()
+  toast(`已重做：${entry.label}`, 'success')
+}
+
+/* ------------------------------ 字幕合并 / 拆分 ----------------------------- */
+
+/** 合并当前选中的若干条字幕（必须都在当前打开的文档里） */
+export async function mergeSelectedCues(): Promise<void> {
+  const docId = state.doc?.id
+  if (docId == null) {
+    toast('请先打开一个字幕文档', 'error')
+    return
+  }
+  const picked = state.cues.filter((c) => state.selected.has(c.index) && c.docId === docId)
+  if (picked.length < 2) {
+    toast('请先勾选同一分P 里至少 2 条字幕', 'error', 4600)
+    return
+  }
+  await pushUndo(docId, `合并 ${picked.length} 条字幕`)
+  const res = await window.api.mergeCues(
+    docId,
+    picked.map((c) => c.origIndex)
+  )
+  if (!res.ok) {
+    toast(res.message || '合并失败', 'error')
+    return
+  }
+  state.selected = new Set<number>()
+  await reloadActiveDoc()
+  toast(`已合并 ${res.data?.merged ?? 0} 条字幕`, 'success')
+}
+
+/** 在某一条的内部时间点拆分它 */
+export async function splitCueAt(cue: MergedCue, atSecond: number): Promise<void> {
+  await pushUndo(cue.docId, `拆分第 ${cue.index} 条`)
+  const res = await window.api.splitCue(cue.docId, cue.origIndex, atSecond)
+  if (!res.ok) {
+    toast(res.message || '拆分失败', 'error', 4600)
+    return
+  }
+  await reloadActiveDoc()
+  toast(`已在 ${atSecond.toFixed(2)} 秒处拆分`, 'success')
 }
 
 /* -------------------------------- 复制到剪贴板 ------------------------------- */

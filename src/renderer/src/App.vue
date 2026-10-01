@@ -9,6 +9,7 @@ import {
   importDroppedSrt,
   initApp,
   moveCursor,
+  redoLastEdit,
   requestEditCurrent,
   scrollToCursor,
   selectAll,
@@ -266,6 +267,10 @@ function onKey(e: KeyboardEvent): void {
     case 'undoEdit':
       e.preventDefault()
       void undoLastEdit()
+      break
+    case 'redoEdit':
+      e.preventDefault()
+      void redoLastEdit()
       break
     default:
       break

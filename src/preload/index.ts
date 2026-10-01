@@ -60,6 +60,12 @@ const api = {
     ignoreCase?: boolean
   }): Promise<OpResult<{ changed: number; total: number }>> =>
     ipcRenderer.invoke('doc:replace', payload),
+  /** 合并选中的若干条字幕 */
+  mergeCues: (docId: number, indexes: number[]): Promise<OpResult<{ merged: number }>> =>
+    ipcRenderer.invoke('doc:mergeCues', { docId, indexes }),
+  /** 在某一条内部的时间点拆成两条 */
+  splitCue: (docId: number, index: number, atSecond: number): Promise<OpResult<{ at: number }>> =>
+    ipcRenderer.invoke('doc:splitCue', { docId, index, atSecond }),
   /** 整体平移 / 缩放时间轴 */
   shiftDocTime: (payload: {
     docId: number

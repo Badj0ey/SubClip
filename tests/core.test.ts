@@ -20,6 +20,7 @@ import { toCsv } from '../src/main/exporter'
 import { sanitizeFileName } from '../src/main/slice/filename'
 import { buildDiagnostics, redactSettings } from '../src/main/diagnostics'
 import { DEFAULT_NAME_TEMPLATE, compactDuration, fileStamp, renderNameTemplate } from '../src/shared/naming'
+import { joinCueText, mergeCues, splitCue } from '../src/shared/cues'
 import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
 import type { ClipTask } from '../src/shared/types'
 import { BRIDGE_LIMITS, parseClientMessage } from '../src/shared/bridge'
@@ -841,6 +842,95 @@ test('分P 不同就不对照（拿 P1 中文对 P2 英文没有意义）', () =
 
 test('未选择对照轨 → 返回空', () => {
   assert.strictEqual(alignCompare({ page: 1, origIndex: 1, start: 0, end: 3 }, null, enPool), '')
+})
+
+/* ------------------------------ 字幕合并 / 拆分 ----------------------------- */
+section('字幕合并 / 拆分')
+
+const mergeFixture: Cue[] = [
+  { index: 1, start: 0, end: 2, text: '今天' },
+  { index: 2, start: 2.5, end: 5, text: '天气好' },
+  { index: 3, start: 6, end: 8, text: '我们出去玩' }
+]
+
+test('中文之间拼接不加空格', () => {
+  assert.strictEqual(joinCueText(['今天', '天气好']), '今天天气好')
+})
+
+test('英文之间拼接补空格（否则会黏成 Helloworld）', () => {
+  assert.strictEqual(joinCueText(['Hello', 'world']), 'Hello world')
+})
+
+test('中英混排：拉丁词前后补空格', () => {
+  assert.strictEqual(joinCueText(['你好', 'world']), '你好 world')
+  assert.strictEqual(joinCueText(['Hello', '你好']), 'Hello 你好')
+})
+
+test('空白片段被忽略', () => {
+  assert.strictEqual(joinCueText(['a', '   ', '', 'b']), 'a b')
+})
+
+test('合并：时间取首条起点 → 末条终点，索引重排', () => {
+  const res = mergeCues(mergeFixture, [1, 2])
+  assert.strictEqual(res.merged, 2)
+  assert.strictEqual(res.cues.length, 2)
+  assert.deepStrictEqual(
+    res.cues.map((c) => ({ index: c.index, start: c.start, end: c.end, text: c.text })),
+    [
+      { index: 1, start: 0, end: 5, text: '今天天气好' },
+      { index: 2, start: 6, end: 8, text: '我们出去玩' }
+    ]
+  )
+})
+
+test('合并：只选一条不做任何事', () => {
+  const res = mergeCues(mergeFixture, [2])
+  assert.strictEqual(res.merged, 0)
+  assert.strictEqual(res.cues, mergeFixture, '应原样返回')
+})
+
+test('合并：不要求选中项在时间上连续（用户选的就是意图）', () => {
+  const res = mergeCues(mergeFixture, [1, 3])
+  assert.strictEqual(res.merged, 2)
+  assert.strictEqual(res.cues.length, 2)
+  assert.strictEqual(res.cues[0].start, 0)
+  assert.strictEqual(res.cues[0].end, 8)
+})
+
+test('拆分：中间切开，两半时长都为正，文本按比例分', () => {
+  const res = splitCue(mergeFixture, 2, 3.75)
+  assert.strictEqual(res.ok, true)
+  assert.strictEqual(res.at, 3.75)
+  assert.strictEqual(res.cues.length, 4)
+  const left = res.cues.find((c) => c.start === 2.5)!
+  const right = res.cues.find((c) => c.start === 3.75)!
+  assert.strictEqual(left.end, 3.75)
+  assert.strictEqual(right.end, 5)
+  assert.strictEqual(left.text + right.text, '天气好', '两半拼起来应还是原文')
+})
+
+test('拆分：切分点越界会被夹进条目内部（不会产生零长度条目）', () => {
+  const before = splitCue(mergeFixture, 1, -100)
+  assert.strictEqual(before.ok, true)
+  assert.ok(before.at > 0, '应被夹到起点之后')
+  assert.ok(before.cues.every((c) => c.end > c.start), '不应出现零长度条目')
+
+  const after = splitCue(mergeFixture, 1, 999)
+  assert.strictEqual(after.ok, true)
+  const first = after.cues.find((c) => c.start === 0)!
+  assert.ok(first.end < 2, '应被夹到终点之前')
+  assert.ok(after.cues.every((c) => c.end > c.start))
+})
+
+test('拆分：过短的条目拒绝拆分', () => {
+  const tiny: Cue[] = [{ index: 1, start: 1, end: 1.01, text: 'x' }]
+  assert.strictEqual(splitCue(tiny, 1, 1.005).ok, false)
+})
+
+test('拆分：找不到序号时原样返回', () => {
+  const res = splitCue(mergeFixture, 99, 3)
+  assert.strictEqual(res.ok, false)
+  assert.strictEqual(res.cues, mergeFixture)
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

@@ -22,6 +22,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'no
 import { dirname, join } from 'node:path'
 import type { ClipTask, Cue, CueSearchHit, SubtitleDoc, TreeNode, VideoItem } from '@shared/types'
 import { APP_DATA_DIR } from '@shared/constants'
+import { mergeCues, splitCue } from '@shared/cues'
 
 /** 本地导入用的虚拟 UP主（整份本地字幕都挂在它下面） */
 export const LOCAL_UPLOADER_NAME = '本地导入'
@@ -1673,8 +1674,7 @@ export function clearClipTasks(): void {
   requireDb().prepare('delete from clips').run()
 }
 
-/** 重命名任务的备注（即输出文件名） */
-export function updateClipTaskNote(id: number, note: string): void {
+/** 重命名任务的备注（即输出文件名） */export function updateClipTaskNote(id: number, note: string): void {
   requireDb()
     .prepare('update clips set note = ? where id = ?')
     .run(String(note ?? '').slice(0, 120), id)
@@ -1699,6 +1699,27 @@ export function moveClipTask(id: number, dir: -1 | 1): void {
 
   const upd = handle.prepare('update clips set sort_order = ? where id = ?')
   withTransaction(() => ids.forEach((cid, i) => upd.run(i, cid)))
+}
+
+/* ------------------------------ 字幕合并 / 拆分 ----------------------------- */
+
+/** 合并若干条字幕（索引是文档内的原始序号）。返回实际合并掉的条数。 */
+export function mergeDocCues(docId: number, indexes: number[]): number {
+  const cues = loadCues(docId)
+  if (cues.length < 2) return 0
+  const res = mergeCues(cues, indexes)
+  if (res.merged < 2) return 0
+  updateDocCues(docId, res.cues)
+  return res.merged
+}
+
+/** 在 atSecond 处拆分某一条。返回是否真的切了。 */
+export function splitDocCue(docId: number, index: number, atSecond: number): boolean {
+  const cues = loadCues(docId)
+  const res = splitCue(cues, index, atSecond)
+  if (!res.ok) return false
+  updateDocCues(docId, res.cues)
+  return true
 }
 
 /* -------------------------------- 切片历史 -------------------------------- */

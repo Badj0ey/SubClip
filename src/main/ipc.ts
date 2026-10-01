@@ -171,6 +171,31 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   )
 
+  /** 合并选中的若干条字幕 */
+  ipcMain.handle(
+    'doc:mergeCues',
+    (_e, payload: { docId: number; indexes: number[] }): OpResult<{ merged: number }> => {
+      const merged = db.mergeDocCues(payload.docId, payload.indexes ?? [])
+      if (merged < 2) return { ok: false, message: '至少选中同一文档里的 2 条字幕才能合并' }
+      return { ok: true, data: { merged } }
+    }
+  )
+
+  /** 在某一条的内部时间点把它拆成两条 */
+  ipcMain.handle(
+    'doc:splitCue',
+    (
+      _e,
+      payload: { docId: number; index: number; atSecond: number }
+    ): OpResult<{ at: number }> => {
+      const at = Number(payload.atSecond)
+      if (!db.splitDocCue(payload.docId, payload.index, at)) {
+        return { ok: false, message: '这一条太短（或切分点不在它内部），无法拆分' }
+      }
+      return { ok: true, data: { at } }
+    }
+  )
+
   /** 整体平移 / 缩放时间轴 */
   ipcMain.handle(
     'doc:shift',

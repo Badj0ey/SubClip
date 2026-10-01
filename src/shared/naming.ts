@@ -51,6 +51,7 @@ export function fileStamp(seconds: number): string {
   return `${pad(h)}-${pad(m)}-${pad(s)}`
 }
 
+
 export function renderNameTemplate(template: string, ctx: NameTemplateContext): string {
   const tpl = (template ?? '').trim() || DEFAULT_NAME_TEMPLATE
   const values: Record<string, string> = {
