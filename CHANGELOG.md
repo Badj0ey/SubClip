@@ -60,4 +60,11 @@
 - 下载分片遇到非 206 响应且长度不足时**静默截断**，现在会明确报错。
 - 切片输出文件名未处理 Windows 保留名（`CON` / `PRN` / `AUX` / `NUL` / `COM1-9` / `LPT1-9`）与结尾的点 / 空格。
 
-[未发布]: https://github.com/OWNER/REPO/compare/main...HEAD
+<!--
+发布到 GitHub 之后，把上一行的标题挂上版本号并补一个对比链接，例如：
+
+## [0.1.0] - 2026-01-01
+[0.1.0]: https://github.com/<你的用户名>/<仓库名>/releases/tag/v0.1.0
+
+需要替换的其它位置见 docs/publishing.md。
+-->

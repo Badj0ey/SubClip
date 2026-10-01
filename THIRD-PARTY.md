@@ -11,7 +11,7 @@
 
 | 组件 | 版本 | 许可证 | 用途 |
 | --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 33.x | MIT | 桌面应用运行时 |
+| [Electron](https://github.com/electron/electron) | 36.x | MIT | 桌面应用运行时 |
 | [Vue](https://github.com/vuejs/core) | 3.x | MIT | 渲染进程 UI 框架 |
 | [ws](https://github.com/websockets/ws) | 8.x | MIT | 本地 WebSocket 服务端（插件通信） |
 | [SheetJS Community Edition (xlsx)](https://git.sheetjs.com/sheetjs/sheetjs) | 0.18.5 | Apache-2.0 | 导出 XLSX 切片表 |
@@ -58,20 +58,21 @@ copies or substantial portions of the Software.
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 ```
 
-### 3.2 bilibili-slice-downloader（⚠️ 授权状态待确认）
+### 3.2 bilibili-slice-downloader（本项目作者委托产出，按 MIT 授权）
 
 `src/main/slice/`（`playurl.ts`、`sidx.ts`、`downloader.ts`、`ffmpeg.ts`、`engine.ts`）与
-`src/main/exporter.ts` 中的表格列定义，是本项目对 **原作者自己的 Edge 扩展
+`src/main/exporter.ts` 中的表格列定义，是本项目对**本项目作者委托产出的 Edge 扩展
 `bilibili-slice-downloader`** 的 TypeScript 重写。
 
-该上游项目**没有 LICENSE 文件**，其 `package.json` 也只是一句 `{ "type": "module" }`，
-即默认「保留所有权利」。因此：
+**权属说明**：该上游项目由本项目作者提出需求、交由 AI 编码工具产出，**不存在第三方权利人**。
+它不是一个由他人独立创作、作者无权处分的作品。因此本项目作者将其一并按 MIT 授权，
+本节即为此项声明。
 
-- ✅ 如果它同样是本项目的作者所写 —— 请把该上游项目一并按 MIT 授权（或在本仓库中明确声明
-  其代码已由作者本人以 MIT 重新授权），并在此处补一句说明，即可消除歧义。
-- ❌ 如果它由**他人**编写 —— 在取得授权之前，这部分代码不应随 MIT 项目公开发布。
-
-> **行动项（发布前必须完成）**：确认该上游项目的作者归属，并把结论写进本节。
+> 说明：AI 生成内容的著作权归属在不同法域仍有不确定性，这是所有 AI 辅助项目共同面对的问题。
+> 但就本项目的合规风险而言，关键点在于「没有人被侵权」—— 该上游项目没有、也不会有
+> 一个主张权利的第三方作者。
+>
+> 仓库中早先的文件里若留有「待确认授权」之类的措辞，均以此节为准。
 
 ### 3.3 其他
 

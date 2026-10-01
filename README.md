@@ -200,6 +200,7 @@ app/
 | --- | --- |
 | `README.md` / `README.en.md` | 中文 / 英文说明 |
 | `docs/requirements.md` | 需求文档（由原始 `.docx` 转换），末尾附「与实现的对照」 |
+| `docs/publishing.md` | 上传到 GitHub 后的发布清单（要替换的占位都在这里） |
 | `docs/images/` | README 里用到的截图 |
 | `LICENSE` | MIT |
 | `THIRD-PARTY.md` | 随程序分发的依赖与移植代码的归属声明 |
