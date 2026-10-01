@@ -3,6 +3,7 @@ import type {
   AppSettings,
   ClipTask,
   Cue,
+  CueSearchHit,
   SubtitleDoc,
   TimeRange,
   TreeNode,
@@ -29,6 +30,8 @@ export const state = reactive({
   activeDocId: null as number | null,
   /** 打开文档后需要聚焦到的来源文档（阅读区据此滚动到该分P 的第一条字幕） */
   focusDocId: null as number | null,
+  /** 需要精确聚焦到某一条（全库检索跳转用；为 null 时只定位到该分P 的第一条） */
+  focusCueIndex: null as number | null,
   /** 每次点击都自增：即使重复点同一个分P 也能重新触发跳转 */
   focusNonce: 0,
   doc: null as SubtitleDoc | null,
@@ -46,9 +49,21 @@ export const state = reactive({
 
   clips: [] as ClipTask[],
   settings: null as AppSettings | null,
-  view: 'library' as 'library' | 'settings',
+  view: 'library' as 'library' | 'search' | 'settings',
   loading: false,
   bridge: null as BridgeStatus | null,
+
+  /* 全库检索 */
+  searchKeyword: '',
+  /** 检索范围：全部 / 当前视频 / 当前分组（合集或「单视频」） */
+  searchScope: 'all' as 'all' | 'video' | 'collection',
+  searchResults: [] as CueSearchHit[],
+  /** 用 `${docId}:${index}` 作 key，避免跨文档时序号撞车 */
+  searchSelected: new Set<string>(),
+  searching: false,
+  /** 是否已经搜过一次（用于区分「还没搜」和「没结果」） */
+  searchDone: false,
+  searchNotePrefix: '检索',
 
   /* 本地切片 */
   ffmpegReady: false,
@@ -253,8 +268,10 @@ export async function loadClips(): Promise<void> {
 /**
  * 打开字幕文档。
  * 会把同一视频的所有分P 字幕合并成一个连续列表，便于连续阅读与跨P 切片。
+ *
+ * @param focusOrigIndex 需要精确跳到的那一条（全库检索用），不传则定位到该分P 的第一条
  */
-export async function openDoc(docId: number, key = ''): Promise<void> {
+export async function openDoc(docId: number, key = '', focusOrigIndex?: number): Promise<void> {
   state.loading = true
   try {
     const merged = await window.api.loadMerged(docId)
@@ -273,6 +290,7 @@ export async function openDoc(docId: number, key = ''): Promise<void> {
     const firstOfDoc = state.cues.findIndex((c) => c.docId === docId)
     state.cursor = firstOfDoc >= 0 ? state.cues[firstOfDoc].index : 1
     state.focusDocId = docId
+    state.focusCueIndex = focusOrigIndex ?? null
     state.focusNonce++
     if (key) state.activeKey = key
     state.view = 'library'
@@ -509,4 +527,90 @@ export async function openSliceOutput(): Promise<void> {
   }
   const err = await window.api.openPath(dir)
   if (err) toast(err, 'error', 4200)
+}
+
+/* -------------------------------- 全库检索 -------------------------------- */
+
+/** 命中的稳定 key（跨文档时序号会重复，必须带上 docId） */
+export function searchHitKey(hit: CueSearchHit): string {
+  return `${hit.docId}:${hit.index}`
+}
+
+export function openLibrarySearch(): void {
+  state.view = 'search'
+}
+
+/** 按当前关键词与范围检索整个字幕库 */
+export async function runLibrarySearch(): Promise<void> {
+  const keyword = state.searchKeyword.trim()
+  if (!keyword) {
+    toast('请输入要检索的关键词', 'error')
+    return
+  }
+  state.searching = true
+  try {
+    // 范围只取自「当前打开的文档」，不需要额外查询
+    const scope: { videoId?: number; collectionId?: number } = {}
+    if (state.searchScope === 'video' && state.doc) {
+      scope.videoId = state.doc.videoId
+    } else if (state.searchScope === 'collection' && state.video?.collectionId != null) {
+      scope.collectionId = state.video.collectionId
+    }
+    state.searchResults = await window.api.searchLibrary({ keyword, limit: 500, ...scope })
+    state.searchSelected = new Set<string>()
+    state.searchDone = true
+  } finally {
+    state.searching = false
+  }
+}
+
+export function toggleSearchHit(hit: CueSearchHit): void {
+  const key = searchHitKey(hit)
+  const next = new Set(state.searchSelected)
+  if (next.has(key)) next.delete(key)
+  else next.add(key)
+  state.searchSelected = next
+}
+
+export function selectAllSearchHits(): void {
+  state.searchSelected = new Set(state.searchResults.map(searchHitKey))
+}
+
+export function clearSearchHits(): void {
+  state.searchSelected = new Set<string>()
+}
+
+/** 点检索结果 → 打开对应文档并精确跳到那一条 */
+export async function openSearchHit(hit: CueSearchHit): Promise<void> {
+  await openDoc(hit.docId, `video:${hit.videoId}`, hit.index)
+}
+
+export const searchSelectedHits = computed(() =>
+  state.searchResults.filter((h) => state.searchSelected.has(searchHitKey(h)))
+)
+
+/** 把选中的检索结果批量加入切片任务（每条命中 = 一个时间范围） */
+export async function enqueueSearchHits(): Promise<void> {
+  const hits = searchSelectedHits.value
+  if (!hits.length) {
+    toast('请先勾选要加入的检索结果', 'error')
+    return
+  }
+  const res = await window.api.addClipsFromSearch({
+    hits: hits.map((h) => ({
+      docId: h.docId,
+      bvid: h.bvid,
+      page: h.page,
+      start: h.start,
+      end: h.end,
+      text: h.text
+    })),
+    notePrefix: state.searchNotePrefix || '检索'
+  })
+  if (!res.ok) {
+    toast(res.message || '加入切片任务失败', 'error')
+    return
+  }
+  await loadClips()
+  toast(`已加入 ${res.data?.count ?? 0} 条切片任务`, 'success')
 }

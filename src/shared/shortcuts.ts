@@ -5,6 +5,7 @@
 
 export type ShortcutAction =
   | 'focusSearch'
+  | 'librarySearch'
   | 'nextCue'
   | 'prevCue'
   | 'extendNext'
@@ -25,7 +26,13 @@ export interface ShortcutDef {
 }
 
 export const SHORTCUT_DEFS: ShortcutDef[] = [
-  { id: 'focusSearch', label: '聚焦搜索', description: '把光标移到搜索框', fallback: 'Ctrl+F' },
+  { id: 'focusSearch', label: '聚焦搜索', description: '把光标移到当前文档的搜索框', fallback: 'Ctrl+F' },
+  {
+    id: 'librarySearch',
+    label: '全库检索',
+    description: '打开全库检索（搜所有视频的字幕）',
+    fallback: 'Ctrl+Shift+F'
+  },
   { id: 'nextCue', label: '下一条字幕', description: '光标下移一行', fallback: 'ArrowDown' },
   { id: 'prevCue', label: '上一条字幕', description: '光标上移一行', fallback: 'ArrowUp' },
   { id: 'extendNext', label: '向下扩展选择', description: '从锚点连续选中到下一行', fallback: 'Shift+ArrowDown' },

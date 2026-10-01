@@ -102,6 +102,42 @@ const api = {
 
   onPullProgress: (cb: (p: PullProgressInfo) => void) => subscribe('bili:pull-progress', cb),
 
+  /* 全库检索 */
+  searchLibrary: (payload: {
+    keyword: string
+    limit?: number
+    uploaderId?: number
+    collectionId?: number
+    videoId?: number
+  }): Promise<
+    Array<{
+      docId: number
+      videoId: number
+      bvid: string
+      page: number
+      index: number
+      start: number
+      end: number
+      text: string
+      videoTitle: string
+      uploaderName: string
+      docLabel: string
+      uploaderId: number | null
+      collectionId: number | null
+    }>
+  > => ipcRenderer.invoke('search:library', payload),
+  addClipsFromSearch: (payload: {
+    hits: Array<{
+      docId: number
+      bvid: string
+      page: number
+      start: number
+      end: number
+      text: string
+    }>
+    notePrefix?: string
+  }): Promise<OpResult<{ count: number }>> => ipcRenderer.invoke('clips:addHits', payload),
+
   /* 切片任务 */
   listClips: (): Promise<any[]> => ipcRenderer.invoke('clips:list'),
   addClips: (payload: {

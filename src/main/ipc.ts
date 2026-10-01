@@ -34,6 +34,7 @@ import {
 import { loadSettings, saveSettings } from './settings'
 import { readFile } from 'node:fs/promises'
 import { resolveFfmpeg } from './slice/ffmpeg'
+import { sanitizeFileName } from './slice/filename'
 import { runSliceTasks, type SliceProgress, type SliceTaskInput } from './slice/engine'
 
 /** 当前运行的切片任务（同一时刻只允许一个） */
@@ -241,10 +242,65 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     (_e, payload: { rows: SliceRowLike[]; format: 'csv' | 'xlsx'; outPath?: string }) => {
       // 只信白名单里的格式，避免「声明 csv 实际写 xlsx」这类错配
       const format = payload.format === 'xlsx' ? 'xlsx' : 'csv'
-      // outPath 必须来自「另存为」对话框；否则忽略，回退到设置里的输出目录
+      // outPath 必须来自「另存为」对话框；否则忽略它，回退到设置里的输出目录
       const outPath =
         payload.outPath && isApproved(payload.outPath) ? payload.outPath : undefined
       return exportSlice(payload.rows ?? [], format, outPath)
+    }
+  )
+
+  /* -------------------------------- 全库检索 ------------------------------- */
+
+  ipcMain.handle(
+    'search:library',
+    (
+      _e,
+      payload: {
+        keyword: string
+        limit?: number
+        uploaderId?: number
+        collectionId?: number
+        videoId?: number
+      }
+    ) =>
+      db.searchCues(payload?.keyword ?? '', {
+        limit: payload?.limit,
+        uploaderId: payload?.uploaderId,
+        collectionId: payload?.collectionId,
+        videoId: payload?.videoId
+      })
+  )
+
+  /** 把检索结果里的若干条直接加入切片任务（每条命中 = 一个时间范围） */
+  ipcMain.handle(
+    'clips:addHits',
+    (
+      _e,
+      payload: {
+        hits: Array<{
+          docId: number
+          bvid: string
+          page: number
+          start: number
+          end: number
+          text: string
+        }>
+        notePrefix?: string
+      }
+    ) => {
+      const hits = (payload?.hits ?? []).slice(0, 500)
+      if (!hits.length) return { ok: false, message: '没有选中的检索结果' }
+      const prefix = sanitizeFileName(payload?.notePrefix || '检索').slice(0, 32)
+      const rows = hits.map((h, i) => ({
+        docId: h.docId,
+        bvid: String(h.bvid ?? ''),
+        page: Number(h.page) || 1,
+        start: Number(h.start) || 0,
+        end: Number(h.end) || 0,
+        // 备注带上命中文本片段，便于在切片列表里认出是哪一句
+        note: `${prefix}_${String(i + 1).padStart(2, '0')}_${sanitizeFileName(h.text).slice(0, 24)}`
+      }))
+      return { ok: true, data: { count: db.addClipTasks(rows) } }
     }
   )
 

@@ -20,7 +20,7 @@
 import { DatabaseSync } from 'node:sqlite'
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { ClipTask, Cue, SubtitleDoc, TreeNode, VideoItem } from '@shared/types'
+import type { ClipTask, Cue, CueSearchHit, SubtitleDoc, TreeNode, VideoItem } from '@shared/types'
 import { APP_DATA_DIR } from '@shared/constants'
 
 /** 本地导入用的虚拟 UP主（整份本地字幕都挂在它下面） */
@@ -508,18 +508,15 @@ export function loadCues(docId: number): Cue[] {
 
 /* ------------------------------ 全文检索（FTS5） ----------------------------- */
 
-export interface CueSearchHit {
-  docId: number
-  videoId: number
-  page: number
-  index: number
-  start: number
-  end: number
-  text: string
-  /** 命中所属视频标题 / UP主 / 字幕标签，便于结果列表直接展示 */
-  videoTitle: string
-  uploaderName: string
-  docLabel: string
+export interface CueSearchOptions {
+  /** 最多返回多少条（默认 300，上限 2000） */
+  limit?: number
+  /** 只搜某个 UP主 */
+  uploaderId?: number
+  /** 只搜某个合集 */
+  collectionId?: number
+  /** 只搜某个视频 */
+  videoId?: number
 }
 
 /**
@@ -529,25 +526,43 @@ export interface CueSearchHit {
  * 比如「高光」）退回 LIKE 扫描 —— 索引用不上，但语义正确，几万条字幕量级也就几十毫秒。
  * FTS 查询若因任何原因失败（例如查询串里有特殊语法），也会自动回退到 LIKE。
  */
-export function searchCues(keyword: string, limit = 300): CueSearchHit[] {
+export function searchCues(keyword: string, options: CueSearchOptions = {}): CueSearchHit[] {
   const kw = (keyword ?? '').trim()
   if (!kw) return []
   const handle = requireDb()
-  const capped = Math.max(1, Math.min(2000, Math.trunc(limit)))
+  const capped = Math.max(1, Math.min(2000, Math.trunc(options.limit ?? 300)))
 
   const base = `
-    select c.doc_id as docId, d.video_id as videoId, d.page as page, c.idx as idx,
+    select c.doc_id as docId, d.video_id as videoId, v.bvid as bvid, d.page as page, c.idx as idx,
            c.start as start, c.end as end, c.text as text,
-           v.title as videoTitle, d.label as docLabel, col.uploader_id as uploaderId
+           v.title as videoTitle, d.label as docLabel,
+           col.uploader_id as uploaderId, v.collection_id as collectionId
     from cues c
     join docs d on d.id = c.doc_id
     join videos v on v.id = d.video_id
     left join collections col on col.id = v.collection_id`
 
-  const likePattern = `%${kw.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
-  const likeQuery = `${base} where c.text like ? escape '\\' order by c.doc_id asc, c.idx asc limit ?`
+  // 范围过滤：参数顺序与下面 SQL 里 ? 的出现顺序保持一致
+  const scopeSql: string[] = []
+  const scopeParams: number[] = []
+  if (options.videoId) {
+    scopeSql.push('and d.video_id = ?')
+    scopeParams.push(options.videoId)
+  }
+  if (options.collectionId) {
+    scopeSql.push('and v.collection_id = ?')
+    scopeParams.push(options.collectionId)
+  }
+  if (options.uploaderId) {
+    scopeSql.push('and col.uploader_id = ?')
+    scopeParams.push(options.uploaderId)
+  }
+  const scope = scopeSql.join(' ')
+  const order = 'order by c.doc_id asc, c.idx asc limit ?'
 
+  const likePattern = `%${kw.replace(/[\\%_]/g, (m) => `\\${m}`)}%`
   let rows: Array<Record<string, unknown>> = []
+
   if (kw.length >= 3) {
     try {
       // FTS5 的 MATCH 语法里双引号表示短语，内部引号要转义
@@ -555,36 +570,40 @@ export function searchCues(keyword: string, limit = 300): CueSearchHit[] {
       rows = handle
         .prepare(
           `${base} where c.doc_id in (select doc_id from cue_search where cue_search match ?)
-           order by c.doc_id asc, c.idx asc limit ?`
+           ${scope} ${order}`
         )
-        .all(phrase, capped) as Array<Record<string, unknown>>
+        .all(phrase, ...scopeParams, capped) as Array<Record<string, unknown>>
     } catch {
       rows = [] // 落到下面的 LIKE 兜底
     }
-    // 再过一遍精确匹配：trigram 是子串匹配，短查询或边界情况下可能多召回
+    // 再过一遍精确匹配：trigram 是子串匹配，边界情况下可能多召回
     rows = rows.filter((r) => String(r.text).includes(kw))
   }
   if (!rows.length) {
-    rows = handle.prepare(likeQuery).all(likePattern, capped) as Array<Record<string, unknown>>
+    rows = handle
+      .prepare(`${base} where c.text like ? escape '\\' ${scope} ${order}`)
+      .all(likePattern, ...scopeParams, capped) as Array<Record<string, unknown>>
   }
 
   const uploaderName = handle.prepare('select name from uploaders where id = ?')
   const uploaderCache = new Map<number, string>()
 
   return rows.map((r) => {
-    const uploaderId = r.uploaderId == null ? -1 : Number(r.uploaderId)
-    let name = uploaderCache.get(uploaderId)
+    const uploaderId = r.uploaderId == null ? null : Number(r.uploaderId)
+    const cacheKey = uploaderId ?? -1
+    let name = uploaderCache.get(cacheKey)
     if (name === undefined) {
       const hit =
-        uploaderId >= 0
+        uploaderId !== null
           ? (uploaderName.get(uploaderId) as { name: string } | undefined)
           : undefined
       name = hit?.name ?? ''
-      uploaderCache.set(uploaderId, name)
+      uploaderCache.set(cacheKey, name)
     }
     return {
       docId: Number(r.docId),
       videoId: Number(r.videoId),
+      bvid: String(r.bvid ?? ''),
       page: Number(r.page),
       index: Number(r.idx),
       start: Number(r.start),
@@ -592,7 +611,9 @@ export function searchCues(keyword: string, limit = 300): CueSearchHit[] {
       text: String(r.text),
       videoTitle: String(r.videoTitle ?? ''),
       docLabel: String(r.docLabel ?? ''),
-      uploaderName: name
+      uploaderName: name,
+      uploaderId,
+      collectionId: r.collectionId == null ? null : Number(r.collectionId)
     }
   })
 }

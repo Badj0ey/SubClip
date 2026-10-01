@@ -270,6 +270,24 @@ export interface OpResult<T = unknown> {
   data?: T
 }
 
+/** 全库检索的一条命中（跨视频 / 跨分P） */
+export interface CueSearchHit {
+  docId: number
+  videoId: number
+  bvid: string
+  page: number
+  /** 在该文档内的原始序号（用于精确跳转到那一条） */
+  index: number
+  start: number
+  end: number
+  text: string
+  videoTitle: string
+  uploaderName: string
+  docLabel: string
+  uploaderId: number | null
+  collectionId: number | null
+}
+
 /** 解析 SRT 的结果 */
 export interface ParseResult {
   cues: Cue[]

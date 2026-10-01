@@ -275,23 +275,43 @@ function scrollToCue(index: number): void {
   void scrollToIndexAccurate(i, 'smooth')
 }
 
-/** 打开某个分P 后，把它在本列表中的第一条字幕对齐到阅读条 */
-watch(
-  () => state.focusNonce,
-  () => {
-    const docId = state.focusDocId
-    if (docId == null || !state.cues.length) return
-    const idx = state.cues.findIndex((c) => c.docId === docId)
-    if (idx < 0) return
-    state.cursor = state.cues[idx].index
-    void (async () => {
-      await nextTick()
-      vlist.refresh()
-      await scrollToIndexAccurate(idx, 'auto')
-    })()
-  },
-  { flush: 'post' }
-)
+/** 已经处理过的跳转请求序号，避免重复定位 */
+let handledFocusNonce = -1
+
+/**
+ * 处理一次「打开后定位」请求。
+ *
+ * 注意：从**全库检索**跳过来时，打开文档那一刻本组件还没挂载（视图还是检索页），
+ * 所以不能只靠 watch —— 挂载后也要补一次，否则永远定位不到。
+ */
+function applyPendingFocus(): void {
+  if (state.focusNonce === handledFocusNonce) return
+  const docId = state.focusDocId
+  if (docId == null || !state.cues.length) return
+  handledFocusNonce = state.focusNonce
+
+  // 全库检索跳转会指定精确的那一条；否则定位到该分P 的第一条
+  const wanted = state.focusCueIndex
+  let idx = -1
+  if (wanted != null) {
+    idx = state.cues.findIndex((c) => c.docId === docId && c.origIndex === wanted)
+  }
+  if (idx < 0) idx = state.cues.findIndex((c) => c.docId === docId)
+  if (idx < 0) return
+
+  state.cursor = state.cues[idx].index
+  void (async () => {
+    await nextTick()
+    vlist.refresh()
+    await scrollToIndexAccurate(idx, 'auto')
+  })()
+}
+
+watch(() => state.focusNonce, () => applyPendingFocus(), { flush: 'post' })
+
+onMounted(() => {
+  void nextTick(() => applyPendingFocus())
+})
 
 function gotoMatch(dir: 1 | -1): void {
   const list = matchedIndexes.value

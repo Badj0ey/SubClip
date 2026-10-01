@@ -19,6 +19,7 @@ import ResourceTree from './components/ResourceTree.vue'
 import SubtitleReader from './components/SubtitleReader.vue'
 import ClipPanel from './components/ClipPanel.vue'
 import SettingsView from './components/SettingsView.vue'
+import SearchView from './components/SearchView.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import PullDialog from './components/PullDialog.vue'
 
@@ -143,6 +144,13 @@ function onKey(e: KeyboardEvent): void {
     return
   }
 
+  // 全库检索在任何视图下都能用（包括正在输入时）
+  if (action === 'librarySearch') {
+    e.preventDefault()
+    state.view = state.view === 'search' ? 'library' : 'search'
+    return
+  }
+
   if (state.view !== 'library' && action !== 'focusSearch') return
 
   switch (action) {
@@ -222,6 +230,14 @@ function onImported(): void {
       >
         拉取字幕
       </button>
+      <button
+        class="btn"
+        :class="{ primary: state.view === 'search' }"
+        :title="`全库检索：搜库里所有视频的字幕（${shortcuts.librarySearch || 'Ctrl+Shift+F'}）`"
+        @click="state.view = state.view === 'search' ? 'library' : 'search'"
+      >
+        全库检索
+      </button>
 
       <span class="grow"></span>
 
@@ -262,6 +278,7 @@ function onImported(): void {
         ></div>
         <ClipPanel />
       </template>
+      <SearchView v-else-if="state.view === 'search'" />
       <SettingsView v-else />
     </div>
 
