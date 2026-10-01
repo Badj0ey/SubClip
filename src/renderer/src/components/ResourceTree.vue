@@ -11,6 +11,7 @@ import {
   undoDelete
 } from '../store'
 import TreeNodeItem from './TreeNodeItem.vue'
+import TagDialog from './TagDialog.vue'
 
 const kw = ref('')
 const favOnly = ref(false)
@@ -48,18 +49,38 @@ async function onOpen(node: TreeNode): Promise<void> {
 }
 
 async function onDelete(node: TreeNode): Promise<void> {
+  // 删标签只删标签本身，视频与字幕不受影响，所以不走「可撤销删除」那套快照
+  if (node.key.startsWith('tag:')) {
+    state.tree = await window.api.deleteTag(Number(node.key.slice(4)))
+    toast('已删除标签（视频与字幕未受影响）', 'success')
+    return
+  }
   // 删除不再二次确认：快照留在 store 里，顶部「撤销删除」可以整棵恢复
   await deleteTreeNode(node.key, node.label)
 }
 
 /** 重命名（名称由树节点内联编辑产生） */
 async function onRename(node: TreeNode, name: string): Promise<void> {
+  if (node.key.startsWith('tag:')) {
+    state.tree = await window.api.renameTag(Number(node.key.slice(4)), name)
+    toast('已重命名标签', 'success')
+    return
+  }
   state.tree = await window.api.renameNode(node.key, name)
   // 当前打开的字幕被改名时同步一下标题
   if (state.doc && node.type === 'doc' && node.key === `doc:${state.doc.id}`) {
     state.doc = { ...state.doc, label: name }
   }
   toast('已重命名', 'success')
+}
+
+/* --------------------------------- 标签 --------------------------------- */
+
+const tagTarget = ref<{ videoId: number; title: string } | null>(null)
+
+function onTag(node: TreeNode): void {
+  if (node.videoId == null) return
+  tagTarget.value = { videoId: node.videoId, title: node.label }
 }
 
 async function onFavorite(node: TreeNode): Promise<void> {
@@ -121,8 +142,16 @@ async function refresh(): Promise<void> {
           @delete="onDelete"
           @favorite="onFavorite"
           @rename="onRename"
+          @tag="onTag"
         />
       </div>
     </div>
+
+    <TagDialog
+      v-if="tagTarget"
+      :video-id="tagTarget.videoId"
+      :title="tagTarget.title"
+      @close="tagTarget = null"
+    />
   </aside>
 </template>

@@ -13,6 +13,7 @@ const emit = defineEmits<{
   (e: 'delete', node: TreeNode): void
   (e: 'favorite', node: TreeNode): void
   (e: 'rename', node: TreeNode, name: string): void
+  (e: 'tag', node: TreeNode): void
 }>()
 
 /* ------------------------------- 内联重命名 ------------------------------- */
@@ -52,7 +53,9 @@ const icons: Record<TreeNode['type'], string> = {
   uploader: '👤',
   collection: '📁',
   video: '🎬',
-  doc: '📄'
+  doc: '📄',
+  tags: '🏷',
+  tag: '🏷'
 }
 
 const isOpen = computed(() => props.forceOpen || state.expanded.has(props.node.key))
@@ -97,8 +100,18 @@ function onClick(): void {
       />
       <span v-else class="label" :title="node.label">{{ node.label }}</span>
 
+      <span v-if="node.tags && node.tags.length" class="chips">
+        <span v-for="t in node.tags" :key="t" class="chip">{{ t }}</span>
+      </span>
       <span v-if="node.subtitle && !renaming" class="badge">{{ node.subtitle }}</span>
       <span v-if="!renaming" class="ops">
+        <button
+          v-if="node.type === 'video'"
+          title="打标签"
+          @click.stop="emit('tag', node)"
+        >
+          🏷
+        </button>
         <button
           :class="{ fav: node.favorite }"
           :title="node.favorite ? '取消收藏' : '收藏'"
@@ -122,6 +135,7 @@ function onClick(): void {
         @delete="(n) => emit('delete', n)"
         @favorite="(n) => emit('favorite', n)"
         @rename="(n, name) => emit('rename', n, name)"
+        @tag="(n) => emit('tag', n)"
       />
     </template>
   </div>
@@ -131,6 +145,26 @@ function onClick(): void {
 .ico {
   flex: 0 0 auto;
   font-size: 12px;
+}
+
+/* 标签小圆片：让「待剪辑」「重点」这类人工标记在树里一眼可见 */
+.chips {
+  flex: 0 0 auto;
+  display: inline-flex;
+  gap: 3px;
+  max-width: 130px;
+  overflow: hidden;
+}
+
+.chip {
+  flex: 0 0 auto;
+  padding: 0 5px;
+  border-radius: 8px;
+  font-size: 10px;
+  line-height: 15px;
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+  white-space: nowrap;
 }
 
 .tnode-input {

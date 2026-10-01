@@ -251,6 +251,19 @@ const api = {
     }) => void
   ) => subscribe('bridge:cookies', cb),
 
+  /* 标签（需求文档 §6 的「分类」） */
+  listTags: (): Promise<Array<{ id: number; name: string; count: number }>> =>
+    ipcRenderer.invoke('tags:list'),
+  createTag: (name: string): Promise<{ id: number; tree: TreeNode[] }> =>
+    ipcRenderer.invoke('tags:create', name),
+  renameTag: (id: number, name: string): Promise<TreeNode[]> =>
+    ipcRenderer.invoke('tags:rename', { id, name }),
+  deleteTag: (id: number): Promise<TreeNode[]> => ipcRenderer.invoke('tags:delete', id),
+  getVideoTags: (videoId: number): Promise<number[]> =>
+    ipcRenderer.invoke('tags:ofVideo', videoId),
+  setVideoTags: (videoId: number, tagIds: number[]): Promise<TreeNode[]> =>
+    ipcRenderer.invoke('tags:setVideo', { videoId, tagIds }),
+
   /* 数据管理 */
   /** 备份整库到用户选定的文件 */
   backupData: (): Promise<OpResult<{ path: string }>> => ipcRenderer.invoke('data:backup'),

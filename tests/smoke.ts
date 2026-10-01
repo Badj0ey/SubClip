@@ -541,7 +541,71 @@ async function run(): Promise<void> {
     assert.strictEqual(db.searchCues('独角兽').length, 0, '被删视频的字幕不该还能搜到')
   })
 
-  /* ------------------------- 13. 备份 / 恢复 / 清空 ------------------------- */
+  /* ------------------------------ 13. 标签（分类） ----------------------------- */
+  check('标签：新建去重 / 打标 / 按标签成组 / 删标签不影响视频', () => {
+    const video = db.findVideoByBvid('BV1SEARCH001')
+    assert.ok(video, '前置视频应存在')
+
+    const tagA = db.createTag('待剪辑')
+    const tagB = db.createTag('重点')
+    assert.strictEqual(db.createTag('待剪辑'), tagA, '同名标签应复用而不是新建')
+    assert.strictEqual(db.listTags().filter((t) => t.name === '待剪辑').length, 1)
+
+    db.setVideoTags(video!.id, [tagA, tagB])
+    assert.deepStrictEqual(
+      db.getVideoTagIds(video!.id).sort((a, b) => a - b),
+      [tagA, tagB].sort((a, b) => a - b),
+      '两个标签都应打上'
+    )
+    // 重复设置同一集合不应产生重复关联
+    db.setVideoTags(video!.id, [tagA, tagB, tagA])
+    assert.strictEqual(db.getVideoTagIds(video!.id).length, 2, '重复的 tagId 应被去重')
+
+    const tree = db.buildTree()
+    const tagRoot = tree.find((n) => n.type === 'tags')
+    assert.ok(tagRoot, '资源树顶部应有「标签」分组')
+    const nodeA = tagRoot!.children!.find((n) => n.label === '待剪辑')
+    assert.ok(nodeA, '应有「待剪辑」标签节点')
+    assert.strictEqual(nodeA!.children!.length, 1, '该标签下应有 1 个视频')
+    assert.strictEqual(nodeA!.children![0].videoId, video!.id, '标签下的视频节点应带 videoId')
+
+    // 视频节点自身也应带上标签名（树里直接显示成小圆片）
+    // 注意：这时库里已经有好几个 UP主，不能只看第一个，要整棵树找
+    const findVideoNode = (nodes: typeof tree): (typeof tree)[number] | undefined => {
+      for (const n of nodes) {
+        if (n.videoId === video!.id) return n
+        const hit = n.children ? findVideoNode(n.children) : undefined
+        if (hit) return hit
+      }
+      return undefined
+    }
+    const videoNode = findVideoNode(tree)
+    assert.ok(videoNode, '树里应能找到该视频节点')
+    assert.deepStrictEqual(
+      (videoNode!.tags ?? []).slice().sort(),
+      ['待剪辑', '重点'],
+      '视频节点应带上它的标签名'
+    )
+
+    // 改成只剩一个标签
+    db.setVideoTags(video!.id, [tagB])
+    assert.deepStrictEqual(db.getVideoTagIds(video!.id), [tagB], '覆盖式设置应移除未勾选的标签')
+
+    // 删标签：只删标签，视频必须还在
+    db.deleteTag(tagA)
+    assert.ok(!db.listTags().some((t) => t.id === tagA), '标签应被删除')
+    assert.ok(db.findVideoByBvid('BV1SEARCH001'), '删标签不能把视频一起删掉')
+    assert.deepStrictEqual(db.getVideoTagIds(video!.id), [tagB], '其它标签不受影响')
+
+    db.renameTag(tagB, '重要')
+    assert.ok(db.listTags().some((t) => t.name === '重要'), '标签应能改名')
+
+    // 空标签不应在树里占位
+    db.deleteTag(tagB)
+    assert.strictEqual(db.buildTree().find((n) => n.type === 'tags'), undefined, '没有标签时不应有「标签」分组')
+  })
+
+  /* ------------------------- 14. 备份 / 恢复 / 清空 ------------------------- */
   check('备份是单个自洽文件（换一份库目录也能读到同样的数据）', () => {
     const backupFile = join(workDir, 'backup.db')
     db.backupTo(backupFile)

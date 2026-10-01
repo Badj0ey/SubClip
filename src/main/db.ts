@@ -94,6 +94,84 @@ interface ClipRow {
   created_at: number
 }
 
+/* ---------------------------------- 标签 ---------------------------------- */
+
+export interface TagRow {
+  id: number
+  name: string
+  created_at: number
+}
+
+/** 全部标签，按名称排序 */
+export function listTags(): Array<{ id: number; name: string; count: number }> {
+  return requireDb()
+    .prepare(
+      `select t.id as id, t.name as name,
+              (select count(*) from video_tags vt where vt.tag_id = t.id) as count
+       from tags t order by t.name asc`
+    )
+    .all() as unknown as Array<{ id: number; name: string; count: number }>
+}
+
+/** 新建标签；已存在时直接返回既有标签的 id */
+export function createTag(name: string): number {
+  const value = (name ?? '').trim().slice(0, 40)
+  if (!value) throw new Error('标签名不能为空')
+  const handle = requireDb()
+  const hit = handle.prepare('select id from tags where name = ?').get(value) as
+    | { id: number }
+    | undefined
+  if (hit) return hit.id
+  const res = handle
+    .prepare('insert into tags (name, created_at) values (?, ?)')
+    .run(value, Date.now())
+  return Number(res.lastInsertRowid)
+}
+
+export function renameTag(id: number, name: string): void {
+  const value = (name ?? '').trim().slice(0, 40)
+  if (!value) return
+  requireDb().prepare('update tags set name = ? where id = ?').run(value, id)
+}
+
+/** 删除标签本身（video_tags 由外键级联清理，不影响视频） */
+export function deleteTag(id: number): void {
+  requireDb().prepare('delete from tags where id = ?').run(id)
+}
+
+/** 某个视频身上的标签 id */
+export function getVideoTagIds(videoId: number): number[] {
+  const rows = requireDb()
+    .prepare('select tag_id from video_tags where video_id = ?')
+    .all(videoId) as unknown as Array<{ tag_id: number }>
+  return rows.map((r) => r.tag_id)
+}
+
+/** 整体覆盖某个视频的标签集合 */
+export function setVideoTags(videoId: number, tagIds: number[]): void {
+  const handle = requireDb()
+  const wanted = [...new Set(tagIds.filter((n) => Number.isFinite(n)))]
+  withTransaction(() => {
+    handle.prepare('delete from video_tags where video_id = ?').run(videoId)
+    const ins = handle.prepare('insert or ignore into video_tags (video_id, tag_id) values (?, ?)')
+    for (const tagId of wanted) ins.run(videoId, tagId)
+  })
+}
+
+/** 某个标签下的视频 id（用于资源树的「标签」分组） */
+function videoIdsByTag(): Map<number, number[]> {
+  const rows = requireDb()
+    .prepare('select tag_id, video_id from video_tags order by video_id asc')
+    .all() as unknown as Array<{ tag_id: number; video_id: number }>
+  const out = new Map<number, number[]>()
+  for (const r of rows) {
+    const list = out.get(r.tag_id)
+    if (list) list.push(r.video_id)
+    else out.set(r.tag_id, [r.video_id])
+  }
+  return out
+}
+
 /* ---------------------------------- 建表 ---------------------------------- */
 
 const SCHEMA = `
@@ -187,6 +265,22 @@ create virtual table if not exists cue_search using fts5(
   idx unindexed,
   tokenize='trigram'
 );
+
+-- 用户自定义标签（需求文档 §6 资源管理里的「分类」）。
+-- 刻意做成标签而不是「手动分组」：自动层级（UP主 → 合集）已经表达了归属，
+-- 标签是正交的另一维，一个视频可以同时属于「待剪辑」「重点」等多个标签。
+create table if not exists tags (
+  id integer primary key autoincrement,
+  name text not null unique,
+  created_at integer not null
+);
+
+create table if not exists video_tags (
+  video_id integer not null references videos(id) on delete cascade,
+  tag_id integer not null references tags(id) on delete cascade,
+  primary key (video_id, tag_id)
+);
+create index if not exists idx_video_tags_tag on video_tags(tag_id);
 `
 
 /* ---------------------------------- 状态 ---------------------------------- */
@@ -508,11 +602,14 @@ export function clearAllData(): number {
   const handle = requireDb()
   const before = stats()
   withTransaction(() => {
-    // 顺序无关紧要（有外键级联），但显式清一遍更直观
+    // 顺序无关紧要（有外键级联），但显式清一遍更直观。
+    // tags 必须一起清 —— 否则「清空数据」后资源树里还挂着一个空的「标签」分组。
     handle.exec('delete from clips')
     handle.exec('delete from cue_search')
     handle.exec('delete from cues')
     handle.exec('delete from docs')
+    handle.exec('delete from video_tags')
+    handle.exec('delete from tags')
     handle.exec('delete from videos')
     handle.exec('delete from collections')
     handle.exec('delete from uploaders')
@@ -1029,6 +1126,20 @@ export function buildTree(): TreeNode[] {
     else collectionsByUploader.set(c.uploader_id, [c])
   }
 
+  // 每个视频身上的标签名（树里直接显示，不用再查一次）
+  const tagsByVideo = new Map<number, string[]>()
+  for (const row of handle
+    .prepare(
+      `select vt.video_id as videoId, t.name as name
+       from video_tags vt join tags t on t.id = vt.tag_id
+       order by t.name asc`
+    )
+    .all() as unknown as Array<{ videoId: number; name: string }>) {
+    const list = tagsByVideo.get(row.videoId)
+    if (list) list.push(row.name)
+    else tagsByVideo.set(row.videoId, [row.name])
+  }
+
   const videoNode = (v: VideoRow): TreeNode => {
     const list = docsByVideo.get(v.id) ?? []
     const where = v.bvid || '本地'
@@ -1038,11 +1149,38 @@ export function buildTree(): TreeNode[] {
       label: v.title || v.bvid || '未命名字幕',
       subtitle: list.length ? `${where} · ${list.length} 条字幕` : where,
       favorite: Boolean(v.favorite),
+      videoId: v.id,
+      tags: tagsByVideo.get(v.id) ?? [],
       children: list.map(docNode)
     }
   }
 
   const nodes: TreeNode[] = []
+
+  // 标签视图放在最前面：它是用户自己筛出来的重点，比自动层级更常看
+  const allTags = listTags()
+  if (allTags.length) {
+    const grouped = videoIdsByTag()
+    const videoById = new Map(videos.map((v) => [v.id, v]))
+    nodes.push({
+      key: 'tags',
+      type: 'tags',
+      label: '标签',
+      subtitle: `${allTags.length} 个标签`,
+      children: allTags.map((t) => {
+        const list = (grouped.get(t.id) ?? [])
+          .map((id) => videoById.get(id))
+          .filter((v): v is VideoRow => Boolean(v))
+        return {
+          key: `tag:${t.id}`,
+          type: 'tag' as const,
+          label: t.name,
+          subtitle: `${list.length} 个视频`,
+          children: list.map(videoNode)
+        }
+      })
+    })
+  }
 
   for (const up of uploaders) {
     const colNodes: TreeNode[] = []
@@ -1170,6 +1308,9 @@ export interface NodeSnapshot {
   docs: DocRow[]
   cues: Array<{ doc_id: number; idx: number; start: number; end: number; text: string }>
   clips: ClipRow[]
+  /** 这些视频身上的标签（标签本身也在 tags 里，恢复时一并写回） */
+  tags: TagRow[]
+  videoTags: Array<{ video_id: number; tag_id: number }>
 }
 
 type Row = Record<string, unknown>
@@ -1192,7 +1333,9 @@ export function exportNode(key: string): NodeSnapshot | null {
     videos: [],
     docs: [],
     cues: [],
-    clips: []
+    clips: [],
+    tags: [],
+    videoTags: []
   }
 
   const collectByVideos = (videoIds: number[]): void => {
@@ -1204,6 +1347,13 @@ export function exportNode(key: string): NodeSnapshot | null {
       const dMarks = docIds.map(() => '?').join(',')
       snap.cues = queryRows(`select * from cues where doc_id in (${dMarks})`, docIds)
       snap.clips = queryRows<ClipRow>(`select * from clips where doc_id in (${dMarks})`, docIds)
+    }
+    // 标签与视频的关联也要一起留档，否则「撤销删除」会把标签悄悄丢掉
+    snap.videoTags = queryRows(`select * from video_tags where video_id in (${marks})`, videoIds)
+    const tagIds = [...new Set(snap.videoTags.map((vt) => vt.tag_id))]
+    if (tagIds.length) {
+      const tMarks = tagIds.map(() => '?').join(',')
+      snap.tags = queryRows<TagRow>(`select * from tags where id in (${tMarks})`, tagIds)
     }
   }
 
@@ -1331,6 +1481,16 @@ export function importNode(snap: NodeSnapshot): number {
         c.created_at
       )
     }
+
+    const insTag = handle.prepare(
+      'insert or ignore into tags (id, name, created_at) values (?, ?, ?)'
+    )
+    for (const t of snap.tags ?? []) insTag.run(t.id, t.name, t.created_at)
+
+    const insVideoTag = handle.prepare(
+      'insert or ignore into video_tags (video_id, tag_id) values (?, ?)'
+    )
+    for (const vt of snap.videoTags ?? []) insVideoTag.run(vt.video_id, vt.tag_id)
   })
 
   // 全文索引跟着正文一起重建（快照里没有 FTS 表，必须显式补）

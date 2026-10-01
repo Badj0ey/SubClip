@@ -505,6 +505,28 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     }
   })
 
+  /* ---------------------------------- 标签 ---------------------------------- */
+
+  ipcMain.handle('tags:list', () => db.listTags())
+  ipcMain.handle('tags:create', (_e, name: string) => {
+    const id = db.createTag(name)
+    return { id, tree: db.buildTree() }
+  })
+  ipcMain.handle('tags:rename', (_e, payload: { id: number; name: string }) => {
+    db.renameTag(payload.id, payload.name)
+    return db.buildTree()
+  })
+  ipcMain.handle('tags:delete', (_e, id: number) => {
+    // 只删标签本身；视频、字幕都不受影响（video_tags 由外键级联清理）
+    db.deleteTag(id)
+    return db.buildTree()
+  })
+  ipcMain.handle('tags:ofVideo', (_e, videoId: number) => db.getVideoTagIds(videoId))
+  ipcMain.handle('tags:setVideo', (_e, payload: { videoId: number; tagIds: number[] }) => {
+    db.setVideoTags(payload.videoId, payload.tagIds ?? [])
+    return db.buildTree()
+  })
+
   /* --------------------------------- 数据管理 -------------------------------- */
 
   /** 备份整库到用户选定的文件（单个自洽的 .db，拿走即可） */

@@ -117,11 +117,14 @@ export interface ClipTask {
 /** 资源树节点（渲染进程用） */
 export interface TreeNode {
   key: string
-  type: 'uploader' | 'collection' | 'video' | 'doc'
+  type: 'uploader' | 'collection' | 'video' | 'doc' | 'tags' | 'tag'
   label: string
   subtitle?: string
   favorite?: boolean
   children?: TreeNode[]
+  /** 视频节点带上 id 与标签，便于右键打标签、直接展示标签 */
+  videoId?: number
+  tags?: string[]
   payload?: Uploader | Collection | VideoItem | SubtitleDoc
 }
 
