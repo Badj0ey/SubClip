@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <title>SRT 字幕助手</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <header>
+      <span class="dot" id="dot"></span>
+      <strong id="statusText">正在检测…</strong>
+      <span class="spacer"></span>
+      <button id="btnReconnect" class="ghost" title="重新连接">⟳</button>
+    </header>
+
+    <section class="card">
+      <div class="row">
+        <label>本地端口</label>
+        <input id="port" type="number" min="1" max="65535" />
+        <button id="btnSavePort" class="ghost">保存</button>
+      </div>
+      <div class="hint" id="hint"></div>
+    </section>
+
+    <section class="card">
+      <div class="row">
+        <span class="label" style="margin: 0">浏览器登录状态</span>
+        <span class="spacer"></span>
+        <span class="pill" id="loginState">检测中…</span>
+      </div>
+      <div class="row" style="margin-top: 6px">
+        <span class="label" style="margin: 0">桌面端登录状态</span>
+        <span class="spacer"></span>
+        <span class="pill" id="cookieState">未知</span>
+      </div>
+      <button id="btnSyncCookies" class="primary block">同步登录状态到桌面端</button>
+    </section>
+
+    <section class="card">
+      <div class="label">当前页面（自动识别，不自动同步）</div>
+      <div id="pageInfo" class="value">未识别</div>
+    </section>
+
+    <section class="card">
+      <div class="label">字幕轨</div>
+      <div id="tracks" class="value">—</div>
+    </section>
+
+    <section class="actions">
+      <button id="btnSync" class="primary">同步该视频到桌面端</button>
+      <button id="btnFetch" class="ghost">同时拉取字幕</button>
+    </section>
+
+    <section class="card">
+      <div class="label">最近事件</div>
+      <ul id="events" class="events"></ul>
+    </section>
+
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

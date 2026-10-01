@@ -1,0 +1,18 @@
+# 依赖
+node_modules/
+
+# 构建产物
+out/
+dist/
+release/
+
+# 构建缓存（tsconfig 开了 composite，会生成 .tsbuildinfo）
+*.tsbuildinfo
+
+# 测试产物（esbuild 打包出的中间文件与截图）
+tests/*.cjs
+tests/*.png
+tests/large-*.srt
+
+# 工具临时目录
+.tmp-shot/

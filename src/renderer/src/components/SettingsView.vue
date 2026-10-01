@@ -1,0 +1,649 @@
+<script setup lang="ts">
+import { computed, onMounted, onUnmounted, ref } from 'vue'
+import type { AppSettings } from '@shared/types'
+import { FFMPEG_DOWNLOAD_URL, QUALITY_OPTIONS } from '@shared/constants'
+import {
+  DEFAULT_SHORTCUTS,
+  SHORTCUT_DEFS,
+  eventToBinding,
+  findConflicts,
+  formatBinding,
+  normalizeShortcuts,
+  type ShortcutAction
+} from '@shared/shortcuts'
+import {
+  applyReadingStyle,
+  applyTheme,
+  loadBridgeStatus,
+  openSliceOutput,
+  refreshSliceCheck,
+  restartBridge,
+  state,
+  toast
+} from '../store'
+
+const env = ref<Record<string, { path: string; exists: boolean }> | null>(null)
+const login = ref<{ loggedIn: boolean; name?: string }>({ loggedIn: false })
+const stats = ref<{
+  uploaders: number
+  collections: number
+  videos: number
+  docs: number
+  clips: number
+  missingCues: number
+  dataDir: string
+}>({
+  uploaders: 0,
+  collections: 0,
+  videos: 0,
+  docs: 0,
+  clips: 0,
+  missingCues: 0,
+  dataDir: ''
+})
+const cookieDraft = ref('')
+const checking = ref(false)
+const extDir = ref<{ path: string; exists: boolean } | null>(null)
+
+const FONTS = [
+  { value: '', label: '系统默认' },
+  { value: "'Microsoft YaHei', sans-serif", label: '微软雅黑' },
+  { value: "'PingFang SC', sans-serif", label: '苹方' },
+  { value: "'Source Han Sans SC', 'Noto Sans SC', sans-serif", label: '思源黑体' },
+  { value: "'SimSun', serif", label: '宋体' },
+  { value: "'KaiTi', serif", label: '楷体' },
+  { value: "'Consolas', 'Courier New', monospace", label: '等宽' }
+]
+
+onMounted(async () => {
+  env.value = await window.api.checkEnv()
+  stats.value = await window.api.getStats()
+  // 不回显已保存的凭证，只在用户主动填写时才提交
+  cookieDraft.value = ''
+  login.value = await window.api.loginStatus()
+  extDir.value = await window.api.extensionDir()
+  await loadBridgeStatus()
+})
+
+async function save(patch: Partial<AppSettings>): Promise<void> {
+  state.settings = await window.api.saveSettings(patch)
+  applyTheme(state.settings.theme)
+  applyReadingStyle()
+}
+
+async function pickDir(field: keyof AppSettings): Promise<void> {
+  const current = state.settings?.[field]
+  const dir = await window.api.pickDir(typeof current === 'string' ? current : '')
+  if (!dir) return
+  await save({ [field]: dir } as Partial<AppSettings>)
+  env.value = await window.api.checkEnv()
+  toast('路径已更新', 'success')
+}
+
+/** 只检测当前登录态，不改动已保存的凭证 */
+async function checkLoginStatus(): Promise<void> {
+  checking.value = true
+  try {
+    login.value = await window.api.loginStatus()
+    if (login.value.loggedIn) {
+      toast(`已登录${login.value.name ? `：${login.value.name}` : ''}`, 'success')
+    } else {
+      toast('未检测到有效登录态', 'error', 4200)
+    }
+  } finally {
+    checking.value = false
+  }
+}
+
+/** 保存手动填写的 Cookie 并检测 */
+async function saveCookie(): Promise<void> {
+  const value = cookieDraft.value.trim()
+  if (!value) return
+  checking.value = true
+  try {
+    await save({ biliCookie: value })
+    cookieDraft.value = ''
+    login.value = await window.api.loginStatus()
+    if (login.value.loggedIn) {
+      toast(`已保存并登录${login.value.name ? `：${login.value.name}` : ''}`, 'success')
+    } else {
+      toast('已保存，但未检测到登录态，请检查 Cookie 是否正确', 'error', 4800)
+    }
+  } finally {
+    checking.value = false
+  }
+}
+
+function onFontSize(e: Event): void {
+  void save({ fontSize: Number((e.target as HTMLInputElement).value) })
+}
+
+function onLineHeight(e: Event): void {
+  void save({ lineHeight: Number((e.target as HTMLInputElement).value) })
+}
+
+function onFontFamily(e: Event): void {
+  void save({ fontFamily: (e.target as HTMLSelectElement).value })
+}
+
+function onTheme(e: Event): void {
+  void save({ theme: (e.target as HTMLSelectElement).value as AppSettings['theme'] })
+}
+
+function onReadLine(e: Event): void {
+  void save({ readLine: (e.target as HTMLInputElement).checked })
+}
+
+async function onPort(e: Event): Promise<void> {
+  const port = Number((e.target as HTMLInputElement).value) || 8765
+  await save({ port })
+  await restartBridge(port)
+}
+
+async function onRestartBridge(): Promise<void> {
+  await restartBridge(state.settings?.port)
+}
+
+/* --------------------------------- 本地切片 -------------------------------- */
+
+async function pickFfmpeg(): Promise<void> {
+  const file = await window.api.pickFfmpeg()
+  if (!file) return
+  await save({ ffmpegPath: file })
+  await refreshSliceCheck()
+  toast(
+    state.ffmpegReady ? 'ffmpeg 已就绪，可以本地切片了' : '该文件无法执行，请重新选择',
+    state.ffmpegReady ? 'success' : 'error',
+    4200
+  )
+}
+
+async function recheckFfmpeg(): Promise<void> {
+  await refreshSliceCheck()
+  toast(state.ffmpegReady ? '已检测到 ffmpeg' : '仍未检测到 ffmpeg', state.ffmpegReady ? 'success' : 'error')
+}
+
+function onSliceQuality(e: Event): void {
+  void save({ sliceQuality: Number((e.target as HTMLSelectElement).value) })
+}
+
+function onSliceConcurrency(e: Event): void {
+  void save({ sliceConcurrency: Number((e.target as HTMLInputElement).value) })
+}
+
+async function openFfmpegDownload(): Promise<void> {
+  await window.api.openExternal(FFMPEG_DOWNLOAD_URL)
+}
+
+async function openExtensionDir(): Promise<void> {
+  const dir = extDir.value?.path
+  if (!dir) return
+  const err = await window.api.openPath(dir)
+  if (err) toast(err, 'error', 4200)
+}
+
+const lastEventText = computed(() => {
+  const e = state.bridge?.lastEvent
+  if (!e) return ''
+  return `${new Date(e.at).toLocaleTimeString()} · ${e.text}`
+})
+
+const connectedClients = computed(() => state.bridge?.clients ?? [])
+const pluginOnline = computed(() => connectedClients.value.length > 0)
+
+/* --------------------------------- 快捷键 --------------------------------- */
+
+const recording = ref<ShortcutAction | null>(null)
+
+const shortcutMap = computed(() => state.settings?.shortcuts ?? DEFAULT_SHORTCUTS)
+const conflicts = computed(() => findConflicts(shortcutMap.value))
+const conflictIds = computed(() => new Set(conflicts.value.flat()))
+const conflictText = computed(() =>
+  conflicts.value
+    .map((group) =>
+      group.map((id) => SHORTCUT_DEFS.find((d) => d.id === id)?.label ?? id).join(' / ')
+    )
+    .join('；')
+)
+
+function stopRecord(): void {
+  recording.value = null
+  window.removeEventListener('keydown', captureKey, true)
+}
+
+function captureKey(e: KeyboardEvent): void {
+  e.preventDefault()
+  e.stopPropagation()
+  if (e.key === 'Escape') {
+    stopRecord()
+    return
+  }
+  const binding = eventToBinding(e)
+  if (!binding) return
+  const id = recording.value
+  if (!id) return
+  void saveShortcut(id, binding)
+  stopRecord()
+}
+
+function startRecord(id: ShortcutAction): void {
+  if (recording.value === id) {
+    stopRecord()
+    return
+  }
+  stopRecord()
+  recording.value = id
+  window.addEventListener('keydown', captureKey, true)
+}
+
+async function saveShortcut(id: ShortcutAction, binding: string): Promise<void> {
+  if (!state.settings) return
+  const next = { ...shortcutMap.value, [id]: binding }
+  state.settings = await window.api.saveSettings({ shortcuts: next })
+}
+
+async function resetOne(id: ShortcutAction): Promise<void> {
+  stopRecord()
+  await saveShortcut(id, DEFAULT_SHORTCUTS[id])
+}
+
+async function resetAllShortcuts(): Promise<void> {
+  stopRecord()
+  state.settings = await window.api.saveSettings({ shortcuts: normalizeShortcuts(undefined) })
+  toast('快捷键已恢复默认', 'success')
+}
+
+onUnmounted(stopRecord)
+
+async function openDataDir(): Promise<void> {
+  const dir = stats.value.dataDir
+  if (!dir) {
+    toast('数据目录尚未初始化', 'error')
+    return
+  }
+  const err = await window.api.openPath(dir)
+  if (err) toast(err, 'error', 4200)
+}
+
+async function openOutputDir(): Promise<void> {
+  const dir = state.settings?.outputDir ?? ''
+  if (!dir) {
+    toast('尚未设置输出目录', 'error')
+    return
+  }
+  const err = await window.api.openPath(dir)
+  if (err) toast(err, 'error', 4200)
+}
+</script>
+
+<template>
+  <section class="pane" style="flex: 1 1 auto">
+    <div class="pane-head">
+      <strong style="font-size: 13px">设置</strong>
+    </div>
+
+    <div class="settings">
+      <!-- 字幕显示 -->
+      <h2>字幕显示</h2>
+      <div class="field">
+        <label>字体大小</label>
+        <div class="row">
+          <input
+            :value="state.settings?.fontSize"
+            type="range"
+            min="11"
+            max="30"
+            step="1"
+            style="width: 220px"
+            @input="onFontSize"
+          />
+          <span class="muted">{{ state.settings?.fontSize }} px</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>字体</label>
+        <div class="row">
+          <select
+            :value="state.settings?.fontFamily"
+            class="select grow"
+            @change="onFontFamily"
+          >
+            <option v-for="f in FONTS" :key="f.label" :value="f.value">{{ f.label }}</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>行距</label>
+        <div class="row">
+          <input
+            :value="state.settings?.lineHeight"
+            type="range"
+            min="1.2"
+            max="2.6"
+            step="0.1"
+            style="width: 220px"
+            @input="onLineHeight"
+          />
+          <span class="muted">{{ state.settings?.lineHeight }}</span>
+        </div>
+      </div>
+      <div class="field">
+        <label>主题</label>
+        <div class="row">
+          <select
+            :value="state.settings?.theme"
+            class="select"
+            @change="onTheme"
+          >
+            <option value="system">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+      </div>
+      <div class="field">
+        <label>阅读条</label>
+        <div class="row">
+          <label class="switch">
+            <input
+              type="checkbox"
+              :checked="state.settings?.readLine !== false"
+              @change="onReadLine"
+            />
+            <span>滚动时把屏幕偏上位置的那条字幕放大突出，便于跟读</span>
+          </label>
+        </div>
+      </div>
+
+      <!-- 快捷键 -->
+      <h2>
+        快捷键
+        <button class="btn sm" style="float: right; font-weight: 400" @click="resetAllShortcuts">
+          恢复全部默认
+        </button>
+      </h2>
+
+      <div v-if="conflicts.length" class="hint warn-hint">
+        ⚠ 检测到快捷键冲突：{{ conflictText }}
+      </div>
+
+      <div v-for="def in SHORTCUT_DEFS" :key="def.id" class="field">
+        <label>{{ def.label }}</label>
+        <div class="row">
+          <button
+            class="btn shortcut-key"
+            :class="{ recording: recording === def.id, conflict: conflictIds.has(def.id) }"
+            @click="startRecord(def.id)"
+          >
+            {{ recording === def.id ? '按下按键…' : formatBinding(shortcutMap[def.id]) }}
+          </button>
+          <button
+            class="btn sm"
+            :disabled="shortcutMap[def.id] === DEFAULT_SHORTCUTS[def.id]"
+            @click="resetOne(def.id)"
+          >
+            重置
+          </button>
+          <span class="muted">{{ def.description }}</span>
+        </div>
+      </div>
+      <div class="hint">
+        点击按键按钮后按下新的组合键即可修改，按 Esc 取消录制。
+        提示：Shift + 单击字幕行可连续选择一段。
+      </div>
+
+      <!-- 路径设置 -->
+      <h2>路径设置</h2>
+      <div class="field">
+        <label>字幕缓存目录</label>
+        <div class="row">
+          <input :value="state.settings?.subtitleCacheDir" class="input grow" readonly />
+          <button class="btn" @click="pickDir('subtitleCacheDir')">选择…</button>
+        </div>
+      </div>
+      <div class="hint">字幕正文缓存位置，修改后需重启应用生效。</div>
+      <div class="field">
+        <label>外部切片工具目录</label>
+        <div class="row">
+          <input
+            :value="state.settings?.sliceToolDir"
+            class="input grow"
+            readonly
+            placeholder="可选，未设置"
+          />
+          <button class="btn" @click="pickDir('sliceToolDir')">选择…</button>
+        </div>
+      </div>
+      <div class="hint">
+        <template v-if="!state.settings?.sliceToolDir">
+          未设置（可选）。本地切片已内置，只有走「导出表格 → 手动导入 Edge 扩展」这条旧路径时才需要填。
+        </template>
+        <span
+          v-else
+          :style="{ color: env?.sliceToolDir?.exists ? 'var(--success)' : 'var(--danger)' }"
+        >
+          {{ env?.sliceToolDir?.exists ? '✓ 目录存在' : '✗ 目录不存在' }}
+        </span>
+      </div>
+      <div class="field">
+        <label>切片表输出目录</label>
+        <div class="row">
+          <input :value="state.settings?.outputDir" class="input grow" readonly />
+          <button class="btn" @click="pickDir('outputDir')">选择…</button>
+          <button class="btn" @click="openOutputDir">打开</button>
+        </div>
+      </div>
+
+      <!-- 本地切片 -->
+      <h2>
+        本地切片
+        <button class="btn sm" style="font-weight: 400" @click="openFfmpegDownload">
+          获取 ffmpeg
+        </button>
+      </h2>
+
+      <div class="field">
+        <label>ffmpeg</label>
+        <div class="row">
+          <span :style="{ color: state.ffmpegReady ? 'var(--success)' : 'var(--danger)' }">
+            {{ state.ffmpegReady ? '✓ 已就绪' : '✗ 未找到' }}
+          </span>
+          <input
+            :value="state.ffmpegPath"
+            class="input grow"
+            readonly
+            placeholder="未检测到，请手动指定"
+          />
+          <button class="btn" @click="pickFfmpeg">选择…</button>
+          <button class="btn" @click="recheckFfmpeg">重新检测</button>
+        </div>
+      </div>
+      <div class="hint">
+        本地切片需要 ffmpeg。若系统未安装，可点右上角「获取 ffmpeg」下载，解压后把
+        <code>bin\ffmpeg.exe</code> 的路径填到上面。
+      </div>
+
+      <div class="field">
+        <label>切片画质</label>
+        <div class="row">
+          <select
+            :value="state.settings?.sliceQuality"
+            class="select"
+            @change="onSliceQuality"
+          >
+            <option v-for="q in QUALITY_OPTIONS" :key="q.value" :value="q.value">
+              {{ q.label }}
+            </option>
+          </select>
+          <span class="muted">实际清晰度受账号权限限制，会自动降级</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>下载并发数</label>
+        <div class="row">
+          <input
+            :value="state.settings?.sliceConcurrency"
+            type="range"
+            min="1"
+            max="8"
+            step="1"
+            style="width: 200px"
+            @input="onSliceConcurrency"
+          />
+          <span class="muted">{{ state.settings?.sliceConcurrency }}</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>切片输出目录</label>
+        <div class="row">
+          <input
+            :value="state.settings?.sliceOutputDir"
+            class="input grow"
+            readonly
+            placeholder="默认使用切片表输出目录"
+          />
+          <button class="btn" @click="pickDir('sliceOutputDir')">选择…</button>
+          <button class="btn" @click="openSliceOutput">打开</button>
+        </div>
+      </div>
+
+      <!-- 浏览器插件通信 -->
+      <h2>浏览器插件通信</h2>
+      <div class="field">
+        <label>本地端口</label>
+        <div class="row">
+          <input
+            :value="state.settings?.port"
+            class="input"
+            type="number"
+            style="width: 120px"
+            @change="onPort"
+          />
+          <button class="btn" @click="onRestartBridge">重启服务</button>
+          <span class="muted">仅监听 127.0.0.1，插件通过该端口连接</span>
+        </div>
+      </div>
+
+      <div class="field">
+        <label>服务状态</label>
+        <div class="row">
+          <span
+            :style="{ color: state.bridge?.running ? 'var(--success)' : 'var(--danger)' }"
+          >
+            {{ state.bridge?.running ? `✓ 运行中 · ws://127.0.0.1:${state.bridge.port}` : '✗ 未运行' }}
+          </span>
+        </div>
+      </div>
+
+      <div v-if="state.bridge?.error" class="hint" style="color: var(--danger)">
+        {{ state.bridge.error }}
+      </div>
+
+      <div class="field">
+        <label>插件连接</label>
+        <div class="row">
+          <span v-if="connectedClients.length" :style="{ color: 'var(--success)' }">
+            ✓ {{ connectedClients.length }} 个插件已连接（{{ connectedClients[0].browser }} v{{ connectedClients[0].version }}）
+          </span>
+          <span v-else class="muted">暂无插件连接</span>
+        </div>
+      </div>
+
+      <div v-if="lastEventText" class="hint">最近事件：{{ lastEventText }}</div>
+
+      <div class="field">
+        <label>插件目录</label>
+        <div class="row">
+          <input :value="extDir?.path" class="input grow" readonly />
+          <button class="btn" :disabled="!extDir?.exists" @click="openExtensionDir">打开</button>
+        </div>
+      </div>
+      <div class="hint">
+        安装：浏览器打开 <code>chrome://extensions</code>（Edge 为 <code>edge://extensions</code>），
+        开启「开发人员模式」→「加载解压缩的扩展」→ 选择上面的插件目录。
+      </div>
+
+      <!-- 账号 -->
+      <h2>B站账号</h2>
+
+      <div class="field">
+        <label>登录状态</label>
+        <div class="row">
+          <span :style="{ color: login.loggedIn ? 'var(--success)' : 'var(--danger)' }">
+            {{ login.loggedIn ? `✓ 已登录${login.name ? `（${login.name}）` : ''}` : '✗ 未登录 / 未验证' }}
+          </span>
+          <button class="btn sm" :disabled="checking" @click="checkLoginStatus">
+            {{ checking ? '检测中…' : '重新检测' }}
+          </button>
+        </div>
+      </div>
+
+      <div class="field" style="align-items: flex-start">
+        <label style="padding-top: 6px">从插件同步</label>
+        <div class="row">
+          <span class="muted" style="line-height: 1.8">
+            <template v-if="pluginOnline">
+              浏览器插件已连接 —— 打开插件弹窗点「同步登录状态到桌面端」即可，无需手动获取 Cookie。
+            </template>
+            <template v-else>
+              浏览器插件未连接。安装插件后会自动同步登录状态，免去手动配置 Cookie；
+              也可以在插件弹窗里手动点一次同步。
+            </template>
+          </span>
+        </div>
+      </div>
+
+      <div class="field" style="align-items: flex-start">
+        <label style="padding-top: 6px">手动填写 Cookie</label>
+        <div class="row">
+          <input
+            v-model="cookieDraft"
+            class="input grow"
+            type="password"
+            placeholder="留空表示不修改；也可只填 SESSDATA=xxxxx"
+          />
+          <button class="btn" :disabled="checking || !cookieDraft.trim()" @click="saveCookie">
+            保存
+          </button>
+        </div>
+      </div>
+      <div class="hint">
+        仅在不方便使用插件时需要。在浏览器登录 bilibili.com 后，从开发者工具复制 Cookie 粘贴到此处。
+      </div>
+
+      <!-- 数据 -->
+      <h2>数据</h2>
+      <div class="field">
+        <label>本地数据</label>
+        <div class="row muted">
+          UP主 {{ stats.uploaders ?? 0 }} · 合集 {{ stats.collections ?? 0 }} · 视频
+          {{ stats.videos ?? 0 }} · 字幕 {{ stats.docs ?? 0 }} · 切片任务
+          {{ stats.clips ?? 0 }}
+        </div>
+      </div>
+      <div class="field">
+        <label>数据目录</label>
+        <div class="row">
+          <input :value="stats.dataDir" class="input grow" readonly />
+          <button class="btn" @click="openDataDir">打开</button>
+        </div>
+      </div>
+      <div v-if="stats.missingCues" class="hint warn-hint">
+        ⚠ 检测到 {{ stats.missingCues }} 条字幕正文缺失。
+        这通常发生在旧版本（正文曾被放在会被浏览器清空的目录）。对相关视频重新拉取一次字幕即可恢复。
+      </div>
+      <div class="hint">
+        所有数据都在本机，关闭软件不会丢失；每次改动都会立刻写入磁盘。
+      </div>
+
+      <h2>关于切片流程</h2>
+      <div class="muted" style="line-height: 2">
+        1. 在本工具中选定字幕段 → 右侧「加入切片任务」。<br />
+        2. 点击「导出 CSV / XLSX」，生成切片表（列：BV号 / 分P / 开始时间 / 结束时间 / 备注）。<br />
+        3. 打开 Edge 扩展《B站表格批量切片下载器》，导入该表格并开始批量下载。
+      </div>
+    </div>
+  </section>
+</template>

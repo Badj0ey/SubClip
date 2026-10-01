@@ -1,0 +1,203 @@
+import { contextBridge, ipcRenderer } from 'electron'
+import type { IpcRendererEvent } from 'electron'
+import type {
+  AppSettings,
+  BiliTarget,
+  Cue,
+  OpResult,
+  ParseResult,
+  PullProgressInfo,
+  SliceCheckResult,
+  SliceProgressInfo,
+  SliceRowLike,
+  TreeNode
+} from '@shared/types'
+import type { BridgePageInfo, BridgeStatus } from '@shared/bridge'
+
+export type SliceRowPayload = SliceRowLike
+
+/** 订阅主进程推送，返回取消订阅函数 */
+function subscribe<T>(channel: string, cb: (payload: T) => void): () => void {
+  const listener = (_e: IpcRendererEvent, payload: T): void => cb(payload)
+  ipcRenderer.on(channel, listener)
+  return () => ipcRenderer.removeListener(channel, listener)
+}
+
+const api = {
+  /* 资源树 */
+  listTree: (): Promise<TreeNode[]> => ipcRenderer.invoke('tree:list'),
+  getStats: (): Promise<{
+    uploaders: number
+    collections: number
+    videos: number
+    docs: number
+    clips: number
+    missingCues: number
+    dataDir: string
+  }> => ipcRenderer.invoke('stats:get'),
+  deleteNode: (key: string): Promise<TreeNode[]> => ipcRenderer.invoke('node:delete', key),
+  toggleFavorite: (key: string): Promise<TreeNode[]> => ipcRenderer.invoke('node:favorite', key),
+  renameNode: (key: string, name: string): Promise<TreeNode[]> =>
+    ipcRenderer.invoke('node:rename', { key, name }),
+
+  /* 字幕 */
+  getCues: (docId: number): Promise<Cue[]> => ipcRenderer.invoke('doc:cues', docId),
+  updateCues: (docId: number, cues: Cue[]): Promise<boolean> =>
+    ipcRenderer.invoke('doc:updateCues', docId, cues),
+  getDocMeta: (docId: number): Promise<any> => ipcRenderer.invoke('doc:meta', docId),
+
+  /** 合并加载同一视频的所有分P 字幕（连续阅读） */
+  loadMerged: (docId: number): Promise<any> => ipcRenderer.invoke('doc:loadMerged', docId),
+  /** 按来源文档写回某一条字幕 */
+  updateMergedCue: (docId: number, origIndex: number, text: string): Promise<boolean> =>
+    ipcRenderer.invoke('doc:updateMergedCue', { docId, origIndex, text }),
+  previewSrt: (path: string): Promise<ParseResult> => ipcRenderer.invoke('srt:preview', path),
+  importSrt: (
+    paths: string[],
+    bvid?: string
+  ): Promise<
+    OpResult<{
+      imported: number
+      updated: number
+      failures: string[]
+      warnings: string[]
+      notes: string[]
+    }>
+  > => ipcRenderer.invoke('srt:import', { paths, bvid }),
+
+  /* B站 */
+  loginStatus: (): Promise<{ loggedIn: boolean; name?: string; avatar?: string }> =>
+    ipcRenderer.invoke('bili:loginStatus'),
+  fetchVideo: (input: string): Promise<OpResult<{ videoId: number; info: any }>> =>
+    ipcRenderer.invoke('bili:fetchVideo', input),
+  listTracks: (
+    videoId: number,
+    page: number
+  ): Promise<OpResult<{ tracks: Array<{ lang: string; label: string; url: string }>; cid?: number }>> =>
+    ipcRenderer.invoke('bili:tracks', { videoId, page }),
+  importTrack: (
+    videoId: number,
+    page: number,
+    track: { lang: string; label: string; url: string }
+  ): Promise<OpResult<{ docId: number; count: number }>> =>
+    ipcRenderer.invoke('bili:importTrack', { videoId, page, track }),
+
+  /** 解析任意 B 站链接，返回类型与视频列表 */
+  resolveTarget: (input: string): Promise<OpResult<BiliTarget>> =>
+    ipcRenderer.invoke('bili:resolve', input),
+
+  /** 批量拉取字幕 */
+  pullSubtitles: (
+    videos: Array<{ bvid: string; title: string }>
+  ): Promise<
+    OpResult<{
+      docs: number
+      updated: number
+      videos: number
+      failed: number
+      skipped: number
+      messages: string[]
+    }>
+  > => ipcRenderer.invoke('bili:pull', { videos }),
+
+  onPullProgress: (cb: (p: PullProgressInfo) => void) => subscribe('bili:pull-progress', cb),
+
+  /* 切片任务 */
+  listClips: (): Promise<any[]> => ipcRenderer.invoke('clips:list'),
+  addClips: (payload: {
+    docId: number
+    bvid: string
+    page: number
+    ranges: Array<{
+      start: number
+      end: number
+      segments?: Array<{ page: number; start: number; end: number }>
+    }>
+    notePrefix?: string
+  }): Promise<OpResult<{ count: number }>> => ipcRenderer.invoke('clips:add', payload),
+  deleteClip: (id: number): Promise<any[]> => ipcRenderer.invoke('clips:delete', id),
+  clearClips: (): Promise<boolean> => ipcRenderer.invoke('clips:clear'),
+  exportClips: (payload: {
+    rows: SliceRowPayload[]
+    format: 'csv' | 'xlsx'
+    outPath?: string
+  }): Promise<OpResult<{ path: string }>> => ipcRenderer.invoke('clips:export', payload),
+
+  /* 设置 */
+  getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
+  saveSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
+    ipcRenderer.invoke('settings:save', patch),
+  checkEnv: (): Promise<any> => ipcRenderer.invoke('env:check'),
+
+  /* 浏览器插件通信 */
+  bridgeStatus: (): Promise<BridgeStatus> => ipcRenderer.invoke('bridge:status'),
+  bridgeRestart: (port?: number): Promise<BridgeStatus> =>
+    ipcRenderer.invoke('bridge:restart', port),
+  requestSubtitles: (bvid: string, page: number, cid?: number | null): Promise<boolean> =>
+    ipcRenderer.invoke('bridge:requestSubtitles', { bvid, page, cid }),
+  extensionDir: (): Promise<{ path: string; exists: boolean }> =>
+    ipcRenderer.invoke('bridge:extensionDir'),
+
+  /* 本地切片 */
+  sliceCheck: (): Promise<SliceCheckResult> => ipcRenderer.invoke('slice:check'),
+  sliceRun: (
+    tasks: Array<{
+      bvid: string
+      page: number
+      start: number
+      end: number
+      note: string
+      segments?: Array<{ page: number; start: number; end: number }>
+    }>
+  ): Promise<OpResult<{ ok: number; failed: number; outputs: string[]; messages: string[] }>> =>
+    ipcRenderer.invoke('slice:run', { tasks }),
+  sliceCancel: (): Promise<boolean> => ipcRenderer.invoke('slice:cancel'),
+  onSliceProgress: (cb: (p: SliceProgressInfo) => void) => subscribe('slice:progress', cb),
+
+  /* 主进程事件订阅（返回取消订阅函数） */
+  onBridgeStatus: (cb: (s: BridgeStatus) => void) => subscribe('bridge:status', cb),
+  onBridgePageInfo: (cb: (p: { info: BridgePageInfo; videoId: number | null; message?: string }) => void) =>
+    subscribe('bridge:page-info', cb),
+  onBridgeSubtitle: (
+    cb: (p: {
+      bvid: string
+      page: number
+      label: string
+      ok: boolean
+      docId: number | null
+      count: number
+      /** false 表示覆盖了同语言的已有字幕 */
+      created: boolean
+      /** true 表示没查到视频信息，暂时挂在「未关联」下 */
+      unlinked: boolean
+      title: string
+    }) => void
+  ) => subscribe('bridge:subtitle', cb),
+  onBridgeLog: (cb: (p: { level: string; message: string }) => void) =>
+    subscribe('bridge:log', cb),
+  onDataWarning: (cb: (p: { missing: number; message: string }) => void) =>
+    subscribe('data:warning', cb),
+  onBridgeCookies: (
+    cb: (p: {
+      ok: boolean
+      loggedIn?: boolean
+      userName?: string
+      count?: number
+      message?: string
+    }) => void
+  ) => subscribe('bridge:cookies', cb),
+
+  /* 系统 */
+  pickFiles: (): Promise<string[]> => ipcRenderer.invoke('dialog:pickFiles'),
+  pickDir: (defaultPath?: string): Promise<string> => ipcRenderer.invoke('dialog:pickDir', defaultPath),
+  pickFfmpeg: (): Promise<string> => ipcRenderer.invoke('dialog:pickFfmpeg'),
+  saveFile: (defaultName: string, format: string): Promise<string> =>
+    ipcRenderer.invoke('dialog:saveFile', { defaultName, format }),
+  openPath: (target: string): Promise<string> => ipcRenderer.invoke('shell:openPath', target),
+  openExternal: (url: string): Promise<string> => ipcRenderer.invoke('shell:openExternal', url),
+  showItem: (target: string): Promise<boolean> => ipcRenderer.invoke('shell:showItem', target)
+}
+
+export type Api = typeof api
+
+contextBridge.exposeInMainWorld('api', api)

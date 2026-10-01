@@ -1,0 +1,33 @@
+{
+  "manifest_version": 3,
+  "name": "SRT 字幕助手 · B站桥接",
+  "version": "0.1.0",
+  "description": "检测 B 站视频 / 合集 / 收藏夹 / 投稿页面，把视频信息与字幕同步到本地「SRT 字幕检索与视频切片辅助工具」。",
+  "minimum_chrome_version": "116",
+  "permissions": ["storage", "alarms", "declarativeNetRequest", "scripting", "cookies"],
+  "host_permissions": [
+    "*://*.bilibili.com/*",
+    "*://*.hdslb.com/*",
+    "http://127.0.0.1/*",
+    "http://localhost/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["*://*.bilibili.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "SRT 字幕助手"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* https://api.bilibili.com https://*.hdslb.com"
+  }
+}
