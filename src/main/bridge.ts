@@ -74,8 +74,12 @@ export class BridgeServer extends EventEmitter {
   private lastEvent: { at: number; text: string } | null = null
   private heartbeat: NodeJS.Timeout | null = null
 
-  /** 应用版本，用于握手回包 */
-  version = '0.1.0'
+  /**
+   * 应用版本，用于握手回包。
+   * 这里只是占位默认值 —— 启动时 `main/index.ts` 会用 `app.getVersion()` 覆盖它，
+   * 避免版本号在两处各写一份、发版时只改了一边。
+   */
+  version = '0.0.0'
 
   private allowedOrigins: string[] = [...BRIDGE_ALLOWED_ORIGINS]
   private token = ''
