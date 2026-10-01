@@ -35,7 +35,11 @@ const api = {
     missingCues: number
     dataDir: string
   }> => ipcRenderer.invoke('stats:get'),
-  deleteNode: (key: string): Promise<TreeNode[]> => ipcRenderer.invoke('node:delete', key),
+  deleteNode: (key: string): Promise<{ tree: TreeNode[]; snapshot: unknown }> =>
+    ipcRenderer.invoke('node:delete', key),
+  /** 用删除时拿到的快照把整棵子树按原 id 写回去 */
+  restoreNode: (snapshot: unknown): Promise<TreeNode[]> =>
+    ipcRenderer.invoke('node:restore', snapshot),
   toggleFavorite: (key: string): Promise<TreeNode[]> => ipcRenderer.invoke('node:favorite', key),
   renameNode: (key: string, name: string): Promise<TreeNode[]> =>
     ipcRenderer.invoke('node:rename', { key, name }),

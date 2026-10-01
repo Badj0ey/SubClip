@@ -164,7 +164,8 @@ create index if not exists idx_cues_doc on cues(doc_id);
 
 create table if not exists clips (
   id integer primary key autoincrement,
-  doc_id integer not null,
+  -- 外键带级联：删文档时它的切片任务必须一起走，否则会留下指向不存在文档的孤儿任务
+  doc_id integer not null references docs(id) on delete cascade,
   bvid text not null default '',
   page integer not null,
   start real not null,
@@ -1055,41 +1056,33 @@ export function deleteDoc(docId: number): void {
 }
 
 export function deleteVideo(videoId: number): void {
-  // docs → cues 由外键级联清理；FTS 索引在 deleteCues 里维护，
-  // 但级联不会经过它，所以这里先按视频把索引清干净
   const handle = requireDb()
-  handle
-    .prepare('delete from cue_search where doc_id in (select id from docs where video_id = ?)')
-    .run(videoId)
+  // 外键级联会清掉 docs → cues，但 FTS 索引与 clips 不走级联（老库的 clips 也没有外键），
+  // 所以这两处必须显式清，否则会留下搜得到却打不开的残留。
+  const docIds = 'select id from docs where video_id = ?'
+  handle.prepare(`delete from clips where doc_id in (${docIds})`).run(videoId)
+  handle.prepare(`delete from cue_search where doc_id in (${docIds})`).run(videoId)
   handle.prepare('delete from videos where id = ?').run(videoId)
   pruneEmptyGroups()
 }
 
 export function deleteCollection(collectionId: number): void {
   const handle = requireDb()
-  handle
-    .prepare(
-      `delete from cue_search where doc_id in (
-         select d.id from docs d join videos v on v.id = d.video_id where v.collection_id = ?
-       )`
-    )
-    .run(collectionId)
+  const docIds = `select d.id from docs d join videos v on v.id = d.video_id where v.collection_id = ?`
+  handle.prepare(`delete from clips where doc_id in (${docIds})`).run(collectionId)
+  handle.prepare(`delete from cue_search where doc_id in (${docIds})`).run(collectionId)
   handle.prepare('delete from collections where id = ?').run(collectionId)
   pruneEmptyGroups()
 }
 
 export function deleteUploader(uploaderId: number): void {
   const handle = requireDb()
-  handle
-    .prepare(
-      `delete from cue_search where doc_id in (
-         select d.id from docs d
-         join videos v on v.id = d.video_id
-         join collections c on c.id = v.collection_id
-         where c.uploader_id = ?
-       )`
-    )
-    .run(uploaderId)
+  const docIds = `select d.id from docs d
+                  join videos v on v.id = d.video_id
+                  join collections c on c.id = v.collection_id
+                  where c.uploader_id = ?`
+  handle.prepare(`delete from clips where doc_id in (${docIds})`).run(uploaderId)
+  handle.prepare(`delete from cue_search where doc_id in (${docIds})`).run(uploaderId)
   handle.prepare('delete from uploaders where id = ?').run(uploaderId)
   pruneEmptyGroups()
 }
@@ -1104,6 +1097,201 @@ export function deleteNode(key: string): void {
   else if (type === 'collection') deleteCollection(id)
   else if (type === 'uploader') deleteUploader(id)
 }
+
+/* ------------------------------ 删除与恢复（撤销） ----------------------------- */
+
+/**
+ * 被删除子树的快照。
+ *
+ * 删除是破坏性的：本地导入的字幕、手工改过的正文，删掉就再也拉不回来了
+ * （早期版本的注释认为「重新拉取成本很低」，这只对纯 B站 来源成立）。
+ * 所以删除前把整棵子树导出成快照，撤销时按原 id 写回去。
+ */
+export interface NodeSnapshot {
+  uploaders: UploaderRow[]
+  collections: CollectionRow[]
+  videos: VideoRow[]
+  docs: DocRow[]
+  cues: Array<{ doc_id: number; idx: number; start: number; end: number; text: string }>
+  clips: ClipRow[]
+}
+
+type Row = Record<string, unknown>
+
+function queryRows<T>(sql: string, params: Array<number | string | null>): T[] {
+  return requireDb()
+    .prepare(sql)
+    .all(...params) as unknown as T[]
+}
+
+/** 导出某个节点（含其下所有内容）的快照；节点不存在时返回 null */
+export function exportNode(key: string): NodeSnapshot | null {
+  const [type, idRaw] = key.split(':')
+  const id = Number(idRaw)
+  if (!id) return null
+
+  const snap: NodeSnapshot = {
+    uploaders: [],
+    collections: [],
+    videos: [],
+    docs: [],
+    cues: [],
+    clips: []
+  }
+
+  const collectByVideos = (videoIds: number[]): void => {
+    if (!videoIds.length) return
+    const marks = videoIds.map(() => '?').join(',')
+    snap.docs = queryRows<DocRow>(`select * from docs where video_id in (${marks})`, videoIds)
+    const docIds = snap.docs.map((d) => d.id)
+    if (docIds.length) {
+      const dMarks = docIds.map(() => '?').join(',')
+      snap.cues = queryRows(`select * from cues where doc_id in (${dMarks})`, docIds)
+      snap.clips = queryRows<ClipRow>(`select * from clips where doc_id in (${dMarks})`, docIds)
+    }
+  }
+
+  const collectByCollections = (collectionIds: number[]): void => {
+    if (!collectionIds.length) return
+    const marks = collectionIds.map(() => '?').join(',')
+    snap.videos = queryRows<VideoRow>(
+      `select * from videos where collection_id in (${marks})`,
+      collectionIds
+    )
+    collectByVideos(snap.videos.map((v) => v.id))
+  }
+
+  if (type === 'doc') {
+    const doc = getDoc(id)
+    if (!doc) return null
+    snap.docs = queryRows<DocRow>('select * from docs where id = ?', [id])
+    snap.cues = queryRows('select * from cues where doc_id = ?', [id])
+    snap.clips = queryRows<ClipRow>('select * from clips where doc_id = ?', [id])
+  } else if (type === 'video') {
+    const video = getVideo(id)
+    if (!video) return null
+    snap.videos = queryRows<VideoRow>('select * from videos where id = ?', [id])
+    collectByVideos([id])
+  } else if (type === 'collection') {
+    snap.collections = queryRows<CollectionRow>('select * from collections where id = ?', [id])
+    if (!snap.collections.length) return null
+    collectByCollections([id])
+  } else if (type === 'uploader') {
+    snap.uploaders = queryRows<UploaderRow>('select * from uploaders where id = ?', [id])
+    if (!snap.uploaders.length) return null
+    snap.collections = queryRows<CollectionRow>('select * from collections where uploader_id = ?', [
+      id
+    ])
+    collectByCollections(snap.collections.map((c) => c.id))
+  } else {
+    return null
+  }
+
+  return snap
+}
+
+/** 把快照写回库（按原 id），返回恢复的“视频 + 字幕文档”总数，便于界面提示 */
+export function importNode(snap: NodeSnapshot): number {
+  if (!snap) return 0
+  const handle = requireDb()
+
+  withTransaction(() => {
+    const insUploader = handle.prepare(
+      'insert or ignore into uploaders (id, uid, name, avatar, favorite, created_at) values (?, ?, ?, ?, ?, ?)'
+    )
+    for (const u of snap.uploaders ?? []) {
+      insUploader.run(u.id, u.uid, u.name, u.avatar, u.favorite, u.created_at)
+    }
+
+    const insCollection = handle.prepare(
+      'insert or ignore into collections (id, uploader_id, sid, title, url, favorite, created_at) values (?, ?, ?, ?, ?, ?, ?)'
+    )
+    for (const c of snap.collections ?? []) {
+      insCollection.run(c.id, c.uploader_id, c.sid, c.title, c.url, c.favorite, c.created_at)
+    }
+
+    const insVideo = handle.prepare(
+      `insert or ignore into videos
+         (id, collection_id, bvid, title, url, cover, duration, page_count, favorite, created_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    for (const v of snap.videos ?? []) {
+      insVideo.run(
+        v.id,
+        v.collection_id,
+        v.bvid,
+        v.title,
+        v.url,
+        v.cover,
+        v.duration,
+        v.page_count,
+        v.favorite,
+        v.created_at
+      )
+    }
+
+    const insDoc = handle.prepare(
+      `insert or ignore into docs
+         (id, video_id, page, lang, label, filename, source, favorite, created_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    for (const d of snap.docs ?? []) {
+      insDoc.run(
+        d.id,
+        d.video_id,
+        d.page,
+        d.lang,
+        d.label,
+        d.filename,
+        d.source,
+        d.favorite,
+        d.created_at
+      )
+    }
+
+    // 正文与切片先清掉同 id 的残留，避免唯一键冲突
+    const insCue = handle.prepare(
+      'insert or replace into cues (doc_id, idx, start, end, text) values (?, ?, ?, ?, ?)'
+    )
+    for (const c of snap.cues ?? []) {
+      insCue.run(c.doc_id, c.idx, c.start, c.end, c.text)
+    }
+
+    const insClip = handle.prepare(
+      `insert or ignore into clips
+         (id, doc_id, bvid, page, start, end, note, segments, created_at)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    )
+    for (const c of snap.clips ?? []) {
+      insClip.run(
+        c.id,
+        c.doc_id,
+        c.bvid,
+        c.page,
+        c.start,
+        c.end,
+        c.note,
+        c.segments,
+        c.created_at
+      )
+    }
+  })
+
+  // 全文索引跟着正文一起重建（快照里没有 FTS 表，必须显式补）
+  for (const docId of new Set((snap.cues ?? []).map((c) => c.doc_id))) {
+    handle.prepare('delete from cue_search where doc_id = ?').run(docId)
+    handle
+      .prepare(
+        `insert into cue_search (rowid, text, doc_id, page, idx)
+         select c.rowid, c.text, c.doc_id, d.page, c.idx
+         from cues c join docs d on d.id = c.doc_id where c.doc_id = ?`
+      )
+      .run(docId)
+  }
+
+  return (snap.videos?.length ?? 0) + (snap.docs?.length ?? 0)
+}
+
 
 /* --------------------------------- 重命名 --------------------------------- */
 

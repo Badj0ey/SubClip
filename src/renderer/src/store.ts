@@ -529,6 +529,52 @@ export async function openSliceOutput(): Promise<void> {
   if (err) toast(err, 'error', 4200)
 }
 
+/* ------------------------------ 删除与撤销删除 ------------------------------ */
+
+/**
+ * 最近一次删除的快照。
+ *
+ * ⚠️ **刻意放在响应式状态之外**：`reactive` 会把嵌套对象包成 Proxy，
+ * 而 Proxy 无法通过 IPC 的结构化克隆（会静默失败或抛错），撤销就写不回去了。
+ * 界面上只需要一个标签，所以用普通变量 + 一个 ref 标签。
+ */
+let lastDeletedSnapshot: unknown = null
+
+/** 供界面显示「撤销删除」按钮 */
+export const lastDeletedLabel = ref('')
+
+/** 删除节点；把返回的快照留一份，之后可以整棵恢复 */
+export async function deleteTreeNode(key: string, label: string): Promise<void> {
+  const res = await window.api.deleteNode(key)
+  state.tree = res.tree
+  lastDeletedSnapshot = res.snapshot
+  lastDeletedLabel.value = label
+
+  // 当前打开的字幕被删掉时清空阅读区
+  const stillThere = JSON.stringify(state.tree).includes(`"doc:${state.activeDocId}"`)
+  if (state.activeDocId != null && !stillThere) {
+    state.activeDocId = null
+    state.doc = null
+    state.docs = []
+    state.cues = []
+    state.selected = new Set<number>()
+  }
+  toast(`已删除「${label}」，可用左侧的「撤销删除」恢复`, 'success', 4600)
+}
+
+/** 撤销最近一次删除（按原 id 写回整棵子树） */
+export async function undoDelete(): Promise<void> {
+  if (!lastDeletedSnapshot) {
+    toast('没有可恢复的删除', 'info')
+    return
+  }
+  const label = lastDeletedLabel.value
+  state.tree = await window.api.restoreNode(lastDeletedSnapshot)
+  lastDeletedSnapshot = null
+  lastDeletedLabel.value = ''
+  toast(`已恢复「${label}」`, 'success')
+}
+
 /* -------------------------------- 编辑撤销 -------------------------------- */
 
 interface UndoEntry {

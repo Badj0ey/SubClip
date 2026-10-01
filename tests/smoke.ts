@@ -461,6 +461,69 @@ async function run(): Promise<void> {
     assert.strictEqual(db.searchCues('   ').length, 0)
   })
 
+  check('删除视频时它的切片任务不会被留下（孤儿任务会让列表打不开）', () => {
+    const upId = db.upsertUploader(880001, '级联测试UP主')
+    const colId = db.upsertCollection(upId, null, '单视频')
+    const vid = db.upsertVideo(colId, 'BV1CASCADE01', '级联测试视频', {})
+    const res = db.upsertDoc(vid, 1, 'zh-CN', '简体中文', 'c.srt', 'bilibili', [
+      cue(1, 0, 1, '级联测试字幕')
+    ])
+    db.addClipTasks([
+      { docId: res.docId, bvid: 'BV1CASCADE01', page: 1, start: 0, end: 1, note: '级联测试切片' }
+    ])
+    assert.ok(
+      db.listClipTasks().some((c) => c.docId === res.docId),
+      '切片任务应已写入'
+    )
+
+    db.deleteVideo(vid)
+    assert.ok(
+      !db.listClipTasks().some((c) => c.docId === res.docId),
+      '删视频后不应残留指向它的切片任务'
+    )
+  })
+
+  /* ------------------- 12. 删除后整棵恢复（撤销删除） ------------------- */
+  check('删除后可整棵恢复（含正文、切片任务与全文索引）', () => {
+    const upId = db.upsertUploader(880002, '可恢复UP主')
+    const colId = db.upsertCollection(upId, null, '单视频')
+    const vid = db.upsertVideo(colId, 'BV1RESTORE01', '可恢复视频', {})
+    const res = db.upsertDoc(vid, 1, 'zh-CN', '简体中文', 'r.srt', 'bilibili', [
+      cue(1, 0, 1, '恢复测试第一句'),
+      cue(2, 2, 3, '恢复测试第二句')
+    ])
+    db.addClipTasks([
+      { docId: res.docId, bvid: 'BV1RESTORE01', page: 1, start: 0, end: 1, note: '恢复测试切片' }
+    ])
+
+    const before = db.stats()
+    const snapshot = db.exportNode(`uploader:${upId}`)
+    assert.ok(snapshot, '应能导出快照')
+    assert.strictEqual(snapshot!.docs.length, 1)
+    assert.strictEqual(snapshot!.cues.length, 2, '正文应进快照')
+    assert.strictEqual(snapshot!.clips.length, 1, '切片任务应进快照')
+
+    db.deleteUploader(upId)
+    assert.strictEqual(db.getDoc(res.docId), null, '删除后文档应消失')
+    assert.strictEqual(db.loadCues(res.docId).length, 0, '删除后正文应清空')
+    assert.strictEqual(db.searchCues('恢复测试第一句').length, 0, '删除后不应还能搜到')
+
+    db.importNode(snapshot!)
+    assert.ok(db.getDoc(res.docId), '恢复后文档应回来')
+    assert.strictEqual(db.loadCues(res.docId).length, 2, '正文应一起恢复')
+    assert.strictEqual(
+      db.listClipTasks().some((c) => c.docId === res.docId),
+      true,
+      '切片任务应一起恢复'
+    )
+    assert.strictEqual(db.searchCues('恢复测试第一句').length, 1, '全文索引应重建')
+    assert.strictEqual(db.stats().videos, before.videos, '视频数应回到删除前')
+    assert.strictEqual(db.stats().docs, before.docs, '文档数应回到删除前')
+
+    // 清场，避免影响后续断言
+    db.deleteUploader(upId)
+  })
+
   check('改写正文后全文索引同步更新（不会搜到已删掉的句子）', () => {
     const video = db.findVideoByBvid('BV1SEARCH001')
     assert.ok(video)

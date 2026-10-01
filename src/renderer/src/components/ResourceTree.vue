@@ -1,7 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import type { TreeNode } from '@shared/types'
-import { loadTree, openDoc, state, toast } from '../store'
+import {
+  deleteTreeNode,
+  lastDeletedLabel,
+  loadTree,
+  openDoc,
+  state,
+  toast,
+  undoDelete
+} from '../store'
 import TreeNodeItem from './TreeNodeItem.vue'
 
 const kw = ref('')
@@ -40,22 +48,8 @@ async function onOpen(node: TreeNode): Promise<void> {
 }
 
 async function onDelete(node: TreeNode): Promise<void> {
-  // 删除不再二次确认：资源重新拉取的成本很低，误删可以直接再抓一次
-  state.tree = await window.api.deleteNode(node.key)
-
-  const stillThere = JSON.stringify(state.tree).includes(`"${node.key}"`)
-  if (!stillThere && state.activeDocId) {
-    // 当前打开的字幕被删（或其父级被删）时清空阅读区
-    const docStillThere = JSON.stringify(state.tree).includes(`doc:${state.activeDocId}`)
-    if (!docStillThere) {
-      state.activeDocId = null
-      state.doc = null
-      state.docs = []
-      state.cues = []
-      state.selected = new Set<number>()
-    }
-  }
-  toast('已删除', 'success')
+  // 删除不再二次确认：快照留在 store 里，顶部「撤销删除」可以整棵恢复
+  await deleteTreeNode(node.key, node.label)
 }
 
 /** 重命名（名称由树节点内联编辑产生） */
@@ -83,6 +77,14 @@ async function refresh(): Promise<void> {
     <div class="pane-head">
       <strong style="font-size: 13px">工作区</strong>
       <span class="grow"></span>
+      <button
+        v-if="lastDeletedLabel"
+        class="btn sm"
+        :title="`恢复「${lastDeletedLabel}」`"
+        @click="undoDelete"
+      >
+        撤销删除
+      </button>
       <button class="btn sm" title="刷新" @click="refresh">刷新</button>
     </div>
 

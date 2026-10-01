@@ -54,7 +54,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('stats:get', () => db.stats())
 
   ipcMain.handle('node:delete', (_e, key: string) => {
+    // 先存快照再删：本地导入的字幕、手工改过的正文，删掉就拉不回来了，
+    // 所以要留一份能让「撤销删除」按原 id 写回去。
+    const snapshot = db.exportNode(key)
     db.deleteNode(key)
+    return { tree: db.buildTree(), snapshot }
+  })
+
+  ipcMain.handle('node:restore', (_e, snapshot: db.NodeSnapshot) => {
+    db.importNode(snapshot)
     return db.buildTree()
   })
 
