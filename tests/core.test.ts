@@ -22,6 +22,7 @@ import { buildDiagnostics, redactSettings } from '../src/main/diagnostics'
 import { DEFAULT_NAME_TEMPLATE, compactDuration, fileStamp, renderNameTemplate } from '../src/shared/naming'
 import { joinCueText, mergeCues, splitCue } from '../src/shared/cues'
 import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
+import { classifyTargetUrl } from '../src/main/bilibili'
 import type { ClipTask } from '../src/shared/types'
 import { BRIDGE_LIMITS, BRIDGE_PROTOCOL_VERSION, parseClientMessage } from '../src/shared/bridge'
 import { PROTOCOL_VERSION } from '../extension/shared/protocol.js'
@@ -975,6 +976,80 @@ test('BV 号不合法时整条丢弃（不要发起一次注定失败的抓取�
 test('协议版本两边一致且已升到 4', () => {
   assert.strictEqual(BRIDGE_PROTOCOL_VERSION, PROTOCOL_VERSION)
   assert.strictEqual(BRIDGE_PROTOCOL_VERSION, 4)
+})
+
+/* ------------------------------ 链接分类（纯函数） ----------------------------- */
+section('B站链接分类')
+
+test('系列：/{mid}/lists/{sid}?type=series → series（而不是 season）', () => {
+  const ref = classifyTargetUrl(
+    'https://space.bilibili.com/3546581515111228/lists/4130269?type=series'
+  )
+  assert.deepStrictEqual(ref, { kind: 'series', mid: 3546581515111228, sid: 4130269 })
+})
+
+test('合集：/{mid}/lists/{sid} 不带 type → season', () => {
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/123/lists/456'),
+    { kind: 'season', mid: 123, sid: 456 }
+  )
+})
+
+test('收藏夹：favlist?fid=xxx，且 ftype 为空也要认（实际链接常常就是空的）', () => {
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/500278643/favlist?fid=4061631943&ftype='),
+    { kind: 'favlist', mid: 500278643, sid: 4061631943 }
+  )
+  // 带 ftype=create 时同样要认
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/500278643/favlist?fid=4061631943&ftype=create'),
+    { kind: 'favlist', mid: 500278643, sid: 4061631943 }
+  )
+})
+
+test('收藏夹缺 fid → 不认识（不能猜一个默认收藏夹）', () => {
+  assert.strictEqual(classifyTargetUrl('https://space.bilibili.com/123/favlist'), null)
+})
+
+test('合集播放页 /list/{mid}?sid=xxx：按 type 区分合集与系列', () => {
+  assert.deepStrictEqual(classifyTargetUrl('https://www.bilibili.com/list/123?sid=456'), {
+    kind: 'season',
+    mid: 123,
+    sid: 456
+  })
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://www.bilibili.com/list/123?sid=456&type=series'),
+    { kind: 'series', mid: 123, sid: 456 }
+  )
+  // 缺 sid 就不认识
+  assert.strictEqual(classifyTargetUrl('https://www.bilibili.com/list/123'), null)
+})
+
+test('视频页与投稿页', () => {
+  assert.deepStrictEqual(classifyTargetUrl('https://www.bilibili.com/video/BV1xx411c7mD'), {
+    kind: 'video',
+    bvid: 'BV1xx411c7mD'
+  })
+  for (const p of ['12345', '12345/video', '12345/dynamic', '12345/index']) {
+    assert.deepStrictEqual(
+      classifyTargetUrl(`https://space.bilibili.com/${p}`),
+      { kind: 'space', mid: 12345 },
+      `${p} 应识别为投稿页`
+    )
+  }
+})
+
+test('兜底：链接任意位置带 BV 号 → 视频', () => {
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://www.bilibili.com/some/weird/path?x=BV1xx411c7mD'),
+    { kind: 'video', bvid: 'BV1xx411c7mD' }
+  )
+})
+
+test('不认识的链接与非法 URL → null', () => {
+  assert.strictEqual(classifyTargetUrl('https://www.bilibili.com/bangumi/play/ep123'), null)
+  assert.strictEqual(classifyTargetUrl('不是URL'), null)
+  assert.strictEqual(classifyTargetUrl(''), null)
 })
 
 /* --------------------------------- 快捷键 -------------------------------- */

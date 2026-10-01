@@ -316,6 +316,18 @@ export async function resolveShortLink(input: string): Promise<string> {
   }
 }
 
+/**
+ * 去重后追加。
+ *
+ * 分页拉取期间合集 / 收藏夹可能被作者改动，导致同一个视频落在两页里；
+ * 三个列表接口都走这里，避免「同一个视频出现两次」。
+ */
+function pushUnique(list: ResolvedVideo[], item: ResolvedVideo): void {
+  if (!item.bvid) return
+  if (list.some((v) => v.bvid === item.bvid)) return
+  list.push(item)
+}
+
 /** 合集（season） */
 async function getSeasonVideos(mid: number, seasonId: number, cookie: string, maxPages: number) {
   const videos: ResolvedVideo[] = []
@@ -333,11 +345,8 @@ async function getSeasonVideos(mid: number, seasonId: number, cookie: string, ma
     const archives = (data.archives ?? []) as any[]
     if (!archives.length) break
     for (const a of archives) {
-      const bvid = String(a.bvid || '')
-      if (!bvid) continue
-      if (videos.some((v) => v.bvid === bvid)) continue
-      videos.push({
-        bvid,
+      pushUnique(videos, {
+        bvid: String(a.bvid || ''),
         title: String(a.title || ''),
         cover: String(a.pic || ''),
         duration: Number(a.duration) || 0
@@ -373,10 +382,8 @@ async function getSeriesVideos(mid: number, seriesId: number, cookie: string, ma
     const archives = (res?.data?.archives ?? []) as any[]
     if (!archives.length) break
     for (const a of archives) {
-      const bvid = String(a.bvid || '')
-      if (!bvid) continue
-      videos.push({
-        bvid,
+      pushUnique(videos, {
+        bvid: String(a.bvid || ''),
         title: String(a.title || ''),
         cover: String(a.pic || ''),
         duration: Number(a.duration) || 0
@@ -411,11 +418,10 @@ async function getFavVideos(mediaId: number, cookie: string, maxPages: number) {
     const medias = (res?.data?.medias ?? []) as any[]
     if (!medias.length) break
     for (const m of medias) {
-      if (m.type != null && Number(m.type) !== 2) continue // 2 = 视频稿件
-      const bvid = String(m.bvid || '')
-      if (!bvid) continue
-      videos.push({
-        bvid,
+      // type 2 = 视频稿件；收藏夹里还可能混有音频 / 专栏等，跳过
+      if (m.type != null && Number(m.type) !== 2) continue
+      pushUnique(videos, {
+        bvid: String(m.bvid || ''),
         title: String(m.title || ''),
         cover: String(m.cover || ''),
         duration: Number(m.duration) || 0
@@ -451,10 +457,8 @@ async function getSpaceVideos(mid: number, cookie: string, maxPages: number) {
     const vlist = (res?.data?.list?.vlist ?? []) as any[]
     if (!vlist.length) break
     for (const v of vlist) {
-      const bvid = String(v.bvid || '')
-      if (!bvid) continue
-      videos.push({
-        bvid,
+      pushUnique(videos, {
+        bvid: String(v.bvid || ''),
         title: String(v.title || ''),
         cover: String(v.pic || ''),
         duration: parseDurationText(String(v.length || ''))
@@ -465,6 +469,84 @@ async function getSpaceVideos(mid: number, cookie: string, maxPages: number) {
     if (pn === maxPages) truncated = true
   }
   return { title, videos, truncated }
+}
+
+/**
+ * 链接要拉的是什么。
+ *
+ * 抽成纯函数是为了能单测：URL 形态（尤其 `?type=series` 与 `favlist?fid=`）一旦改错，
+ * 表现是「解析出来是空的或拉错东西」，很难从报错里看出来。
+ */
+export type TargetRef =
+  | { kind: 'video'; bvid: string }
+  | { kind: 'season'; mid: number; sid: number }
+  | { kind: 'series'; mid: number; sid: number }
+  | { kind: 'favlist'; mid: number; sid: number }
+  | { kind: 'space'; mid: number }
+
+/**
+ * 把 B 站链接分类。不认识返回 null。
+ *
+ * 支持的形态：
+ *   - 视频页      /video/BVxxx
+ *   - 合集播放页  /list/{mid}?sid=xxx
+ *   - 空间合集/系列 /{mid}/lists/{sid}（`?type=series` 时为系列）
+ *   - 收藏夹      /{mid}/favlist?fid=xxx
+ *   - 投稿页      /{mid}[/video|/dynamic|/index]
+ */
+export function classifyTargetUrl(raw: string): TargetRef | null {
+  let u: URL
+  try {
+    u = new URL(raw)
+  } catch {
+    return null
+  }
+  const path = u.pathname
+
+  // 视频页
+  const bv = /\/video\/(BV[0-9A-Za-z]{10})/i.exec(path)
+  if (bv) return { kind: 'video', bvid: bv[1] }
+
+  // 合集播放页：/list/{mid}?sid=xxx
+  const listMatch = /^\/list\/(\d+)/.exec(path)
+  if (listMatch) {
+    const sid = Number(u.searchParams.get('sid') || '0')
+    if (!sid) return null
+    const mid = Number(listMatch[1])
+    return u.searchParams.get('type') === 'series'
+      ? { kind: 'series', mid, sid }
+      : { kind: 'season', mid, sid }
+  }
+
+  // 空间合集 / 系列：/{mid}/lists/{sid}
+  const listsMatch = /^\/(\d+)\/lists\/(\d+)/.exec(path)
+  if (listsMatch) {
+    const mid = Number(listsMatch[1])
+    const sid = Number(listsMatch[2])
+    // 系列与合集走的是**不同接口**，靠查询参数区分，不能只看路径
+    return u.searchParams.get('type') === 'series'
+      ? { kind: 'series', mid, sid }
+      : { kind: 'season', mid, sid }
+  }
+
+  // 收藏夹：/{mid}/favlist?fid=xxx
+  // 注意 `ftype=` 常常是空的，不能要求它非空
+  const favMatch = /^\/(\d+)\/favlist/.exec(path)
+  if (favMatch) {
+    const sid = Number(u.searchParams.get('fid') || '0')
+    if (!sid) return null
+    return { kind: 'favlist', mid: Number(favMatch[1]), sid }
+  }
+
+  // 投稿页：/{mid} 或 /{mid}/video|/dynamic|/index
+  const spaceMatch = /^\/(\d+)(?:\/(?:video|dynamic|index))?\/?$/.exec(path)
+  if (spaceMatch) return { kind: 'space', mid: Number(spaceMatch[1]) }
+
+  // 兜底：链接里任何位置带 BV 号
+  const loose = extractBvid(raw)
+  if (loose) return { kind: 'video', bvid: loose }
+
+  return null
 }
 
 /**
@@ -500,101 +582,38 @@ export async function resolveTarget(
   }
 
   const url = await resolveShortLink(trimmed)
-
-  let u: URL
-  try {
-    u = new URL(url)
-  } catch {
-    throw new BiliApiError('无法识别的输入，请检查链接是否完整')
-  }
-  const path = u.pathname
-
-  // 视频页
-  const bv = /\/video\/(BV[0-9A-Za-z]{10})/i.exec(path)
-  if (bv) return single(bv[1], url)
-
-  // 合集播放页：/list/{mid}?sid=xxx
-  const listMatch = /^\/list\/(\d+)/.exec(path)
-  const sidParam = u.searchParams.get('sid')
-  if (listMatch && sidParam) {
-    const mid = Number(listMatch[1])
-    const sid = Number(sidParam)
-    const isSeries = u.searchParams.get('type') === 'series'
-    const res = isSeries
-      ? await getSeriesVideos(mid, sid, cookie, maxPages)
-      : await getSeasonVideos(mid, sid, cookie, maxPages)
-    return {
-      kind: isSeries ? 'series' : 'season',
-      title: res.title,
-      url,
-      uid: mid,
-      sid,
-      videos: res.videos,
-      truncated: res.truncated
-    }
+  const ref = classifyTargetUrl(url)
+  if (!ref) {
+    throw new BiliApiError(
+      '暂不支持该链接。支持：视频页、合集/系列页、收藏夹、UP主投稿页、b23.tv 短链'
+    )
   }
 
-  // 空间合集 / 系列：/{mid}/lists/{sid}
-  const listsMatch = /^\/(\d+)\/lists\/(\d+)/.exec(path)
-  if (listsMatch) {
-    const mid = Number(listsMatch[1])
-    const sid = Number(listsMatch[2])
-    const isSeries = u.searchParams.get('type') === 'series'
-    const res = isSeries
-      ? await getSeriesVideos(mid, sid, cookie, maxPages)
-      : await getSeasonVideos(mid, sid, cookie, maxPages)
-    return {
-      kind: isSeries ? 'series' : 'season',
-      title: res.title,
-      url,
-      uid: mid,
-      sid,
-      videos: res.videos,
-      truncated: res.truncated
-    }
+  const listed = async (
+    kind: 'season' | 'series' | 'favlist' | 'space',
+    res: { title: string; videos: ResolvedVideo[]; truncated: boolean }
+  ): Promise<ResolvedTarget> => ({
+    kind,
+    title: res.title,
+    url,
+    uid: 'mid' in ref ? ref.mid : null,
+    sid: 'sid' in ref ? ref.sid : null,
+    videos: res.videos,
+    truncated: res.truncated
+  })
+
+  if (ref.kind === 'video') return single(ref.bvid, url)
+
+  if (ref.kind === 'series') {
+    return listed('series', await getSeriesVideos(ref.mid, ref.sid, cookie, maxPages))
   }
-
-  // 收藏夹：/{mid}/favlist?fid=xxx
-  const favMatch = /^\/(\d+)\/favlist/.exec(path)
-  if (favMatch) {
-    const mid = Number(favMatch[1])
-    const fid = Number(u.searchParams.get('fid') || '0')
-    if (!fid) throw new BiliApiError('收藏夹链接缺少 fid 参数')
-    const res = await getFavVideos(fid, cookie, maxPages)
-    return {
-      kind: 'favlist',
-      title: res.title,
-      url,
-      uid: mid,
-      sid: fid,
-      videos: res.videos,
-      truncated: res.truncated
-    }
+  if (ref.kind === 'season') {
+    return listed('season', await getSeasonVideos(ref.mid, ref.sid, cookie, maxPages))
   }
-
-  // 投稿页：/{mid} 或 /{mid}/video 或 /{mid}/dynamic
-  const spaceMatch = /^\/(\d+)(?:\/(?:video|dynamic|index))?\/?$/.exec(path)
-  if (spaceMatch) {
-    const mid = Number(spaceMatch[1])
-    const res = await getSpaceVideos(mid, cookie, maxPages)
-    return {
-      kind: 'space',
-      title: res.title,
-      url,
-      uid: mid,
-      sid: null,
-      videos: res.videos,
-      truncated: res.truncated
-    }
+  if (ref.kind === 'favlist') {
+    return listed('favlist', await getFavVideos(ref.sid, cookie, maxPages))
   }
-
-  // 兜底：链接里带 BV 号
-  const loose = extractBvid(url)
-  if (loose) return single(loose, url)
-
-  throw new BiliApiError(
-    '暂不支持该链接。支持：视频页、合集/系列页、收藏夹、UP主投稿页、b23.tv 短链'
-  )
+  return listed('space', await getSpaceVideos(ref.mid, cookie, maxPages))
 }
 
 /** 探测当前 Cookie 的登录状态 */
