@@ -7,6 +7,7 @@
  */
 import { computed, onMounted, ref } from 'vue'
 import { state, toast } from '../store'
+import { useEscapeToClose } from '../composables/useEscapeToClose'
 
 const props = defineProps<{ videoId: number; title: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
@@ -15,6 +16,8 @@ const all = ref<Array<{ id: number; name: string; count: number }>>([])
 const checked = ref<Set<number>>(new Set())
 const draft = ref('')
 const busy = ref(false)
+
+useEscapeToClose(() => emit('close'), () => !busy.value)
 
 const checkedCount = computed(() => checked.value.size)
 

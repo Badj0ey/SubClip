@@ -1,12 +1,15 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import { loadTree, toast } from '../store'
+import { useEscapeToClose } from '../composables/useEscapeToClose'
 
 const emit = defineEmits<{ (e: 'close'): void; (e: 'done'): void }>()
 
 const paths = ref<string[]>([])
 const bvid = ref('')
 const busy = ref(false)
+
+useEscapeToClose(() => emit('close'), () => !busy.value)
 const preview = ref<{ name: string; count: number; warnings: string[] } | null>(null)
 
 const fileNames = computed(() => paths.value.map((p) => p.split(/[\\/]/).pop() || p))

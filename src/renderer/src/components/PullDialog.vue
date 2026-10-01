@@ -3,6 +3,7 @@ import { computed, onMounted, onUnmounted, ref } from 'vue'
 import type { BiliTarget, PullProgressInfo } from '@shared/types'
 import { formatTime } from '@shared/time'
 import { loadTree, state, toast } from '../store'
+import { useEscapeToClose } from '../composables/useEscapeToClose'
 
 const props = withDefaults(
   defineProps<{
@@ -58,6 +59,9 @@ const progressPercent = computed(() => {
 })
 
 let offProgress: (() => void) | null = null
+
+// 拉取中不允许 Esc 关闭：正在跑的网络任务不该被一个误按打断
+useEscapeToClose(() => emit('close'), () => !pulling.value)
 
 onMounted(() => {
   offProgress = window.api.onPullProgress((p) => {

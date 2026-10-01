@@ -14,11 +14,13 @@ import {
   state,
   toast
 } from '../store'
+import { useEscapeToClose } from '../composables/useEscapeToClose'
 
 const emit = defineEmits<{ (e: 'close'): void }>()
-
 const docId = computed(() => state.doc?.id ?? null)
 const busy = ref(false)
+
+useEscapeToClose(() => emit('close'), () => !busy.value)
 
 /* ------------------------------- 查找替换 ------------------------------- */
 

@@ -199,6 +199,12 @@ async function toggleTheme(): Promise<void> {
 /* --------------------------------- 快捷键 --------------------------------- */
 
 function onKey(e: KeyboardEvent): void {
+  // 有弹窗打开时，全局快捷键一律不生效。
+  // 弹窗是模态的（盖住整个窗口），此时按键作用到背景上只会造成困惑：
+  // 最典型的是 Esc —— 用户想关弹窗，结果把弹窗背后的字幕选择清空了。
+  // 弹窗自己会处理 Esc（见 composables/useEscapeToClose.ts）。
+  if (document.querySelector('.mask')) return
+
   const el = e.target as HTMLElement | null
   const typing =
     !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
