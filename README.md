@@ -209,7 +209,7 @@
 | 页面 | 做法 | 代价 |
 | --- | --- | --- |
 | 视频页 | 自己按 SIDX 索引取 DASH 音频分片（`audio/mp4`，43 个分片），用 MediaSource 喂隐藏 `<audio>` | 不能拖动进度条跨分段（当前实现按当前时间点续播） |
-| 直播间 | 请求 `only_audio=1` 的 FLV 流，mpegts.js 转 MSE | 少数房间不提供纯音频流，会明确报错并回退最低画质 |
+| 直播间 | 请求 `only_audio=1` 的 FLV 流，mpegts.js 转 MSE | 少数房间不提供纯音频流，会自动恢复画面并说明原因 |
 
 插件安装与使用见 [`extension/README.md`](extension/README.md)。
 

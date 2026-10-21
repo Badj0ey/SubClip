@@ -83,11 +83,22 @@
   color: #fff;
 }
 
+.sc-conn {
+  font-size: 11px;
+  color: #94a3b8;
+  margin-bottom: 2px;
+  word-break: break-all;
+}
+
+/* 操作反馈：没有内容时不占位（不再把连接状态顶掉） */
 .sc-status {
   font-size: 11px;
   color: #94a3b8;
   margin-bottom: 8px;
   word-break: break-all;
+}
+.sc-status:empty {
+  display: none;
 }
 .sc-status[data-tone='ok'] {
   color: #4ade80;

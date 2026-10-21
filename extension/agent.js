@@ -144,7 +144,8 @@
     <div class="sc-panel" id="sc-panel" role="dialog" aria-label="SubClip 工具箱" hidden>
       <div class="sc-head"><span>SubClip 工具箱</span>
         <button class="sc-x" id="sc-close" aria-label="收起面板">×</button></div>
-      <div class="sc-status" id="sc-status">正在获取桌面端状态…</div>
+      <div class="sc-conn" id="sc-conn">正在获取桌面端状态…</div>
+      <div class="sc-status" id="sc-status"></div>
       <div class="sc-row">
         <label><input type="checkbox" id="sc-audio"> 只放音频（省流量）</label>
         <select id="sc-quality" aria-label="音质" title="音质越高流量越大">
@@ -176,6 +177,7 @@
   const $ = (id) => root.querySelector('#' + id)
   const dot = $('sc-dot')
   const panel = $('sc-panel')
+  const elConn = $('sc-conn')
   const elStatus = $('sc-status')
   const elAudio = $('sc-audio')
   const elQuality = $('sc-quality')
@@ -206,6 +208,13 @@
       logLines -= 1
     }
   }
+  /** 连接状态单独一行（每 4 秒刷新一次）；操作反馈走 setStatus，两者不再互相覆盖 */
+  function setConn(text, tone = '') {
+    elConn.textContent = text
+    if (tone) elConn.setAttribute('data-tone', tone)
+    else elConn.removeAttribute('data-tone')
+  }
+
   function setStatus(text, tone = '') {
     elStatus.textContent = text
     if (tone) elStatus.setAttribute('data-tone', tone)
@@ -227,15 +236,15 @@
   async function refreshStatus() {
     const st = await send('get-status')
     if (!st) {
-      setStatus('无法连接扩展后台', 'error')
+      setConn('无法连接扩展后台', 'error')
       return
     }
     lastPageInfo = st.lastPage || lastPageInfo
     if (st.connected) {
       const who = st.serverVersion ? `桌面端 v${st.serverVersion}` : '桌面端'
-      setStatus(`已连接 ${who}`, 'ok')
+      setConn(`已连接 ${who}`, 'ok')
     } else {
-      setStatus(st.lastError ? `桌面端未连接：${st.lastError}` : '桌面端未连接', 'warn')
+      setConn(st.lastError ? `未连接：${st.lastError}` : '桌面端未连接', 'warn')
     }
     const type = lastPageInfo ? lastPageInfo.pageType : isLive ? 'live' : 'video'
     const label =
@@ -438,7 +447,23 @@
     })
     setStatus('正在获取直播音频流…', 'warn')
     // 传数字房间号：接口只认 room_id，传整条 URL 会得到 -400「请求错误」
-    await live.start(ns.liveAudio.toRoomId(location.pathname))
+    try {
+      await live.start(ns.liveAudio.toRoomId(location.pathname))
+    } catch (err) {
+      // 少数房间（刚开播 / 未转码）不给纯音频流。与其让用户以为「点了没反应」，
+      // 不如退回正常画面播放并说清原因 —— 这时会重新消耗视频流量。
+      const msg = String(err.message || err)
+      log(`纯音频流不可用：${msg}`, 'warn')
+      elAudio.checked = false
+      const back = await bridge('resume')
+      setStatus(
+        back && back.ok
+          ? `该房间不提供纯音频流，已恢复画面播放（${msg}）`
+          : `该房间不提供纯音频流：${msg}`,
+        'warn'
+      )
+      return
+    }
     // 停掉原生播放器，否则视频流照旧在下载，流量没省
     const r = await bridge('stop')
     nativeStopped = !!r.ok
