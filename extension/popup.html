@@ -2,7 +2,7 @@
 <html lang="zh-CN">
   <head>
     <meta charset="UTF-8" />
-    <title>SRT 字幕助手</title>
+    <title>字幕剪 SubClip</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
@@ -10,64 +10,86 @@
       <span class="dot" id="dot"></span>
       <strong id="statusText">正在检测…</strong>
       <span class="spacer"></span>
-      <button id="btnReconnect" class="ghost" title="重新连接">⟳</button>
+      <button id="btnReconnect" class="ghost icon" title="重新连接" aria-label="重新连接">⟳</button>
+      <button id="btnSettings" class="ghost icon" title="设置" aria-label="打开设置">⚙</button>
     </header>
 
-    <section class="card">
-      <div class="row">
-        <label>本地端口</label>
-        <input id="port" type="number" min="1" max="65535" />
-        <button id="btnSavePort" class="ghost">保存</button>
-      </div>
-      <div class="row" style="margin-top: 6px">
-        <label>配对令牌</label>
-        <input id="token" type="text" placeholder="留空即可" spellcheck="false" />
-        <button id="btnSaveToken" class="ghost">保存</button>
-      </div>
-      <div class="hint" id="hint"></div>
-      <div class="hint">
-        桌面端「设置 → 浏览器插件通信」里如果填了令牌，这里要填一样的值；留空则只做来源校验。
-      </div>
-    </section>
+    <!-- ------------------------------ 主视图 ------------------------------ -->
+    <div id="viewMain">
+      <section class="card">
+        <div class="label">当前页面</div>
+        <div id="pageInfo" class="value">未识别</div>
+      </section>
 
-    <section class="card">
-      <div class="row">
-        <span class="label" style="margin: 0">浏览器登录状态</span>
-        <span class="spacer"></span>
-        <span class="pill" id="loginState">检测中…</span>
-      </div>
-      <div class="row" style="margin-top: 6px">
-        <span class="label" style="margin: 0">桌面端登录状态</span>
-        <span class="spacer"></span>
-        <span class="pill" id="cookieState">未知</span>
-      </div>
-      <button id="btnSyncCookies" class="primary block">同步登录状态到桌面端</button>
-    </section>
+      <section class="card">
+        <div class="label">字幕轨</div>
+        <div id="tracks" class="value">—</div>
+      </section>
 
-    <section class="card">
-      <div class="label">当前页面（自动识别，不自动同步）</div>
-      <div id="pageInfo" class="value">未识别</div>
-    </section>
+      <section class="actions">
+        <button id="btnSync" class="primary block">同步到桌面端</button>
+      </section>
 
-    <section class="card">
-      <div class="label">字幕轨</div>
-      <div id="tracks" class="value">—</div>
-    </section>
+      <section class="note">
+        视频页会连<strong>所有分P</strong>一起同步；合集 / 系列 / 收藏夹 / 投稿页会把整份清单交给桌面端解析。
+        桌面端未登录时字幕拉不到 —— 扩展连上桌面端时会自动同步一次登录状态（可在设置里关掉）。
+      </section>
 
-    <section class="actions">
-      <button id="btnSync" class="primary">同步该视频到桌面端</button>
-      <button id="btnFetch" class="ghost">让桌面端拉取全部分P</button>
-    </section>
+      <section class="note tip">
+        视频页和直播间左下角有个 <strong>♪</strong> 小圆点，点开可以「只放音频」省流量、在直播间给弹幕 <strong>+1</strong>。
+      </section>
 
-    <section class="note">
-      第二个按钮会把该视频<strong>所有分P</strong>的字幕都拉到桌面端 ——
-      桌面端需要已有登录状态（用上面的「同步登录状态」同步一次即可）。
-    </section>
+      <section class="card">
+        <div class="label">最近事件</div>
+        <ul id="events" class="events"></ul>
+      </section>
+    </div>
 
-    <section class="card">
-      <div class="label">最近事件</div>
-      <ul id="events" class="events"></ul>
-    </section>
+    <!-- ------------------------------ 设置视图 ------------------------------ -->
+    <div id="viewSettings" hidden>
+      <section class="card">
+        <div class="row">
+          <label for="port">本地端口</label>
+          <input id="port" type="number" min="1" max="65535" />
+          <button id="btnSavePort" class="ghost">保存</button>
+        </div>
+        <div class="row" style="margin-top: 6px">
+          <label for="token">配对令牌</label>
+          <input id="token" type="text" placeholder="留空即可" spellcheck="false" />
+          <button id="btnSaveToken" class="ghost">保存</button>
+        </div>
+        <div class="hint" id="hint"></div>
+        <div class="hint">
+          桌面端「设置 → 浏览器插件通信」里如果填了令牌，这里要填一样的值；留空则只做来源校验。
+        </div>
+      </section>
+
+      <section class="card">
+        <label class="check">
+          <input type="checkbox" id="autoCookie" />
+          <span>连上桌面端时自动同步登录状态</span>
+        </label>
+        <div class="hint">拉取字幕完全依赖桌面端自己持有 Cookie。关掉后需要手动点下面的按钮。</div>
+      </section>
+
+      <section class="card">
+        <div class="row">
+          <span class="label" style="margin: 0">浏览器登录状态</span>
+          <span class="spacer"></span>
+          <span class="pill" id="loginState">检测中…</span>
+        </div>
+        <div class="row" style="margin-top: 6px">
+          <span class="label" style="margin: 0">桌面端登录状态</span>
+          <span class="spacer"></span>
+          <span class="pill" id="cookieState">未知</span>
+        </div>
+        <button id="btnSyncCookies" class="primary block">立即同步登录状态</button>
+      </section>
+
+      <section class="actions">
+        <button id="btnBack" class="ghost block">返回</button>
+      </section>
+    </div>
 
     <script src="popup.js" type="module"></script>
   </body>

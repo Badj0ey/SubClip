@@ -5,7 +5,14 @@
  *   3. 响应字幕抓取请求：把「需要 Cookie 的接口调用」交给页面上下文执行，
  *      字幕文件本体（CDN 资源，不需要 Cookie）由扩展侧下载
  */
-import { DEFAULT_PORT, PROTOCOL_VERSION, detectBrowser, parse } from './shared/protocol.js'
+import {
+  CAPABILITY,
+  DEFAULT_PORT,
+  PROTOCOL_VERSION,
+  detectBrowser,
+  parse,
+  peerSupports
+} from './shared/protocol.js'
 import { fetchSubtitleJson } from './shared/bilibili.js'
 
 const RECONNECT_MAX = 30_000
@@ -14,6 +21,9 @@ const ALARM_NAME = 'srt-helper-keepalive'
 let ws = null
 let reconnectDelay = 1000
 let reconnectTimer = null
+
+/** 自动同步登录状态的开关（chrome.storage.local，默认开启） */
+const AUTO_COOKIE_KEY = 'scAutoCookie'
 
 const state = {
   connected: false,
@@ -27,6 +37,8 @@ const state = {
    * 不看版本号的话插件会以为发送成功、实际什么都不会发生。
    */
   serverProtocol: 0,
+  /** 桌面端自报的能力表（v5；老桌面端为空对象） */
+  serverCaps: {},
   lastError: '',
   lastPage: null,
   lastSync: null,
@@ -165,17 +177,21 @@ function handleServerMessage(msg) {
       }
       state.serverVersion = msg.version || ''
       state.serverProtocol = Number(msg.protocol) || 0
+      // v5 起以**能力表**为准：版本号只表达整体兼容性，能不能用某个功能看 caps
+      state.serverCaps = (msg.caps && typeof msg.caps === 'object') ? msg.caps : {}
       if (msg.tokenRequired && !state.token) {
         state.lastError = '桌面端已开启配对令牌，请在下面填写'
         pushEvent('桌面端要求配对令牌，请在「配对令牌」里填入桌面端设置页显示的值', 'warn')
-      } else if (state.serverProtocol < PROTOCOL_VERSION) {
+      } else if (!peerSupports(msg, CAPABILITY.PULL_REQUEST)) {
+        // 兼容两条路径：新桌面端给 caps，老桌面端只有 protocol
         pushEvent(
           `桌面端协议 v${state.serverProtocol} 低于插件所需的 v${PROTOCOL_VERSION}，` +
             '「让桌面端拉取全部分P」等功能不可用，请更新桌面端',
           'warn'
         )
       } else {
-        pushEvent(`握手成功（桌面端 v${msg.version}）`)
+        pushEvent(`握手成功（桌面端 v${msg.version}，协议 v${state.serverProtocol}）`)
+        void maybeAutoSyncCookies()
       }
       break
     case 'request-subtitles':
@@ -287,6 +303,31 @@ async function syncCookies() {
   }
 }
 
+
+/**
+ * 连上桌面端后自动同步一次登录状态。
+ *
+ * 为什么要自动：拉取字幕完全依赖桌面端自己持有 Cookie，用户装完插件
+ * 大概率想不起来单独点一次「同步登录状态」，于是第一次拉取静默失败。
+ * 自动同步一次能把这个坑填掉；担心隐私的话可以在设置页关掉。
+ * 每次后台启动只自动做一次，避免重连时反复上报凭证。
+ */
+let autoCookieSynced = false
+async function maybeAutoSyncCookies() {
+  if (autoCookieSynced) return
+  autoCookieSynced = true
+  let enabled = true
+  try {
+    const v = await chrome.storage.local.get(AUTO_COOKIE_KEY)
+    if (v && v[AUTO_COOKIE_KEY] === false) enabled = false
+  } catch {
+    /* 读不到设置就按默认开启 */
+  }
+  if (!enabled) return
+  if (state.cookieSync && Date.now() - state.cookieSync.at < 60_000) return
+  await syncCookies()
+}
+
 /* ------------------------------ 标签页与页面 ------------------------------ */
 
 function wait(ms) {
@@ -387,6 +428,69 @@ async function syncPage() {
   }
   pushEvent(`已同步页面：${info.title || info.bvid || info.pageType}`)
   return { ok: true, ...getStatus() }
+}
+
+/**
+ * 请桌面端拉取某个视频的全部分P。
+ *
+ * 抽成函数是因为「工具箱的一键同步」和 popup 的按钮都要用它。
+ * 桌面端对不认识的客户端消息是静默丢弃的，所以先按能力表判断，
+ * 否则插件会报「发送成功」而桌面端什么都不会做。
+ */
+function requestPull(bvid, page, title) {
+  const canPull =
+    state.serverCaps && Object.keys(state.serverCaps).length > 0
+      ? peerSupports({ caps: state.serverCaps }, CAPABILITY.PULL_REQUEST)
+      : state.serverProtocol >= 5
+  if (state.connected && !canPull) {
+    return {
+      ok: false,
+      message: `桌面端协议 v${state.serverProtocol} 不支持该功能，请更新桌面端`,
+    }
+  }
+  const sent = sendToServer({
+    type: 'pull-request',
+    payload: { bvid, page: Number(page || 1), title: title || '' },
+  })
+  if (!sent) {
+    return { ok: false, message: '桌面端未连接，请先启动桌面端并重连' }
+  }
+  pushEvent(`已请桌面端拉取 ${bvid} 的全部分P`)
+  return { ok: true, message: `已请桌面端拉取 ${bvid} 的全部分P，进度见桌面端顶部` }
+}
+
+const PAGE_TYPE_LABEL = {
+  video: '视频',
+  season: '合集',
+  series: '系列',
+  favlist: '收藏夹',
+  space: 'UP主投稿',
+  live: '直播间',
+  unknown: '未知',
+}
+
+/**
+ * 「一键同步」：按当前页面类型挑最合适的动作，用户不用自己判断该点哪个按钮。
+ *   - 视频页 → 只送 BV，由桌面端拉这个视频的**全部分P**（抓取在桌面端做，不拖慢浏览器）
+ *   - 合集 / 系列 / 收藏夹 / 投稿页 → 把页面信息交给桌面端解析出视频清单，桌面端会弹确认框
+ */
+async function syncAll() {
+  const info = state.lastPage
+  if (!info) return { ok: false, message: '尚未识别到页面，请先打开 B 站页面' }
+  if (!state.connected) return { ok: false, message: '桌面端未连接，请先启动桌面端' }
+
+  if (info.pageType === 'video' && info.bvid) {
+    return requestPull(info.bvid, info.page || 1, info.title || '')
+  }
+  if (info.pageType === 'live') {
+    return { ok: false, message: '直播间没有字幕可同步' }
+  }
+
+  const label = PAGE_TYPE_LABEL[info.pageType] || '该'
+  const r = await syncPage()
+  if (!r.ok) return r
+  pushEvent(`已把${label}页交给桌面端解析视频清单`)
+  return { ok: true, message: `已交给桌面端解析这个${label}的视频清单，请到桌面端确认` }
 }
 
 /** 抓取字幕：接口调用走页面，字幕文件下载走扩展 */
@@ -589,27 +693,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ ok: false, message: '当前页面没有识别到 BV 号' })
         return true
       }
-      // 桌面端对不认识的客户端消息是静默丢弃的，先按协议版本判断能力，
-      // 否则插件会报「发送成功」而桌面端什么都不会做
-      if (state.connected && state.serverProtocol < PROTOCOL_VERSION) {
-        sendResponse({
-          ok: false,
-          message: `桌面端协议 v${state.serverProtocol} 不支持该功能，请更新桌面端`
-        })
-        return true
-      }
-      const sent = sendToServer({
-        type: 'pull-request',
-        payload: { bvid, page: Number(msg.page || page?.page || 1), title: page?.title || '' }
-      })
-      if (!sent) {
-        sendResponse({ ok: false, message: '桌面端未连接，请先启动桌面端并重连' })
-        return true
-      }
-      pushEvent(`已请桌面端拉取 ${bvid} 的全部分P`)
-      sendResponse({ ok: true, message: `已请桌面端拉取 ${bvid} 的全部分P，进度见桌面端顶部` })
+      sendResponse(requestPull(bvid, msg.page || page?.page || 1, page?.title || ''))
       return true
     }
+
+    /** 「工具箱一键同步」：页面类型决定动作（视频拉全部分P，合集/收藏夹交给桌面端解析） */
+    case 'sync-all':
+      syncAll().then(sendResponse)
+      return true
 
     case 'sync-cookies':
       syncCookies().then(sendResponse)

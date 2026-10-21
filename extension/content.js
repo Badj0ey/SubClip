@@ -426,3 +426,14 @@ if (!globalThis.__SRT_HELPER_CONTENT_LOADED__) {
     return false
   })
 }
+
+/* ============================ 四、给同世界脚本的导出 ============================ */
+
+// agent.js 等后续内容脚本与本文件共享同一个「隔离世界」，理论上能直接引用这里的
+// 顶层函数，但那属于隐式耦合：manifest 里脚本顺序一变就会变成 TDZ 报错。
+// 这里显式挂到一个命名空间上，用到的只有 WBI 签名（直播发弹幕要）。
+;(function () {
+  const ns = (globalThis.__SUBCLIP_EXT__ = globalThis.__SUBCLIP_EXT__ || {})
+  ns.wbi = { signWbi, buildMixinKey, getWbiKey, apiGet }
+  ns.page = { detectPage }
+})()

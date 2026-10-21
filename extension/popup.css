@@ -294,3 +294,47 @@ button.block {
 ::-webkit-scrollbar-thumb:hover {
   background: var(--dim);
 }
+
+/* ------------------------- 设置页 / 主屏切换 ------------------------- */
+
+[hidden] {
+  display: none !important;
+}
+
+/* 顶栏图标按钮：方形、无边框，和状态文字同一视线高度 */
+button.ghost.icon {
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  border: none;
+  background: transparent;
+}
+
+button.ghost.icon:hover:not(:disabled) {
+  background: var(--border);
+}
+
+/* 设置页里的复选行 */
+label.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 7px;
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+label.check input[type='checkbox'] {
+  margin: 2px 0 0;
+  accent-color: #2563eb;
+  flex: none;
+}
+
+/* 主屏底部的「小提示」，比普通 note 更轻 */
+.note.tip {
+  color: var(--dim);
+  background: transparent;
+  border: 1px dashed var(--border);
+}

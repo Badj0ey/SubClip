@@ -1,14 +1,21 @@
 {
   "manifest_version": 3,
-  "name": "SRT 字幕助手 · B站桥接",
-  "version": "0.1.0",
+  "name": "字幕剪 SubClip · B站桥接",
+  "version": "3.14.0",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAoQH17z4OwKMxvRX6hwYjHoB1cGyr6RzAqMPTkumS1NGRyQes0l5sc7nep5yksRHtf6GFu/nCYdZCRgVI1+pmVbipsnj4XlBOpC1cVSMc4y5mb38P7wa7V3CHamk+i1dSJISlKsdLQL1XacgoYoXQVxWu1JtDXgVSR2TNyLQ+1sCyli6G3pi2sKmCl5ryoIh1yaTpDW/7kv+G7qIZv1PpMkE3oCWc2XoGDSvO2n5FKYK4FK2YU7GTGRm9Mz6wpfII3jllhDvOfDgcwiQXZfsjv5qWNcp/adZeg4/FaZVtR1WczqXKqwAlsljxcguNGQTELpY5kV4Z8RNXNMShJ11WNQIDAQAB",
-  "description": "检测 B 站视频 / 合集 / 收藏夹 / 投稿页面，把视频信息与字幕同步到本地「SRT 字幕检索与视频切片辅助工具」。",
+  "description": "检测 B 站视频 / 合集 / 收藏夹 / 投稿页面，把视频信息与字幕同步到本地「字幕剪 SubClip」；视频页与直播间可只放音频以省流量，直播间可一键弹幕 +1。",
   "minimum_chrome_version": "116",
-  "permissions": ["storage", "alarms", "declarativeNetRequest", "scripting", "cookies"],
+  "permissions": [
+    "storage",
+    "alarms",
+    "declarativeNetRequest",
+    "scripting",
+    "cookies"
+  ],
   "host_permissions": [
     "*://*.bilibili.com/*",
     "*://*.hdslb.com/*",
+    "*://*.bilivideo.com/*",
     "http://127.0.0.1/*",
     "http://localhost/*"
   ],
@@ -18,17 +25,66 @@
   },
   "content_scripts": [
     {
-      "matches": ["*://*.bilibili.com/*"],
-      "js": ["content.js"],
+      "matches": [
+        "*://*.bilibili.com/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://*.bilibili.com/video/*"
+      ],
+      "js": [
+        "shared/sidx.js",
+        "shared/audio-player.js",
+        "agent.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
+      "run_at": "document_idle",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "*://*.bilibili.com/video/*",
+        "*://live.bilibili.com/*",
+        "*://*.bilibili.com/blanc/*"
+      ],
+      "js": [
+        "page-bridge.js"
+      ],
+      "run_at": "document_start",
+      "all_frames": false,
+      "world": "MAIN"
+    },
+    {
+      "matches": [
+        "*://live.bilibili.com/*",
+        "*://*.bilibili.com/blanc/*"
+      ],
+      "js": [
+        "vendor/mpegts.js",
+        "shared/live-audio.js",
+        "shared/live-danmaku.js",
+        "agent.js"
+      ],
+      "css": [
+        "panel.css"
+      ],
       "run_at": "document_idle",
       "all_frames": false
     }
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "SRT 字幕助手"
+    "default_title": "字幕剪 SubClip"
   },
   "content_security_policy": {
-    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* https://api.bilibili.com https://*.hdslb.com"
+    "extension_pages": "script-src 'self'; object-src 'self'; connect-src 'self' ws://127.0.0.1:* ws://localhost:* http://127.0.0.1:* http://localhost:* https://api.bilibili.com https://api.live.bilibili.com https://*.hdslb.com https://*.bilivideo.com"
   }
 }
