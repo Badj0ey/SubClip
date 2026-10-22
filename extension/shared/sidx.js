@@ -94,6 +94,20 @@ function buildChunks(sidx, indexEnd) {
   return chunks
 }
 
+/**
+ * 音轨真实时长：最后一个「有数据」分片的起点 + 时长（末尾哨兵不算）。
+ * 它常比视频时长略短（实测某视频视频 213.000、音轨 212.394），
+ * 差别虽小，但直接拿视频时长当 MediaSource.duration 会让 <audio> 卡在尾部永不 ended。
+ */
+function trackEnd(chunks) {
+  if (!chunks || !chunks.length) return 0
+  for (let i = chunks.length - 1; i >= 0; i--) {
+    const c = chunks[i]
+    if (c && c.size > 0) return round3(c.time + c.duration)
+  }
+  return 0
+}
+
 /** 找到 t 秒所在的真实分片下标（哨兵不参与），找不到返回 -1 */
 function findSegment(chunks, t) {
   if (!chunks || !chunks.length) return -1
@@ -117,5 +131,5 @@ function findSegment(chunks, t) {
 
 ;(function (root) {
   const ns = (root.__SUBCLIP_EXT__ = root.__SUBCLIP_EXT__ || {})
-  ns.sidx = { parseSidx, buildChunks, findSegment }
+  ns.sidx = { parseSidx, buildChunks, findSegment, trackEnd }
 })(typeof window !== 'undefined' ? window : globalThis)

@@ -19,7 +19,7 @@
 
 ;(function (root) {
   const ns = (root.__SUBCLIP_EXT__ = root.__SUBCLIP_EXT__ || {})
-  const { parseSidx, buildChunks, findSegment } = ns.sidx
+  const { parseSidx, buildChunks, findSegment, trackEnd } = ns.sidx
 
   const PLAYURL = 'https://api.bilibili.com/x/player/playurl'
   const VIEW = 'https://api.bilibili.com/x/web-interface/view'
@@ -92,7 +92,7 @@
 
   /**
    * 取某条音轨的分片表与 init 段。
-   * @returns {{init: ArrayBuffer, chunks: Array, duration: number, mime: string, url: string}}
+   * @returns {{init: ArrayBuffer, chunks: Array, trackDuration: number, url: string}}
    */
   async function loadTrack(track) {
     // 先把形状校验清楚：缺字段时报「缺少播放地址」比「Invalid URL」好查一百倍
@@ -113,7 +113,9 @@
     const chunks = buildChunks(sidx, idxEnd)
     if (chunks.length < 2) throw new Error('SIDX 里没有分片信息')
 
-    return { init, chunks, url: track.baseUrl }
+    // 音轨真实长度。它可能比视频时长略短（实测 213.000 vs 212.394），
+    // 拿视频时长当 MediaSource.duration 会让播放器在最后几百毫秒空转、永不 ended。
+    return { init, chunks, trackDuration: trackEnd(chunks), url: track.baseUrl }
   }
 
   /**
@@ -131,11 +133,23 @@
     /** 音轨的真实取流地址（playurl 给的 baseUrl，可能随签名过期，切换/重载时更新） */
     let trackUrl = ''
     let chunks = null
+    /** 视频时长（来自接口） */
     let totalDuration = 0
+    /** 音轨真实时长（由 SIDX 算出）；播放与进度条都以它为准 */
+    let trackDuration = 0
     let destroyed = false
     let pumping = false
     let appendBusy = null // 串行化 append 的 promise
-    let fetchCursor = 0 // 下一个要追加的真实分片下标
+    /** 尾部分片是否已经处理过（收尾只需要一次） */
+    let tailSettled = false
+    /** 数据已经追加到分片表末尾，不会再有新数据进来 */
+    let tailDone = false
+    /** 已经「播完」：尾部样品不完整，靠看门狗判定，不依赖 ended 事件 */
+    let finished = false
+    /** 上一次播放位置有推进的时刻与位置，用来判断尾部僵住 */
+    let lastMoveAt = 0
+    let lastMoveT = 0
+    let tailTimer = 0
     let lastError = null
 
     const notify = () => {
@@ -144,21 +158,26 @@
     }
 
     function stats() {
+      const cur = audio ? audio.currentTime : 0
       let bufferedEnd = 0
       let bufferedStart = 0
       if (sb && sb.buffered.length) {
         try {
           bufferedStart = sb.buffered.start(0)
-          bufferedEnd = sb.buffered.end(sb.buffered.length - 1)
+          // 进度要报「当前位置能连续播到哪」，不是整条轨最远的缓冲末端：
+          // 往回跳之后远处那段旧缓冲还在，报最远端会让人误以为已经缓冲够了
+          bufferedEnd = bufferEndAt(cur) || sb.buffered.end(sb.buffered.length - 1)
         } catch {
           /* SourceBuffer 正在更新时读取会抛，忽略即可 */
         }
       }
       return {
         ready: !!audio,
-        currentTime: audio ? audio.currentTime : 0,
-        duration: totalDuration || (audio && isFinite(audio.duration) ? audio.duration : 0),
-        paused: audio ? audio.paused : true,
+        // 判定播完之后位置直接报总长，UI 才不会停在 3:32 还差 0.06 秒
+        currentTime: finished ? playbackDuration() : audio ? audio.currentTime : 0,
+        duration: playbackDuration(),
+        paused: audio ? audio.paused || finished : true,
+        ended: finished || (audio ? audio.ended : false),
         bufferedStart,
         bufferedEnd,
         ahead: Math.max(0, bufferedEnd - (audio ? audio.currentTime : 0)),
@@ -214,15 +233,118 @@
       })
     }
 
-    /** 丢掉 currentTime 之前太旧的缓冲，防止 SourceBuffer 超配额 */
+    /** 播放总长：优先用音轨真实时长 */
+    function playbackDuration() {
+      if (trackDuration > 0) return trackDuration
+      if (audio && isFinite(audio.duration) && audio.duration > 0) return audio.duration
+      return totalDuration || 0
+    }
+
+    /** 包含 t 的那段缓冲的末端；t 不在任何缓冲区间内返回 0 */
+    function bufferEndAt(t) {
+      if (!sb || !sb.buffered.length) return 0
+      const b = sb.buffered
+      try {
+        for (let k = 0; k < b.length; k++) {
+          if (t >= b.start(k) - 0.05 && t <= b.end(k)) return b.end(k)
+        }
+      } catch {
+        /* SourceBuffer 更新中读取会抛 */
+      }
+      return 0
+    }
+
+    /** 丢掉太旧的缓冲（配额），以及回跳之后留在远处的旧缓冲 */
     function prune() {
       if (!sb || !sb.buffered.length || sb.updating) return
-      const cut = Math.max(0, (audio ? audio.currentTime : 0) - 10)
+      // 定位还没完成时 currentTime 仍是旧值：这时候剪会剪掉刚补到新位置的数据
+      if (audio && audio.seeking) return
+      const cur = audio ? audio.currentTime : 0
+      const cut = Math.max(0, cur - 10)
+      const dropFrom = cur + KEEP_SEC
       try {
-        if (sb.buffered.start(0) < cut) sb.remove(0, cut)
+        for (let k = sb.buffered.length - 1; k >= 0; k--) {
+          const s0 = sb.buffered.start(k)
+          const e0 = sb.buffered.end(k)
+          if (e0 < cut || s0 >= dropFrom) {
+            sb.remove(s0, e0)
+            return // 一次只删一段，等 updateend 后下一轮接着删
+          }
+        }
       } catch {
         /* 忽略：下一轮再试 */
       }
+    }
+
+    /**
+     * 收尾：最后一个分片追加完以后，把总长对齐到「真实缓冲末端」。
+     *
+     * SIDX 记的时长比最后一个分片里实际能解出来的样本长几百毫秒（B 站常见），
+     * 于是 mediaSource.duration 比数据末端大，<audio> 会永远卡在最后那一下
+     * （readyState=2、paused=false），ended 永远不触发。把 duration 收到缓冲末端，
+     * 播放位置一到达就自然 ended。
+     */
+    function settleTail() {
+      if (tailSettled || !sb || !mediaSource) return
+      if (mediaSource.readyState !== 'open') return
+      let be = 0
+      try {
+        if (sb.buffered.length) be = sb.buffered.end(sb.buffered.length - 1)
+      } catch {
+        return
+      }
+      if (be <= 0) return
+      tailSettled = true
+      const want = playbackDuration()
+      if (want > 0 && be >= want - 0.02) return // 数据是齐的，交给正常的 ended
+      trackDuration = Math.round(be * 1000) / 1000
+      try {
+        mediaSource.duration = trackDuration
+      } catch {
+        /* 部分实现会拒绝改 duration，那就只能等用户手动拖走 */
+      }
+      notify()
+    }
+
+    /**
+     * 尾部收尾。
+     *
+     * B 站音轨最后一个分片常常是「半截样品」：SIDX 记的时长到了 212.394，但能解出来的
+     * 样本只到 212.28 左右。此时 buffered 末端 == duration，<audio> 却在最后 0.05 秒前
+     * 僵住（readyState 掉回 1/2、paused=false），ended 永远不触发。
+     * 所以数据拉齐以后自己盯着：位置不再前进、且离总长不到 1 秒，就认定播完。
+     */
+    function checkTail() {
+      if (destroyed || finished || !audio || !tailDone) return
+      if (audio.paused) return
+      const dur = playbackDuration()
+      if (!(dur > 0)) return
+      if (dur - audio.currentTime > 1.2) return
+      if (!lastMoveAt || Date.now() - lastMoveAt < 1600) return
+      finishTail()
+    }
+
+    function finishTail() {
+      if (finished || !audio) return
+      finished = true
+      const dur = playbackDuration()
+      try {
+        audio.pause()
+      } catch {
+        /* ignore */
+      }
+      // 不要往总长处 seek：那里没有数据，还会把 MediaSource 推到 ended 状态，
+      // 之后「重播」就再也 append 不进去了。位置原样留着，UI 按 finished 显示总长
+      notify()
+    }
+
+    /** 数据拉齐了：收尾一次，并让 MSE 正式结束，部分实现据此会触发 ended */
+    function markTailDone() {
+      if (tailDone) return
+      tailDone = true
+      settleTail()
+      if (audio && !finished) lastMoveAt = lastMoveAt || Date.now()
+      notify()
     }
 
     /** 追加某个真实分片（下标基于 chunks，哨兵不算） */
@@ -235,21 +357,35 @@
 
     /** 从 givenTime 开始，把缓冲补到 AHEAD_SEC */
     async function pump() {
-      if (pumping || destroyed) return
+      // 重建播放器时旧元素的 timeupdate 还会再捅进来一次，这里必须挡住
+      if (pumping || destroyed || !chunks || !audio) return
       pumping = true
       try {
+        const lastReal = chunks.length - 2 // chunks 末尾是 size=0 的哨兵，不是真分片
         while (!destroyed) {
           const cur = audio ? audio.currentTime : 0
-          const end = sb && sb.buffered.length ? sb.buffered.end(sb.buffered.length - 1) : 0
+          // 只看「当前位置」这一段缓冲。以前取的是最后一段区间，回跳之后
+          // 远处旧缓冲会让这里误判成「已经缓冲够了」，于是不再补流、播几秒就停
+          const end = bufferEndAt(cur)
           if (end - cur >= AHEAD_SEC) break
-          // 下一个该补的位置：取「缓冲末尾」所在分片的下一个
-          const at = Math.max(end, cur)
+          if (end > 0 && end >= playbackDuration() - 0.05) {
+            // 已经到尾，没有可补的
+            markTailDone()
+            break
+          }
+          const at = end > cur ? end : cur
           let i = findSegment(chunks, at)
           if (i < 0) i = 0
           // 若缓冲末尾恰好压在分片边界上，从下一个开始
           if (chunks[i] && at > chunks[i].time + chunks[i].duration - 0.001) i += 1
-          if (i >= chunks.length - 1) break
+          if (i > lastReal) {
+            markTailDone()
+            break
+          }
+          // 这片已经在缓冲里了：再 append 只是重复拉流。以前尾部就是这么死循环的
+          if (chunks[i].time + chunks[i].duration <= end + 0.05) break
           await appendChunk(i)
+          if (i === lastReal) markTailDone()
           prune()
           notify()
         }
@@ -264,7 +400,11 @@
     /** 跳到 t 秒：保证该位置的段已 buffer，再定位 */
     async function seekTo(t) {
       if (!audio || !chunks) return
-      const clamped = Math.max(0, Math.min(t, Math.max(0, totalDuration - 0.2)))
+      finished = false
+      lastMoveAt = Date.now()
+      lastMoveT = 0
+      const limit = Math.max(0, playbackDuration() - 0.05)
+      const clamped = Math.max(0, Math.min(t, limit))
       const i = findSegment(chunks, clamped)
       if (i < 0) return
       const haveData =
@@ -291,7 +431,6 @@
         }
       }
       audio.currentTime = clamped
-      fetchCursor = i + 1
       notify()
       pump()
     }
@@ -303,11 +442,17 @@
     async function load(opts) {
       destroyed = false
       lastError = null
+      finished = false
+      tailDone = false
+      tailSettled = false
+      lastMoveT = 0
+      lastMoveAt = Date.now()
       track = opts.track
       totalDuration = opts.duration || 0
 
       const loaded = await loadTrack(track)
       chunks = loaded.chunks
+      trackDuration = loaded.trackDuration
       trackUrl = loaded.url
 
       const codecs = track.codecs || 'mp4a.40.2'
@@ -344,6 +489,11 @@
       sb.mode = 'segments'
 
       audio.addEventListener('timeupdate', () => {
+        if (audio && audio.currentTime > lastMoveT + 0.01) {
+          lastMoveT = audio.currentTime
+          lastMoveAt = Date.now()
+        }
+        if (audio && !audio.paused) checkTail()
         notify()
         pump()
       })
@@ -358,13 +508,20 @@
         lastError = err
         onError(err)
       })
+      audio.addEventListener('ended', () => {
+        finished = true
+        notify()
+      })
       if (mediaSource) {
         mediaSource.addEventListener('sourceended', () => notify())
       }
 
-      if (totalDuration > 0) {
+      // 时长按「音轨真实长度」设：设成视频时长会多出尾部一小段空洞，
+      // <audio> 会一直等那段不存在的数据（readyState=2），ended 永远不来
+      const mseDuration = trackDuration || totalDuration
+      if (mseDuration > 0) {
         try {
-          mediaSource.duration = totalDuration
+          mediaSource.duration = mseDuration
         } catch {
           /* 某些实现此时不允许设置，忽略 */
         }
@@ -372,21 +529,36 @@
 
       await append(loaded.init)
 
-      const startAt = Math.max(0, Math.min(opts.startAt || 0, Math.max(0, totalDuration - 0.2)))
+      const startAt = Math.max(0, Math.min(opts.startAt || 0, Math.max(0, playbackDuration() - 0.05)))
       const i = Math.max(0, findSegment(chunks, startAt))
       await appendChunk(i)
       // 起来之后立刻再补两段，避免第一段播完就断
       for (const k of [i + 1, i + 2]) {
         if (chunks[k] && chunks[k].size) await appendChunk(k).catch(() => {})
       }
-      fetchCursor = i + 3
       audio.currentTime = startAt
+      // 尾部样品不全时 ended 不会来，自己盯住最后 1 秒的僵持
+      if (tailTimer) clearInterval(tailTimer)
+      tailTimer = setInterval(checkTail, 500)
       notify()
       return stats()
     }
 
     async function play() {
       if (!audio) return
+      // 播完再点播放：从头开始（音频播放器的通行行为）。
+      // 这里整条重建而不是把 currentTime 拨回 0 —— 播完之后 MediaSource 可能已经
+      // 进入 ended 状态，再 append 会抛 InvalidStateError，重建最稳。
+      if (finished || audio.ended) {
+        const tk = track
+        const dur = totalDuration
+        finished = false
+        tailDone = false
+        await destroy()
+        await load({ track: tk, duration: dur, startAt: 0 })
+        await play()
+        return
+      }
       try {
         await audio.play()
       } catch (err) {
@@ -409,7 +581,7 @@
     }
 
     function getDuration() {
-      return totalDuration || (audio ? audio.duration : 0)
+      return playbackDuration()
     }
 
     async function destroy() {
@@ -439,6 +611,14 @@
       mediaSource = null
       chunks = null
       track = null
+      trackDuration = 0
+      tailSettled = false
+      tailDone = false
+      finished = false
+      if (tailTimer) {
+        clearInterval(tailTimer)
+        tailTimer = 0
+      }
     }
 
     return { load, play, pause, seekTo, setVolume, getElement, getDuration, destroy, stats }

@@ -162,6 +162,8 @@
     let destroyed = false
     let lastError = null
     let volume = 1
+    /** 用户主动暂停：这时看门狗不能把「暂停」当成断流去换节点 */
+    let userPaused = false
     let stopTimer = null
     let currentRoomId = 0
 
@@ -249,7 +251,8 @@
       })
       player.attachMediaElement(media)
       player.load()
-      player.play()
+      // 用户暂停着的时候换节点/换画质，不能顺手把播放恢复起来
+      if (!userPaused) player.play()
       notify()
     }
 
@@ -258,13 +261,14 @@
       destroyed = false
       lastError = null
       hostIndex = 0
+      userPaused = false
       currentRoomId = toRoomId(roomId)
       stream = await fetchAudioStream(currentRoomId)
       attach(stream.url)
       // 看门狗：既处理「断了」（paused），也处理「卡着不动」（currentTime 不前进）。
       // 参考实现最大的坑之一就是节点抽风时不报错也不重连，用户只看到「切了没反应」。
       stopTimer = setInterval(() => {
-        if (!el || destroyed) return
+        if (!el || destroyed || userPaused) return
         const t = el.currentTime
         if (t > lastTick + 0.001) {
           lastTick = t
@@ -320,6 +324,45 @@
       notify()
     }
 
+    /** 暂停：连 mpegts 拉流一起停，否则「暂停」了还在偷偷下载，省流量就白做了 */
+    function pause() {
+      userPaused = true
+      try {
+        if (player) player.pause()
+      } catch {
+        /* ignore */
+      }
+      try {
+        if (el) el.pause()
+      } catch {
+        /* ignore */
+      }
+      notify()
+    }
+
+    /** 恢复播放：直播没有「接着刚才」这回事，重新贴到直播边缘即可 */
+    function play() {
+      userPaused = false
+      lastTickAt = Date.now()
+      try {
+        if (player) {
+          const r = player.play()
+          if (r && typeof r.catch === 'function') r.catch(() => {})
+        }
+      } catch {
+        /* ignore */
+      }
+      if (el) {
+        try {
+          const r = el.play()
+          if (r && typeof r.catch === 'function') r.catch((err) => onError(err))
+        } catch (err) {
+          onError(err)
+        }
+      }
+      notify()
+    }
+
     function setVolume(v) {
       volume = Math.max(0, Math.min(1, v))
       if (el) el.volume = volume
@@ -336,7 +379,7 @@
       stream = null
     }
 
-    return { start, stop, setVolume, setQuality, stats, destroy, getElement: () => el }
+    return { start, stop, play, pause, setVolume, setQuality, stats, destroy, getElement: () => el }
   }
 
   ns.liveAudio = { createLiveAudio, fetchAudioStream, toRoomId }

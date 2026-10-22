@@ -163,9 +163,14 @@
         <div class="sc-line">
           <button class="sc-play" id="sc-play">播放</button>
           <span class="sc-time" id="sc-time">0:00 / 0:00</span>
+          <span class="sc-live" id="sc-live" hidden>直播</span>
         </div>
-        <input type="range" id="sc-seek" min="0" max="0" step="0.1" value="0" aria-label="进度">
-        <input type="range" id="sc-vol" min="0" max="1" step="0.01" value="1" aria-label="音量">
+        <input type="range" id="sc-seek" min="0" max="0" step="0.1" value="0" aria-label="播放进度">
+        <div class="sc-line sc-vol-line">
+          <span class="sc-lab">音量</span>
+          <input type="range" id="sc-vol" min="0" max="1" step="0.01" value="1" aria-label="音量">
+          <span class="sc-vol-pct" id="sc-vol-pct">100%</span>
+        </div>
       </div>
       <div class="sc-row" id="sc-danmaku-row" hidden>
         <label><input type="checkbox" id="sc-danmaku"> 弹幕 +1（点一下原样重发）</label>
@@ -190,10 +195,19 @@
   const elTime = $('sc-time')
   const elSeek = $('sc-seek')
   const elVol = $('sc-vol')
+  const elVolPct = $('sc-vol-pct')
+  const elLiveTag = $('sc-live')
   const elDanmakuRow = $('sc-danmaku-row')
   const elDanmaku = $('sc-danmaku')
   const elSync = $('sc-sync')
   const elLog = $('sc-log')
+
+  /** 当前音量（0~1）。视频页和直播页共用，页内切换/重开都按这个值来 */
+  let volume = 1
+  /** 正在拖进度条：这期间不要用播放位置回写滑块，否则手会被拽回去 */
+  let seeking = false
+  let seekTimer = null
+  let volumeSaveTimer = null
 
   let logLines = 0
   function log(text, tone = '') {
@@ -324,6 +338,7 @@
       onError: (err) => log(String(err.message || err), 'error'),
     })
     await dash.load({ track, duration: dashInfo.duration, startAt })
+    dash.setVolume(volume)
     await dash.play()
     elPlayerBox.hidden = false
     showOverlay({
@@ -389,25 +404,48 @@
     }
     nativeVideo = null
     removeOverlay()
-    elPlayerBox.hidden = true
+    resetPlayerBox()
     setStatus('音频模式已关闭', '')
   }
 
   function renderPlayer(s) {
     if (!s) return
-    // 直播是无穷流：没有总时长、不能拖进度，只显示已播时长 + 音量
-    if (s.live || !s.duration) {
-      elTime.textContent = s.live ? `直播 · ${fmtTime(s.currentTime)}` : `${fmtTime(s.currentTime)} / 0:00`
+    const cur = Math.max(0, Number(s.currentTime) || 0)
+    const dur = Math.max(0, Number(s.duration) || 0)
+    const vol = Math.max(0, Math.min(1, s.volume == null ? volume : Number(s.volume)))
+    // 直播是无穷流：没有总时长、不能拖进度，但「暂停/继续」和音量照样要有
+    if (s.live || !dur) {
+      elLiveTag.hidden = !s.live
+      elTime.textContent = s.live ? `已播 ${fmtTime(cur)}` : `${fmtTime(cur)} / 0:00`
       elSeek.hidden = true
     } else {
-      elTime.textContent = `${fmtTime(s.currentTime)} / ${fmtTime(s.duration)}`
+      elLiveTag.hidden = true
       elSeek.hidden = false
-      elSeek.max = String(Math.max(1, s.duration || 0))
-      if (document.activeElement !== elSeek) elSeek.value = String(s.currentTime || 0)
+      elSeek.max = String(Math.max(1, dur))
+      // 拖拽中显示「拖到的时间」，否则显示真实播放位置
+      elTime.textContent = `${fmtTime(seeking ? Number(elSeek.value) : cur)} / ${fmtTime(dur)}`
+      if (!seeking && document.activeElement !== elSeek) elSeek.value = String(cur)
     }
-    elPlay.textContent = s.paused ? '播放' : '暂停'
-    elVol.value = String(s.volume == null ? 1 : s.volume)
+    // 播完按钮给「重播」，点下去由播放器自己从头开始
+    elPlay.textContent = s.ended ? '重播' : s.paused ? '播放' : '暂停'
+    elPlay.setAttribute('aria-label', s.ended ? '从头重播' : s.paused ? '继续播放' : '暂停播放')
+    if (document.activeElement !== elVol) elVol.value = String(vol)
+    elVolPct.textContent = `${Math.round(vol * 100)}%`
     root.setAttribute('data-active', '1')
+  }
+
+  /** 改音量：视频页音频、直播音频、以及之后重开的播放器都跟着这个值 */
+  function setVolume(v) {
+    volume = Math.max(0, Math.min(1, Number(v) || 0))
+    if (dash) dash.setVolume(volume)
+    if (live) live.setVolume(volume)
+    elVolPct.textContent = `${Math.round(volume * 100)}%`
+    if (volumeSaveTimer) clearTimeout(volumeSaveTimer)
+    // 拖动时每个 input 都写一次 storage 太频繁，停手再存
+    volumeSaveTimer = setTimeout(() => {
+      volumeSaveTimer = null
+      void storageSet({ volume })
+    }, 400)
   }
 
   /**
@@ -468,7 +506,8 @@
     const r = await bridge('stop')
     nativeStopped = !!r.ok
     if (!r.ok) log(`停原生播放器失败：${r.error || '未知原因'}`, 'warn')
-    // 面板要留着：用户得能调音量（直播没有进度可拖，renderPlayer 会隐藏进度条）
+    // 面板要留着：直播虽不能拖进度，但「暂停/继续」和音量都得能操作
+    live.setVolume(volume)
     elPlayerBox.hidden = false
     showOverlay({
       cover: document.querySelector('meta[property="og:image"]')?.content || '',
@@ -494,6 +533,7 @@
       live = null
     }
     removeOverlay()
+    resetPlayerBox()
     if (nativeStopped) {
       nativeStopped = false
       void bridge('resume').then((r) => {
@@ -551,19 +591,56 @@
     }
   })
 
+  /** 关掉音频模式后把播放控制区复位，别留着上一次的时长/滑块 */
+  function resetPlayerBox() {
+    if (seekTimer) {
+      clearTimeout(seekTimer)
+      seekTimer = null
+    }
+    seeking = false
+    elPlayerBox.hidden = true
+    elPlay.textContent = '播放'
+    elTime.textContent = '0:00 / 0:00'
+    elSeek.max = '0'
+    elSeek.value = '0'
+    elLiveTag.hidden = true
+  }
+
   elPlay.addEventListener('click', () => {
+    // 视频页和直播页用的是两个播放器，按钮共用一个
+    if (dash) {
+      if (dash.stats().paused) void dash.play()
+      else dash.pause()
+      return
+    }
+    if (live) {
+      if (live.stats().paused) live.play()
+      else live.pause()
+    }
+  })
+
+  function commitSeek() {
+    if (seekTimer) {
+      clearTimeout(seekTimer)
+      seekTimer = null
+    }
     if (!dash) return
-    if (dash.stats().paused) void dash.play()
-    else dash.pause()
-  })
+    seeking = false
+    void dash.seekTo(Number(elSeek.value))
+  }
+
   elSeek.addEventListener('input', () => {
-    if (dash) void dash.seekTo(Number(elSeek.value))
+    if (!dash) return
+    seeking = true
+    // 拖动时先把目标时间显示出来，松手/停手才真正发请求
+    elTime.textContent = `${fmtTime(Number(elSeek.value))} / ${fmtTime(dash.stats().duration)}`
+    if (seekTimer) clearTimeout(seekTimer)
+    // 每移动一像素就 Range 拉一次分片太浪费，停手 120ms 再跳
+    seekTimer = setTimeout(commitSeek, 120)
   })
-  elVol.addEventListener('input', () => {
-    const v = Number(elVol.value)
-    if (dash) dash.setVolume(v)
-    if (live) live.setVolume(v)
-  })
+  elSeek.addEventListener('change', commitSeek)
+
+  elVol.addEventListener('input', () => setVolume(Number(elVol.value)))
 
   /* ------------------------------ 弹幕 +1 ------------------------------ */
 
@@ -614,6 +691,11 @@
 
     const saved = await storageGet()
     if (saved.quality) elQuality.value = saved.quality
+    if (typeof saved.volume === 'number') {
+      volume = Math.max(0, Math.min(1, saved.volume))
+      elVol.value = String(volume)
+      elVolPct.textContent = `${Math.round(volume * 100)}%`
+    }
     if (saved.panelOpen) openPanel(true)
 
     await refreshStatus()

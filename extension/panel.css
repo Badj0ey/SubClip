@@ -173,12 +173,44 @@
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* 直播没有总时长，用一个角标说明「这是直播」，避免把已播时长当成进度 */
+.sc-live {
+  font-size: 10px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 999px;
+  background: #3f2a2a;
+  color: #fca5a5;
+  margin-left: auto;
+}
+.sc-live[hidden] {
+  display: none;
+}
+.sc-lab {
+  font-size: 11px;
+  color: #94a3b8;
+  white-space: nowrap;
+}
+.sc-vol-pct {
+  font-size: 11px;
+  color: #94a3b8;
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: right;
+}
 
 .sc-panel input[type='range'] {
   width: 100%;
   accent-color: #2563eb;
   height: 14px;
   margin: 4px 0 0;
+}
+/* 音量滑块在 flex 行里：不能撑满整行，要让出百分比的位置 */
+.sc-vol-line input[type='range'] {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  margin: 0;
 }
 
 .sc-sync {
