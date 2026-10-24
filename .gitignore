@@ -20,3 +20,10 @@ tests/large-*.srt
 # 本地 npm 镜像配置（镜像源因人而异、也因网络环境而异，
 # CI 在境外必须走默认源，所以只提交 .npmrc.example，不提交 .npmrc）
 .npmrc
+
+# Local development utilities
+.embed-probe-cache/
+.test-userdata/
+scripts/*.png
+*.log
+.DS_Store

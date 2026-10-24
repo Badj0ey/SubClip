@@ -7,7 +7,7 @@
   "author": "Badj0ey",
   "main": "./out/main/index.js",
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "keywords": [
     "bilibili",
@@ -24,10 +24,11 @@
     "preview": "electron-vite preview",
     "start": "electron .",
     "typecheck": "vue-tsc --noEmit -p tsconfig.web.json && tsc --noEmit -p tsconfig.node.json",
-    "test": "npm run test:core && npm run test:wbi && npm run test:slice && npm run test:smoke && npm run test:bridge",
-    "test:slice": "esbuild tests/sidx.test.ts --bundle --platform=node --format=cjs --outfile=tests/sidx.test.cjs --alias:@shared=./src/shared --external:electron --log-level=warning && node tests/sidx.test.cjs",
+    "test": "npm run test:core && npm run test:refactor && npm run test:wbi && npm run test:slice && npm run test:smoke && npm run test:bridge",
     "test:core": "esbuild tests/core.test.ts --bundle --platform=node --format=cjs --outfile=tests/core.test.cjs --alias:@shared=./src/shared --log-level=warning && node tests/core.test.cjs",
+    "test:refactor": "esbuild tests/refactor.test.ts --bundle --platform=node --format=cjs --outfile=tests/refactor.test.cjs --alias:@shared=./src/shared --log-level=warning && node tests/refactor.test.cjs",
     "test:wbi": "esbuild tests/wbi.test.ts --bundle --platform=node --format=cjs --outfile=tests/wbi.test.cjs --log-level=warning && node tests/wbi.test.cjs",
+    "test:slice": "esbuild tests/sidx.test.ts --bundle --platform=node --format=cjs --outfile=tests/sidx.test.cjs --alias:@shared=./src/shared --external:electron --log-level=warning && node tests/sidx.test.cjs",
     "test:smoke": "esbuild tests/smoke.ts --bundle --platform=node --format=cjs --outfile=tests/smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --log-level=warning && electron tests/smoke.cjs",
     "test:bridge": "esbuild tests/bridge.smoke.ts --bundle --platform=node --format=cjs --outfile=tests/bridge.smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --external:ws --log-level=warning && electron tests/bridge.smoke.cjs",
     "dist": "npm run build && electron-builder --win",
