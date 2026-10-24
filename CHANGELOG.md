@@ -8,6 +8,23 @@
 
 ## [未发布]
 
+### 浏览器插件改为篡改猴用户脚本
+
+- **插件端合并为单文件** `userscript/SubClip.user.js`：页面识别、WBI 签名、字幕抓取、WebSocket 通信与
+  左下角悬浮面板都在一个脚本里，不再需要 `manifest.json` / background / popup / shared 等 9 个文件。
+- 原弹窗 UI 重新排布到 B 站页面**左下角悬浮框**：折叠时只占一个「剪」按钮，展开后依次是页面信息、
+  同步该视频 / 拉取全部分P、桌面端与浏览器登录态、连接设置（端口 / 配对令牌）、最近事件。
+- 删除 `extension/` 整目录与 `build/make-extension-key.mjs`（固定扩展 ID 的方案不再适用）。
+- 桌面端 Origin 白名单从固定 `chrome-extension://` 扩展 ID 改为 B 站页面来源
+  `https://*.bilibili.com`（用户脚本的 WebSocket Origin 即页面来源）；**建议配置配对令牌**，
+  防止本机其它程序伪造 Origin。
+- 设置页的「插件目录 / 加载解压缩扩展」改为「用户脚本」：显示脚本路径、打开所在文件夹、一键复制脚本，
+  并给出篡改猴安装步骤；打包资源从 `resources/extension/` 改为 `resources/userscript/`。
+- 适配 Chrome / Edge 142+ 的**本地网络访问（LNA）权限**：首次连接不再静默失败，浮框会显示「待授权」提示，
+  由用户点「允许并连接」触发浏览器授权；被拒绝时给出站点设置路径，授权状态变化后自动重连。
+- 测试同步调整：`tests/wbi.test.ts` 从用户脚本提取 WBI 块与协议常量，新增 Origin 白名单放行/拒绝用例；
+  `tests/core.test.ts` 去除对插件协议文件的依赖；`tests/bridge.smoke.ts` 用 B 站页面来源做正向用例。
+
 ### 回退
 
 - **浏览器插件回退到 3.14.0 之前的桥接版本**：`extension/` 恢复为「页面识别 + 字幕桥接 + WBI」的最小实现，没有页面内面板。

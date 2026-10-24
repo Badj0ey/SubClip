@@ -229,14 +229,14 @@ const api = {
     ipcRenderer.invoke('settings:save', patch),
   checkEnv: (): Promise<any> => ipcRenderer.invoke('env:check'),
 
-  /* 浏览器插件通信 */
+  /* 浏览器用户脚本通信 */
   bridgeStatus: (): Promise<BridgeStatus> => ipcRenderer.invoke('bridge:status'),
   bridgeRestart: (port?: number): Promise<BridgeStatus> =>
     ipcRenderer.invoke('bridge:restart', port),
   requestSubtitles: (bvid: string, page: number, cid?: number | null): Promise<boolean> =>
     ipcRenderer.invoke('bridge:requestSubtitles', { bvid, page, cid }),
-  extensionDir: (): Promise<{ path: string; exists: boolean }> =>
-    ipcRenderer.invoke('bridge:extensionDir'),
+  userscript: (): Promise<{ path: string; exists: boolean; content: string }> =>
+    ipcRenderer.invoke('bridge:userscript'),
 
   /* 本地切片 */
   sliceCheck: (): Promise<SliceCheckResult> => ipcRenderer.invoke('slice:check'),

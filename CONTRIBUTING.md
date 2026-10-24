@@ -20,7 +20,7 @@ npm run dev        # 开发模式（热更新）
 ## 提交之前必须全部通过
 
 ```bash
-npm run typecheck  # 渲染进程 + 主进程 + tests/ + extension/*.js
+npm run typecheck  # 渲染进程 + 主进程 + tests/
 npm test           # 五组测试
 npm run build      # 构建产物必须能出来
 ```
@@ -39,9 +39,9 @@ npm run build      # 构建产物必须能出来
 - **新增行为要配测试**。测试是手写 runner，直接 `assert`，不引入测试框架：
   - 纯函数 → `tests/core.test.ts`
   - 数据层 / 迁移 → `tests/smoke.ts`
-  - 插件通信 / 协议 → `tests/bridge.smoke.ts`
-- **改协议要同时改两边**：`src/shared/bridge.ts` ↔ `extension/shared/protocol.js`，
-  并且 `npm run test:wbi` 会校验版本号与扩展 ID 一致。
+  - 用户脚本通信 / 协议 → `tests/bridge.smoke.ts`
+- **改协议要同时改两边**：`src/shared/bridge.ts` ↔ `userscript/SubClip.user.js`，
+  并且 `npm run test:wbi` 会校验版本号与协议常量一致。
 
 ## 两处容易踩的坑
 

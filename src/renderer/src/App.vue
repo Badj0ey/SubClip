@@ -29,16 +29,16 @@ import PullDialog from './components/PullDialog.vue'
 const showImport = ref(false)
 const showPull = ref(false)
 
-/** 插件检测到合集 / 收藏夹时，在对话框顶部说明来源 */
+/** 用户脚本检测到合集 / 收藏夹时，在对话框顶部说明来源 */
 const collectionNote = computed(() => {
   const c = state.pendingCollection
   if (!c) return ''
   const kind =
     c.pageType === 'favlist' ? '收藏夹' : c.pageType === 'space' ? 'UP主投稿页' : '合集 / 系列'
-  return `浏览器插件检测到${kind}${c.title ? `《${c.title}》` : ''}`
+  return `浏览器用户脚本检测到${kind}${c.title ? `《${c.title}》` : ''}`
 })
 
-/** 关闭拉取对话框：两个入口（手动按钮 / 插件检测）都要复位 */
+/** 关闭拉取对话框：两个入口（手动按钮 / 用户脚本检测）都要复位 */
 function closePull(): void {
   showPull.value = false
   state.pendingCollection = null

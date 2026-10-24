@@ -179,12 +179,12 @@ export interface AppSettings {
   sliceToolDir: string
   /** 切片表输出目录 */
   outputDir: string
-  /** 浏览器插件通信端口 */
+  /** 浏览器用户脚本通信端口 */
   port: number
   /**
    * 插件配对令牌（可选，留空表示不校验）。
    * 留空时本地服务只靠 Origin 白名单挡网页；若在乎本机其它程序伪造 Origin，
-   * 可以在这里设一个随机串，并在插件弹窗里填同样的值。
+   * 可以在这里设一个随机串，并在 B 站左下角浮框的「连接设置」里填同样的值。
    */
   bridgeToken: string
   /** B站 Cookie（拉取字幕需要登录态） */

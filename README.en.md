@@ -29,7 +29,7 @@ copy a timestamped Bilibili link.
 
 - **Get subtitles**
   - Pull from Bilibili: video / season / series / favourites / uploader space / `b23.tv` short links, or a bare BV id.
-    Uses WBI signing; reuses your logged-in session via the bundled browser extension (no manual cookie copying).
+    Uses WBI signing; reuses your logged-in session via the bundled Tampermonkey userscript (no manual cookie copying).
   - Import local SRT files (auto-detects UTF-8 / UTF-8-BOM / UTF-16 / GBK; tolerant parsing with warnings).
 - **Read & search**
   - Four-column reader (index / start / end / text) with virtual scrolling — thousands of cues stay smooth.
@@ -67,8 +67,8 @@ cd <repo>
 npm install
 npm run dev        # development (hot reload)
 npm run build      # build into out/
-npm run typecheck  # renderer + main + tests + extension scripts
-npm test           # 67 + 18 + 14 + 24 + 27 assertions
+npm run typecheck  # renderer + main + tests
+npm test           # core / WBI / slice / smoke / bridge suites
 npm start          # run the built app
 ```
 
@@ -92,18 +92,24 @@ npm run dist:dir   # unpacked only (faster when validating the config)
 > (GitHub Actions' Windows runners already have the privilege, so CI is unaffected.)
 >
 > Layout: `dist/win-unpacked/` is the portable build — run `SRT Clip Helper.exe` directly.
-> The browser extension is placed at `resources/extension/` (outside the asar); that is the folder
-> the app points you to under *Settings → Browser extension*.
+> The userscript is placed at `resources/userscript/` (outside the asar); that is the file
+> the app points you to under *Settings → Browser userscript*.
 
-## Browser extension (optional)
+## Browser userscript (optional)
 
-The extension is only needed to reuse your logged-in Bilibili session, or to push subtitles straight from a page.
+The userscript is only needed to reuse your logged-in Bilibili session, or to push subtitles straight from a page.
 
-1. Open `chrome://extensions` (Edge: `edge://extensions`) and enable **Developer mode**.
-2. Click **Load unpacked** and pick this repo's `extension/` folder — or click *Open* next to the plugin
-   directory in the app's Settings page.
-3. Open the extension popup and click **Sync login state to desktop**. After that the desktop app can fetch
-   subtitles on its own.
+1. Install [Tampermonkey](https://www.tampermonkey.net/) in your browser.
+2. Open the app's *Settings → Browser userscript*, click **Copy script**, then create a new script in
+   Tampermonkey and paste it. Alternatively, drag `userscript/SubClip.user.js` into the browser.
+3. Open any Bilibili video page; a **剪** button appears in the bottom-left corner. Expand it and click
+   **Sync login state**. After that the desktop app can fetch subtitles on its own.
+
+> **Local Network Access (Chrome / Edge 142+)**: browsers block web pages from reaching `127.0.0.1`.
+> The first time you click **Allow and connect**, choose **Allow** in the browser prompt. If no prompt
+> appears, click the **Permission needed** pill to retry; if you denied it earlier, open the site
+> controls from the address bar → **Local network access** and allow it. Permission is per Bilibili
+> subdomain, so `www` and `space` may each need one.
 
 The local link is a WebSocket server the desktop app runs on `127.0.0.1:8765` (configurable).
 
@@ -114,11 +120,11 @@ any page you visit could otherwise connect to `ws://127.0.0.1:8765`. The server 
 
 | Guard | Purpose |
 | --- | --- |
-| **Origin allowlist** | Only the bundled extension (its id is pinned via the `key` field in `manifest.json`) may connect; anything else is told why and disconnected immediately |
+| **Origin allowlist** | Only Bilibili page origins (`https://*.bilibili.com`) may connect — a userscript's WebSocket Origin is the page origin. Anything else is told why and disconnected immediately |
 | **Per-type message validation** | Every inbound message is validated (BV id shape, finite timestamps, length and count limits); anything invalid is dropped |
 | **`maxPayload` + rate limit** | A single frame is capped at 512 KB (`ws` defaults to 100 MiB, enough to blow up the main process) and per-connection message rate is limited |
 
-There is also an optional **pairing token** (Settings → Browser extension). It is off by default because the
+There is also an optional **pairing token** (Settings → Browser userscript). It is off by default because the
 origin allowlist already stops web pages; the token guards against local processes forging an Origin.
 
 The renderer is not blindly trusted either: the main process only reads/writes paths the user picked in a
@@ -153,18 +159,18 @@ All of them are rebindable in Settings, with conflict detection.
 ## Tech stack
 
 - Electron 36 + Vue 3 + Vite (`electron-vite`)
-- TypeScript with `strict` across main / preload / renderer / tests / extension scripts
+- TypeScript with `strict` across main / preload / renderer / tests
 - Storage: SQLite through the built-in `node:sqlite` (Electron 36 / Node 22) + FTS5
 - Spreadsheet export: CSV (UTF-8 BOM) and XLSX
 
 ## Known limitations
 
-- **Bilibili APIs** are undocumented and may change; `src/main/bilibili.ts` and `extension/shared/bilibili.js`
-  would need updating. Only subtitles your account may access are fetched — paywalls, private videos and
-  region locks are not circumvented.
-- **Extension DOM selectors** may break when Bilibili redesigns its pages.
-- **MV3 keep-alive**: after the service worker is evicted, `chrome.alarms` wakes it once a minute,
-  so there can be up to ~1 minute of reconnect gap.
+- **Bilibili APIs** are undocumented and may change; `src/main/bilibili.ts` and the API/WBI code in
+  `userscript/SubClip.user.js` would need updating. Only subtitles your account may access are fetched —
+  paywalls, private videos and region locks are not circumvented.
+- **Userscript DOM selectors** may break when Bilibili redesigns its pages.
+- **Userscript lifecycle**: it only runs on Bilibili pages; refreshing or navigating the page reconnects
+  automatically, while other sites do not connect to the desktop app.
 - **Categories/tags**: the tree is the automatic `uploader → collection → video → subtitle` hierarchy;
   user-defined tags are not implemented yet.
 - **Batch editing** supports find & replace and timeline shift/scale, but not cross-document replace or

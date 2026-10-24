@@ -1,5 +1,5 @@
 /**
- * 开发调试用：模拟浏览器插件连接桌面端，发送页面信息与字幕。
+ * 开发调试用：模拟用户脚本连接桌面端，发送页面信息与字幕。
  * 用法：node tests/fake-plugin.mjs [port]
  */
 import WebSocket from 'ws'
@@ -10,7 +10,7 @@ const ws = new WebSocket(`ws://127.0.0.1:${port}`)
 const PAGE = {
   pageType: 'video',
   bvid: 'BV1GJ411x7h7',
-  title: '【模拟插件】测试视频标题',
+  title: '【模拟用户脚本】测试视频标题',
   url: 'https://www.bilibili.com/video/BV1GJ411x7h7',
   page: 1,
   cid: 120000001,
@@ -20,7 +20,7 @@ const PAGE = {
 }
 
 const CUES = [
-  { from: 1, to: 4.2, content: '这是插件推送的第一句字幕' },
+  { from: 1, to: 4.2, content: '这是用户脚本推送的第一句字幕' },
   { from: 4.3, to: 8.1, content: '第二句：这里是高光片段' },
   { from: 8.2, to: 12, content: '第三句：需要单独剪出来' },
   { from: 80, to: 84.5, content: '第四句：另一段高光' },

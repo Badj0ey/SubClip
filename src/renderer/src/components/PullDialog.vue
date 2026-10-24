@@ -9,7 +9,7 @@ const props = withDefaults(
   defineProps<{
     /** 打开时预填的目标地址（插件检测到合集/收藏夹时用），会立刻自动解析 */
     prefillUrl?: string
-    /** 预填来源的说明，例如「浏览器插件检测到合集」 */
+    /** 预填来源的说明，例如「浏览器用户脚本检测到合集」 */
     prefillNote?: string
   }>(),
   { prefillUrl: '', prefillNote: '' }
@@ -141,7 +141,7 @@ async function pull(): Promise<void> {
     return
   }
   if (!hasCookie.value && !pluginOnline.value) {
-    toast('需要 B 站登录状态：请在设置里同步登录状态，或让浏览器插件保持连接', 'error', 5200)
+    toast('需要 B 站登录状态：请在设置里同步登录状态，或让浏览器用户脚本保持连接', 'error', 5200)
     return
   }
 
@@ -219,7 +219,7 @@ async function openSettings(): Promise<void> {
       <div v-if="!hasCookie" class="notice">
         <span>
           尚未配置 B 站登录状态，拉取字幕会失败。
-          <template v-if="pluginOnline">浏览器插件已连接，可到插件弹窗点「同步登录状态到桌面端」。</template>
+          <template v-if="pluginOnline">用户脚本已连接，可到 B 站左下角浮框点「同步登录状态」。</template>
         </span>
         <button class="btn sm" @click="openSettings">前往设置</button>
       </div>

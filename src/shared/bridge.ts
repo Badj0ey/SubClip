@@ -1,13 +1,16 @@
 /**
- * 桌面端 ↔ 浏览器插件 的本地 WebSocket 通信协议。
+ * 桌面端 ↔ 浏览器用户脚本 的本地 WebSocket 通信协议。
  *
  * 桌面端是 WebSocket 服务端（监听 127.0.0.1:port，默认 8765），插件是客户端。
- * 本文件为两端共享的协议定义，插件侧对应 extension/shared/protocol.js（同一份定义的 JS 版本）。
+ * 本文件为两端共享的协议定义，插件侧对应 userscript/SubClip.user.js（同一份定义的 JS 版本）。
  *
  * ⚠️ 安全前提：WebSocket 握手**不受 CORS 约束**，任何网页都能连 `ws://127.0.0.1:端口`。
- * 所以这里有两道闸门（见 `BRIDGE_EXTENSION_ID` 与 `parseClientMessage`）：
- *   1. `bridge.ts` 校验握手来源 Origin，只放行**固定 ID 的自家扩展**；
+ * 所以这里有两道闸门（见 `BRIDGE_ALLOWED_ORIGINS` 与 `parseClientMessage`）：
+ *   1. `bridge.ts` 校验握手来源 Origin，只放行 B站页面（用户脚本的 Origin 就是页面来源）；
  *   2. 所有入站消息都经过本文件的**逐类型校验**，不合法直接丢弃，不信任任何字段。
+ *
+ * 用户脚本没有固定扩展 ID，只能按页面来源放行。建议在设置里配置**配对令牌**：
+ * 页面里的普通脚本无法读取篡改猴的存储，拿不到令牌就发不了业务消息。
  */
 
 /**
@@ -22,16 +25,34 @@ export const BRIDGE_PROTOCOL_VERSION = 4
 export const BRIDGE_SERVER_NAME = 'srt-clip-helper'
 
 /**
- * 浏览器插件的固定 ID。
+ * 握手时允许的 Origin 列表。
  *
- * 解压加载的扩展 ID 默认由安装路径推导，每台机器都不同，没法写死校验；
- * `extension/manifest.json` 里的 `key` 字段（公钥）让 ID 变成确定值。
- * 改动 manifest 的 key 必须同步改这里，`tests/wbi.test.ts` 会校验两者一致。
+ * 篡改猴脚本运行在 B站页面里，WebSocket 的 Origin 是 `https://*.bilibili.com`，
+ * 不再是固定的 `chrome-extension://`。`*` 可匹配任意字符（正则 `.*`），整串锚定，
+ * 所以 `https://www.bilibili.com.evil.example` 这类伪装域名不会被放行。
  */
-export const BRIDGE_EXTENSION_ID = 'lmchilpnlhdfbpjklnfpfgkbddcdekpl'
+export const BRIDGE_ALLOWED_ORIGINS = ['https://*.bilibili.com']
 
-/** 握手时允许的 Origin 列表（固定 ID 的扩展页来源） */
-export const BRIDGE_ALLOWED_ORIGINS = [`chrome-extension://${BRIDGE_EXTENSION_ID}`]
+/**
+ * Origin 是否在白名单里。
+ *
+ * - 没有 Origin 头的是非浏览器客户端（调试脚本 / 命令行），保持放行；
+ * - 白名单为空表示不限制（测试或用户显式配置）；
+ * - 支持 `*` 通配，但必须整串匹配。
+ */
+export function isBridgeOriginAllowed(
+  origin: string | undefined,
+  allowed: readonly string[] = BRIDGE_ALLOWED_ORIGINS
+): boolean {
+  if (!origin) return true
+  if (!allowed.length) return true
+  return allowed.some((pattern) => {
+    if (pattern === origin) return true
+    if (!pattern.includes('*')) return false
+    const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*')
+    return new RegExp(`^${escaped}$`).test(origin)
+  })
+}
 
 /** 各类入站数据的上限，防止畸形/恶意消息把内存与磁盘撑爆 */
 export const BRIDGE_LIMITS = {

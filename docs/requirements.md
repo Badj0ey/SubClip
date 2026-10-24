@@ -253,7 +253,7 @@ Bilibili 视频
 | 1 概述：发送至本地批量切片工具 | 已实现（并已内置切片） | `src/main/exporter.ts`、`src/main/slice/` |
 | 1 概述：本地 SRT + Bilibili 字幕流程 | 已实现 | `src/main/services.ts` |
 | 2A 桌面端：SRT 管理 / 阅读 / 搜索 / 选择 / 时间范围 / 数据管理 / 通信 | 已实现 | `src/main/*`、`src/renderer/src/*` |
-| 2B 插件：页面检测 / 信息同步 / 字幕联动 / 通信 | 已实现 | `extension/content.js`、`extension/background.js` |
+| 2B 用户脚本：页面检测 / 信息同步 / 字幕联动 / 通信 | 已实现 | `userscript/SubClip.user.js` |
 | 3.1 来源1：UTF-8 / 常见 SRT / 格式异常处理 | 已实现（超出文档：另支持 UTF-16 / GBK） | `src/main/srt.ts` |
 | 3.1 来源2：整合 `bili_subtitle_extension_native` | **换实现方式**：未内嵌该 Python 宿主，而是用 Node 重写了 WBI 签名与字幕接口 | `src/main/bilibili.ts` |
 | 3.2 字幕浏览：四列显示 / 滚动 / 高亮 / 定位 / 跳转 | 已实现（含虚拟滚动、阅读条） | `SubtitleReader.vue`、`composables/useVirtualList.ts` |
@@ -261,9 +261,9 @@ Bilibili 视频
 | 3.4 字幕选择：复选框 / 连续 / 非连续 / 多段 | 已实现 | `store.ts`、`SubtitleReader.vue` |
 | 3.5 时间坐标生成：连续合并 / 非连续分段 | 已实现（另有「合并间隔」阈值与跨分P 合并） | `src/shared/ranges.ts` |
 | 3.6 切片工具连接：表格格式 | 已实现（CSV / XLSX，列序与目标工具一致） | `src/main/exporter.ts` |
-| 4.1 页面检测：视频 / 合集 / 收藏夹 / 投稿页 | 已实现 | `extension/content.js` |
+| 4.1 页面检测：视频 / 合集 / 收藏夹 / 投稿页 | 已实现 | `userscript/SubClip.user.js` |
 | 4.2 桌面端同步：localhost WebSocket | 已实现（并加了 Origin 白名单与可选配对令牌） | `src/main/bridge.ts` |
-| 4.3 字幕获取：插件抓取并推送 | 已实现（接口调用走页面上下文以带上登录态） | `extension/*`、`src/main/wire.ts` |
+| 4.3 字幕获取：用户脚本抓取并推送 | 已实现（接口调用走页面上下文以带上登录态） | `userscript/SubClip.user.js`、`src/main/wire.ts` |
 | 5 数据结构：UP主 → 合集 → 视频 → 字幕 | 已实现（切片任务为扁平表 + `docId` 关联） | `src/main/db.ts` |
 | 6 UI：三栏布局 | 已实现 | `src/renderer/src/App.vue` |
 | 6 资源管理：搜索 / 收藏 / 删除 | 已实现 | `components/ResourceTree.vue` |
@@ -272,7 +272,7 @@ Bilibili 视频
 | 6 任务区域：查看时间范围 / 导出 / 发送任务 | 已实现 | `components/ClipPanel.vue` |
 | 7 设置：字幕显示 / 快捷键 / 路径 / 通信 | 已实现 | `SettingsView.vue` |
 | 7 路径设置中的「字幕获取工具目录」 | **已移除**：该设置原本只做目录存在性探测、不参与任何功能，留着会误导用户 | — |
-| 8 技术选型：Electron + Vue、Manifest V3、Local WebSocket | 已实现 | `package.json`、`extension/manifest.json` |
+| 8 技术选型：Electron + Vue、Tampermonkey 用户脚本、Local WebSocket | 已实现 | `package.json`、`userscript/SubClip.user.js` |
 | 9 Phase 1–4 | 全部完成 | — |
 | 10 完整工作流闭环 | 已实现（最后一环由内置本地切片补齐） | `src/main/slice/engine.ts` |
 

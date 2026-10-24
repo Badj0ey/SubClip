@@ -17,12 +17,12 @@ files:
   - package.json
   - '!**/*.map'
 
-# 浏览器插件必须放在 asar 之外的真实目录里：
-# 主进程用 process.resourcesPath/extension 去找它，用户要在「加载解压缩的扩展」里选中它。
-# 少了这一段，打包后的应用会报「插件目录不存在」。
+# 用户脚本必须放在 asar 之外的真实目录里：
+# 主进程用 process.resourcesPath/userscript 去找它，设置页会读取内容供用户复制。
+# 少了这一段，打包后的应用会报「用户脚本不存在」。
 extraResources:
-  - from: extension
-    to: extension
+  - from: userscript
+    to: userscript
     filter:
       - '**/*'
 

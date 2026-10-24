@@ -1,5 +1,5 @@
 /**
- * 本地 WebSocket 服务端：监听 127.0.0.1:port，供浏览器插件连接。
+ * 本地 WebSocket 服务端：监听 127.0.0.1:port，供浏览器用户脚本连接。
  *
  * 职责：连接管理、协议收发、心跳保活；收到的业务数据通过事件抛给上层处理。
  * 事件：'status'（连接状态变化）、'page-info'、'subtitle'、'cookies'、'log'
@@ -7,7 +7,7 @@
  * ⚠️ 安全模型（很重要）：
  * WebSocket 握手**不受 CORS 约束** —— 用户访问的任何网页都能向 `ws://127.0.0.1:端口` 发起连接。
  * 只绑 127.0.0.1 挡得住外部主机，挡不住本地网页。所以这里必须自己校验来源：
- *   1. **Origin 白名单**：只放行固定 ID 的自家扩展（见 `BRIDGE_EXTENSION_ID`）；
+ *   1. **Origin 白名单**：只放行 B站页面（用户脚本的 Origin 见 `BRIDGE_ALLOWED_ORIGINS`）；
  *   2. **maxPayload**：限制单帧体积（`ws` 默认高达 100 MiB，足以打爆主进程内存）；
  *   3. **消息速率限制**：每个连接每秒超过上限即断开；
  *   4. **逐类型校验**：交给 `parseClientMessage`，不合法直接丢弃；
@@ -30,6 +30,7 @@ import {
   BRIDGE_LIMITS,
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_SERVER_NAME,
+  isBridgeOriginAllowed,
   parseClientMessage,
   serialize
 } from '@shared/bridge'
@@ -56,7 +57,7 @@ const HEARTBEAT_MS = 30_000
 
 export interface BridgeOptions {
   /**
-   * 允许的握手 Origin。默认只放行自家扩展。
+   * 允许的握手 Origin。默认只放行 B站页面（含子域通配）。
    * 传空数组表示不校验 Origin（仅供测试；生产不要这么用）。
    */
   allowedOrigins?: string[]
@@ -88,13 +89,6 @@ export class BridgeServer extends EventEmitter {
   configure(options: BridgeOptions): void {
     if (options.allowedOrigins) this.allowedOrigins = [...options.allowedOrigins]
     if (options.token !== undefined) this.token = options.token.trim()
-  }
-
-  /** 某个 Origin 是否被允许（没有 Origin 头的是非浏览器客户端，放行） */
-  private isOriginAllowed(origin: string | undefined): boolean {
-    if (!origin) return true
-    if (!this.allowedOrigins.length) return true
-    return this.allowedOrigins.includes(origin)
   }
 
   start(port: number): void {
@@ -223,7 +217,7 @@ export class BridgeServer extends EventEmitter {
 
     // 关键的一道闸门：拒绝来历不明的网页。握手已经被接受（WebSocket 无法在升级阶段
     // 优雅回绝），所以这里立刻告知原因并断开，不给它发任何数据。
-    if (!this.isOriginAllowed(origin)) {
+    if (!isBridgeOriginAllowed(origin, this.allowedOrigins)) {
       this.touch(`拒绝了来源不明的连接：${origin ?? '未知来源'}`)
       try {
         this.sendRaw(socket, {

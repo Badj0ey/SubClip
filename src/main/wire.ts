@@ -75,7 +75,7 @@ export function wireBridge(push: PushFn): void {
           bvid,
           ok: false,
           needCookie: true,
-          message: '桌面端还没有 B 站登录状态，请先在浏览器插件里点「同步登录状态到桌面端」'
+          message: '桌面端还没有 B 站登录状态，请先在 B 站左下角浮框里点「同步登录状态」'
         })
         return
       }

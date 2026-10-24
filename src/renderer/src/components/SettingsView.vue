@@ -59,7 +59,7 @@ const stats = ref<{
 })
 const cookieDraft = ref('')
 const checking = ref(false)
-const extDir = ref<{ path: string; exists: boolean } | null>(null)
+const userscript = ref<{ path: string; exists: boolean; content: string } | null>(null)
 
 const FONTS = [
   { value: '', label: '系统默认' },
@@ -77,8 +77,9 @@ onMounted(async () => {
   // 不回显已保存的凭证，只在用户主动填写时才提交
   cookieDraft.value = ''
   login.value = await window.api.loginStatus()
-  extDir.value = await window.api.extensionDir()
-  await loadBridgeStatus()})
+  userscript.value = await window.api.userscript()
+  await loadBridgeStatus()
+})
 
 async function save(patch: Partial<AppSettings>): Promise<void> {
   state.settings = await window.api.saveSettings(patch)
@@ -160,7 +161,7 @@ async function onPort(e: Event): Promise<void> {
   crypto.getRandomValues(bytes)
   const token = Array.from(bytes, (b) => b.toString(16).padStart(2, '0')).join('')
   await save({ bridgeToken: token })
-  toast('已生成配对令牌，请在插件弹窗里填入同样的值', 'success', 5200)
+  toast('已生成配对令牌，请在 B 站左下角浮框的「连接设置」里填入同样的值', 'success', 5600)
 }
 
 async function clearBridgeToken(): Promise<void> {
@@ -203,11 +204,24 @@ async function openFfmpegDownload(): Promise<void> {
   await window.api.openExternal(FFMPEG_DOWNLOAD_URL)
 }
 
-async function openExtensionDir(): Promise<void> {
-  const dir = extDir.value?.path
-  if (!dir) return
-  const err = await window.api.openPath(dir)
-  if (err) toast(err, 'error', 4200)
+async function openUserscriptFolder(): Promise<void> {
+  const file = userscript.value?.path
+  if (!file) return
+  await window.api.showItem(file)
+}
+
+async function copyUserscript(): Promise<void> {
+  const content = userscript.value?.content
+  if (!content) {
+    toast('读取用户脚本失败，请打开所在文件夹手动复制', 'error', 4200)
+    return
+  }
+  const ok = await window.api.copyText(content)
+  toast(ok ? '脚本已复制，去篡改猴「添加新脚本」粘贴保存' : '复制失败', ok ? 'success' : 'error', 4200)
+}
+
+async function openTampermonkey(): Promise<void> {
+  await window.api.openExternal('https://www.tampermonkey.net/')
 }
 
 const lastEventText = computed(() => {
@@ -603,8 +617,8 @@ async function openOutputDir(): Promise<void> {
         </div>
       </div>
 
-      <!-- 浏览器插件通信 -->
-      <h2>浏览器插件通信</h2>
+      <!-- 浏览器用户脚本通信 -->
+      <h2>浏览器用户脚本通信</h2>
       <div class="field">
         <label>本地端口</label>
         <div class="row">
@@ -616,7 +630,7 @@ async function openOutputDir(): Promise<void> {
             @change="onPort"
           />
           <button class="btn" @click="onRestartBridge">重启服务</button>
-          <span class="muted">仅监听 127.0.0.1，插件通过该端口连接</span>
+          <span class="muted">仅监听 127.0.0.1，用户脚本通过该端口连接</span>
         </div>
       </div>
 
@@ -649,32 +663,39 @@ async function openOutputDir(): Promise<void> {
         </div>
       </div>
       <div class="hint">
-        本地服务已默认校验握手来源，只放行本项目插件，普通网页连不进来。
-        若还想防本机其它程序伪造来源，可在这里生成一个随机令牌，并在插件弹窗的「配对令牌」里填同样的值。
+        本地服务只放行 B 站页面来源（<code>https://*.bilibili.com</code>），普通网页连不进来。
+        若还想防本机其它程序伪造来源，可在这里生成一个随机令牌，并在左下角浮框的「连接设置」里填同样的值。
       </div>
 
       <div class="field">
-        <label>插件连接</label>
+        <label>用户脚本连接</label>
         <div class="row">
           <span v-if="connectedClients.length" :style="{ color: 'var(--success)' }">
-            ✓ {{ connectedClients.length }} 个插件已连接（{{ connectedClients[0].browser }} v{{ connectedClients[0].version }}）
+            ✓ {{ connectedClients.length }} 个用户脚本已连接（{{ connectedClients[0].browser }} v{{ connectedClients[0].version }}）
           </span>
-          <span v-else class="muted">暂无插件连接</span>
+          <span v-else class="muted">暂无用户脚本连接</span>
         </div>
       </div>
 
       <div v-if="lastEventText" class="hint">最近事件：{{ lastEventText }}</div>
 
       <div class="field">
-        <label>插件目录</label>
+        <label>用户脚本</label>
         <div class="row">
-          <input :value="extDir?.path" class="input grow" readonly />
-          <button class="btn" :disabled="!extDir?.exists" @click="openExtensionDir">打开</button>
+          <input :value="userscript?.path" class="input grow" readonly />
+          <button class="btn" :disabled="!userscript?.exists" @click="openUserscriptFolder">
+            打开所在文件夹
+          </button>
+          <button class="btn" :disabled="!userscript?.content" @click="copyUserscript">
+            复制脚本
+          </button>
         </div>
       </div>
       <div class="hint">
-        安装：浏览器打开 <code>chrome://extensions</code>（Edge 为 <code>edge://extensions</code>），
-        开启「开发人员模式」→「加载解压缩的扩展」→ 选择上面的插件目录。
+        安装：先装 <a href="https://www.tampermonkey.net/" @click.prevent="openTampermonkey">篡改猴（Tampermonkey）</a>，
+        点上面的「复制脚本」→ 篡改猴「添加新脚本」→ 粘贴并保存；
+        也可以直接打开脚本所在文件夹，把 <code>SubClip.user.js</code> 拖进浏览器。
+        Chrome / Edge 142+ 首次连接会询问「本地网络访问」，请在弹窗里允许；没弹窗就点左下角浮框的「待授权」重试。
       </div>
 
       <!-- 账号 -->
@@ -693,15 +714,15 @@ async function openOutputDir(): Promise<void> {
       </div>
 
       <div class="field" style="align-items: flex-start">
-        <label style="padding-top: 6px">从插件同步</label>
+        <label style="padding-top: 6px">从用户脚本同步</label>
         <div class="row">
           <span class="muted" style="line-height: 1.8">
             <template v-if="pluginOnline">
-              浏览器插件已连接 —— 打开插件弹窗点「同步登录状态到桌面端」即可，无需手动获取 Cookie。
+              用户脚本已连接 —— 点 B 站左下角浮框里的「同步登录状态」即可，无需手动获取 Cookie。
             </template>
             <template v-else>
-              浏览器插件未连接。安装插件后会自动同步登录状态，免去手动配置 Cookie；
-              也可以在插件弹窗里手动点一次同步。
+              用户脚本未连接。安装脚本后打开任意 B 站视频页，左下角会出现「剪」按钮；
+              展开后点一次「同步登录状态」即可，免去手动配置 Cookie。
             </template>
           </span>
         </div>
@@ -722,7 +743,7 @@ async function openOutputDir(): Promise<void> {
         </div>
       </div>
       <div class="hint">
-        仅在不方便使用插件时需要。在浏览器登录 bilibili.com 后，从开发者工具复制 Cookie 粘贴到此处。
+        仅在不方便使用用户脚本时需要。在浏览器登录 bilibili.com 后，从开发者工具复制 Cookie 粘贴到此处。
       </div>
 
       <!-- 数据 -->

@@ -1,5 +1,5 @@
 /**
- * 浏览器插件通信的端到端测试。
+ * 浏览器用户脚本通信的端到端测试。
  * 用 Node 端的 ws 客户端模拟插件，验证：握手、页面信息落库、字幕落库、
  * 异常消息容错、反向下发、连接统计、端口占用处理。
  * 运行：npm run test:bridge
@@ -11,7 +11,6 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { TreeNode } from '../src/shared/types'
-import { BRIDGE_ALLOWED_ORIGINS } from '../src/shared/bridge'
 import { bridge } from '../src/main/bridge'
 import * as db from '../src/main/db'
 import { loadSettings } from '../src/main/settings'
@@ -67,7 +66,7 @@ function groupOf(videoId: number): string | null {
 }
 
 async function run(): Promise<void> {
-  console.log('\n【浏览器插件通信 · 端到端测试】')
+  console.log('\n【浏览器用户脚本通信 · 端到端测试】')
 
   db.initDb(workDir)
 
@@ -395,7 +394,9 @@ async function run(): Promise<void> {
   })
 
   const goodInbox: any[] = []
-  const good = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: BRIDGE_ALLOWED_ORIGINS[0] })
+  const good = new WebSocket(`ws://127.0.0.1:${PORT}`, {
+    origin: 'https://www.bilibili.com'
+  })
   good.on('message', (raw) => goodInbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {
     good.on('open', () => resolve())
@@ -403,7 +404,7 @@ async function run(): Promise<void> {
   })
   await wait(300)
 
-  check('放行自家扩展的固定来源（chrome-extension://<固定 ID>）', () => {
+  check('放行用户脚本的 B站页面来源', () => {
     const ack = goodInbox.find((m) => m.type === 'hello-ack')
     assert.ok(ack, '应收到 hello-ack')
     assert.notStrictEqual(ack.rejected, true, '不应被拒绝')

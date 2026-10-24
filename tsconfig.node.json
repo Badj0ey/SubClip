@@ -22,7 +22,6 @@
     "src/preload/**/*",
     "src/shared/**/*",
     "tests/**/*",
-    "extension/**/*.js",
     "electron.vite.config.ts"
   ]
 }

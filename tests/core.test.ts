@@ -25,7 +25,6 @@ import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
 import { classifyTargetUrl } from '../src/main/bilibili'
 import type { ClipTask } from '../src/shared/types'
 import { BRIDGE_LIMITS, BRIDGE_PROTOCOL_VERSION, parseClientMessage } from '../src/shared/bridge'
-import { PROTOCOL_VERSION } from '../extension/shared/protocol.js'
 import * as constants from '../src/shared/constants'
 import {
   DEFAULT_SHORTCUTS,
@@ -973,8 +972,8 @@ test('BV 号不合法时整条丢弃（不要发起一次注定失败的抓取�
   assert.strictEqual(parseClientMessage(JSON.stringify({ type: 'pull-request' })), null)
 })
 
-test('协议版本两边一致且已升到 4', () => {
-  assert.strictEqual(BRIDGE_PROTOCOL_VERSION, PROTOCOL_VERSION)
+test('桌面端协议版本已升到 4', () => {
+  // 与用户脚本的跨端一致性由 tests/wbi.test.ts 校验
   assert.strictEqual(BRIDGE_PROTOCOL_VERSION, 4)
 })
 

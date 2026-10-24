@@ -5,7 +5,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
 import { existsSync, rmSync, copyFileSync, statSync } from 'node:fs'
-import { extname, join, resolve, sep } from 'node:path'
+import { dirname, extname, join, resolve, sep } from 'node:path'
 import * as os from 'node:os'
 
 /** 允许导入 / 打开的字幕文件扩展名（拖拽导入靠它把关） */
@@ -47,11 +47,12 @@ import { runSliceTasks, type SliceProgress, type SliceTaskInput } from './slice/
 /** 当前运行的切片任务（同一时刻只允许一个） */
 let sliceAbort: AbortController | null = null
 
-/** 插件目录的可能位置（开发态在工程里，打包后在 resources 下） */
-function extensionDirCandidates(): string[] {
-  return [join(app.getAppPath(), 'extension'), join(process.resourcesPath ?? '', 'extension')].filter(
-    (p): p is string => Boolean(p)
+/** 用户脚本的可能位置（开发态在工程里，打包后在 resources 下） */
+function userscriptCandidates(): string[] {
+  const roots = [app.getAppPath(), process.resourcesPath].filter(
+    (root): root is string => Boolean(root)
   )
+  return roots.map((root) => join(root, 'userscript', 'SubClip.user.js'))
 }
 
 /** 诊断包里用：某段信息取不到时不要因此整包失败 */
@@ -614,7 +615,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return after
   })
 
-  /* ---------------------------- 浏览器插件通信服务 ---------------------------- */
+  /* ---------------------------- 浏览器用户脚本通信服务 ---------------------------- */
 
   ipcMain.handle('bridge:status', () => bridge.status())
 
@@ -684,13 +685,18 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return true
   })
 
-  /** 浏览器插件所在目录（便于用户加载扩展） */
-  ipcMain.handle('bridge:extensionDir', () => {
-    const candidates = extensionDirCandidates()
-    for (const dir of candidates) {
-      if (existsSync(dir)) return { path: dir, exists: true }
+  /** 返回用户脚本路径与内容，设置页可以直接复制或打开所在文件夹 */
+  ipcMain.handle('bridge:userscript', async () => {
+    const candidates = userscriptCandidates()
+    for (const file of candidates) {
+      if (!existsSync(file)) continue
+      try {
+        return { path: file, exists: true, content: await readFile(file, 'utf8') }
+      } catch {
+        return { path: file, exists: true, content: '' }
+      }
     }
-    return { path: candidates[0] ?? '', exists: false }
+    return { path: candidates[0] ?? '', exists: false, content: '' }
   })
 
   ipcMain.handle('env:check', () => {
@@ -907,7 +913,7 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       s.subtitleCacheDir,
       s.sliceToolDir,
       join(app.getPath('userData'), APP_DATA_DIR),
-      ...extensionDirCandidates()
+      ...userscriptCandidates().map((file) => dirname(file))
     ]
       .filter(Boolean)
       .map((p) => resolve(p))

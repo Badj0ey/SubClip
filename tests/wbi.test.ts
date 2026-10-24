@@ -1,16 +1,15 @@
 /**
  * 插件端 WBI 签名算法的正确性测试。
  *
- * 直接从 extension/content.js 里提取 WBI 代码块来跑（而不是复制一份实现），
- * 保证测的就是插件实际执行的代码。
+ * 直接从 userscript/SubClip.user.js 里提取 WBI 代码块来跑（而不是复制一份实现），
+ * 保证测的就是用户脚本实际执行的代码。
  * 运行：npm run test:wbi
  */
 import assert from 'node:assert'
 import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { DEFAULT_PORT, PROTOCOL_VERSION } from '../extension/shared/protocol.js'
-import { BRIDGE_EXTENSION_ID, BRIDGE_PROTOCOL_VERSION } from '../src/shared/bridge'
+import { BRIDGE_PROTOCOL_VERSION, isBridgeOriginAllowed } from '../src/shared/bridge'
 
 interface WbiBundle {
   md5: (input: string) => string
@@ -19,14 +18,16 @@ interface WbiBundle {
   MIXIN_KEY_ENC_TAB: number[]
 }
 
+const USERSCRIPT_PATH = join(__dirname, '../userscript/SubClip.user.js')
+
 function loadWbi(): WbiBundle {
-  const src = readFileSync(join(__dirname, '../extension/content.js'), 'utf8')
+  const src = readFileSync(USERSCRIPT_PATH, 'utf8')
   const startMark = '/* ---- WBI-BLOCK-START'
   const endMark = '/* ---- WBI-BLOCK-END ---- */'
   const start = src.indexOf(startMark)
   const end = src.indexOf(endMark)
-  assert.ok(start !== -1, 'content.js 里找不到 WBI-BLOCK-START 标记')
-  assert.ok(end !== -1, 'content.js 里找不到 WBI-BLOCK-END 标记')
+  assert.ok(start !== -1, '用户脚本里找不到 WBI-BLOCK-START 标记')
+  assert.ok(end !== -1, '用户脚本里找不到 WBI-BLOCK-END 标记')
 
   const block = src.slice(src.indexOf('\n', start) + 1, end)
   // eslint-disable-next-line no-new-func
@@ -180,44 +181,56 @@ check('中文参数值不破坏签名计算', () => {
 /* --------------------------------- 协议 ---------------------------------- */
 console.log('\n插件协议常量')
 
+function readScriptConst(name: string): number {
+  const src = readFileSync(USERSCRIPT_PATH, 'utf8')
+  const match = new RegExp(`^\\s*const ${name} = (\\d+)\\s*$`, 'm').exec(src)
+  assert.ok(match, `用户脚本里找不到常量 ${name}`)
+  return Number(match[1])
+}
+
 check('协议版本与默认端口和桌面端一致', () => {
-  // 直接和桌面端常量对比，避免两边改了一边忘了另一边
-  assert.strictEqual(PROTOCOL_VERSION, BRIDGE_PROTOCOL_VERSION)
-  assert.strictEqual(DEFAULT_PORT, 8765)
+  // 用户脚本是单文件，只能从源码里解析常量；和桌面端常量对比，避免两边改了一边忘了另一边
+  assert.strictEqual(readScriptConst('PROTOCOL_VERSION'), BRIDGE_PROTOCOL_VERSION)
+  assert.strictEqual(readScriptConst('DEFAULT_PORT'), 8765)
 })
 
-check('应用与浏览器插件的版本号一致', () => {
+check('应用与用户脚本的版本号一致', () => {
   // 两边版本号曾经不一致（0.1.0 vs 1.0.0），发版时容易只改一边
   const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8'))
-  const manifest = JSON.parse(
-    readFileSync(join(process.cwd(), 'extension', 'manifest.json'), 'utf8')
-  )
+  const source = readFileSync(USERSCRIPT_PATH, 'utf8')
+  const match = /^\/\/ @version\s+(\S+)/m.exec(source)
+  assert.ok(match, '用户脚本头部缺少 @version')
   assert.strictEqual(
-    manifest.version,
+    match[1],
     pkg.version,
-    `package.json=${pkg.version} 与 extension/manifest.json=${manifest.version} 不一致`
+    `package.json=${pkg.version} 与用户脚本 @version=${match[1]} 不一致`
   )
 })
 
-check('manifest 的 key 推导出的扩展 ID 与桌面端白名单一致', () => {
-  // 桌面端只放行固定 ID 的扩展；改了 manifest 的 key 就必须同步改 BRIDGE_EXTENSION_ID，
-  // 否则插件会被自己人挡在门外，而且现象很难排查。
-  const manifest = JSON.parse(
-    readFileSync(join(process.cwd(), 'extension', 'manifest.json'), 'utf8')
-  )
-  assert.ok(manifest.key, 'manifest 缺少 key 字段：扩展 ID 会随安装路径变化，无法校验来源')
-
-  const digest = createHash('sha256').update(Buffer.from(manifest.key, 'base64')).digest()
-  let id = ''
-  for (let i = 0; i < 16; i++) {
-    id += String.fromCharCode(97 + (digest[i] >> 4))
-    id += String.fromCharCode(97 + (digest[i] & 0x0f))
+check('Origin 白名单放行 B站页面', () => {
+  for (const origin of [
+    'https://www.bilibili.com',
+    'https://space.bilibili.com',
+    'https://search.bilibili.com'
+  ]) {
+    assert.strictEqual(isBridgeOriginAllowed(origin), true, `${origin} 应被放行`)
   }
-  assert.strictEqual(
-    id,
-    BRIDGE_EXTENSION_ID,
-    `manifest 推导出的 ID=${id}，与 BRIDGE_EXTENSION_ID=${BRIDGE_EXTENSION_ID} 不一致`
-  )
+})
+
+check('Origin 白名单拒绝伪装域名与非 B站来源', () => {
+  for (const origin of [
+    'https://www.bilibili.com.evil.example',
+    'https://evil.example',
+    'http://www.bilibili.com',
+    'chrome-extension://lmchilpnlhdfbpjklnfpfgkbddcdekpl'
+  ]) {
+    assert.strictEqual(isBridgeOriginAllowed(origin), false, `${origin} 不应被放行`)
+  }
+})
+
+check('没有 Origin 的非浏览器客户端仍放行', () => {
+  assert.strictEqual(isBridgeOriginAllowed(undefined), true)
+  assert.strictEqual(isBridgeOriginAllowed(''), true)
 })
 
 console.log(`\n通过 ${passed}，失败 ${failed}\n`)
