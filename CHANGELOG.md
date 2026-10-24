@@ -42,7 +42,7 @@
 - 导入、拉取弹窗补充 dialog 语义；全局补齐键盘焦点、禁用态、窄窗口和减少动画适配，并合并重复样式。
 - NSIS 安装向导加入 MIT 许可证页、产品图标与侧边图；控制面板卸载项显示「字幕剪 SubClip 3.18.0」；卸载默认保留用户数据。
 - 新增 `npm run dist:checksums`，生成 `dist/SHA256SUMS.txt`；CI 在推送 `v*` 标签时构建安装包/ZIP、生成校验文件并创建草稿 Release。
-- 补充 `docs/GITHUB.md`，记录首次推送、Actions 权限、标签发布与手工上传步骤；README 增加 CI/许可证徽章、Release 入口和文档索引。
+- 补充 `docs/GITHUB.md`，记录首次推送与标签发布步骤（3.18.1 起改写为全程网页、不依赖命令行与 Actions 的纯手动流程）；README 增加 CI/许可证徽章、Release 入口和文档索引。
 
 ### 兼容性
 

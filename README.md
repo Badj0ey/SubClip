@@ -95,7 +95,7 @@ B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优�
 - [重构与验证报告](docs/REFACTOR_REPORT.md)
 - [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)
 - [界面优化整合记录](docs/UI_OPTIMIZATION_NOTES.md)
-- [开源与发布](docs/GITHUB.md)
+- [纯手动开源与发布](docs/GITHUB.md)
 - [开发与验证](docs/DEVELOPMENT.md)
 - [版本变更](CHANGELOG.md)
 - [贡献说明](CONTRIBUTING.md)
