@@ -33,4 +33,4 @@ npm run dist:checksums
 
 发布说明至少包含：版本、变化、已验证的平台、已知限制、数据迁移提醒、第三方依赖许可和安装包哈希。不要将 `node_modules/`、`.npmrc`、用户 Cookie、API Key、调试数据库或测试中间产物放入源码 ZIP。
 
-全程在 GitHub 网页操作（不安装 Git、不用命令行、不依赖 Actions）的开源与手工发布步骤见 [纯手动开源与发布](GITHUB.md)。
+全程在 GitHub 网页操作（不安装 Git、不用命令行、不依赖 Actions）的开源与手工发布步骤见 [纯手动开源与发布](GITHUB.md)。`npm run dist` 已带 `--publish never`，打包只产出本地文件，不会尝试向 GitHub 发布。
