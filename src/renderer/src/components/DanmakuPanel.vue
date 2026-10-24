@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import type { DanmakuItem } from '@shared/types'
+import type { DanmakuEmptyReason, DanmakuItem } from '@shared/types'
 import { useSubtitleStore } from '../stores/subtitle'
 import { useVideoStore } from '../stores/video'
 import { state } from '../store'
@@ -22,6 +22,7 @@ const error = ref('')
 const items = ref<DanmakuItem[]>([])
 const warnings = ref<string[]>([])
 const truncated = ref(false)
+const emptyReason = ref<DanmakuEmptyReason | ''>('')
 const keyword = ref('')
 const pageFilter = ref(0)
 const nearOnly = ref(true)
@@ -73,6 +74,23 @@ const matched = computed(() => {
 })
 const visible = computed(() => matched.value.slice(0, 350))
 
+/** 视频本来就没有弹幕时，说清楚是哪一种，避免被当成接口故障 */
+const emptyMessage = computed(() => {
+  if (emptyReason.value === 'live-replay') {
+    return '这是直播回放，直播期间的弹幕不会保存到视频弹幕池里，B站也没有可读取的回放弹幕。'
+  }
+  if (emptyReason.value === 'no-danmaku') return '该视频在 B 站没有弹幕。'
+  return '没有可用弹幕，可能是该视频未开放弹幕或接口暂不可用。'
+})
+
+const listHint = computed(() =>
+  items.value.length
+    ? nearApplies.value
+      ? '当前字幕附近没有弹幕，可关闭「附近」筛选。'
+      : '当前筛选范围没有弹幕。'
+    : emptyMessage.value
+)
+
 function clock(time: number): string {
   const t = Math.max(0, Math.floor(time))
   const h = Math.floor(t / 3600)
@@ -95,6 +113,7 @@ async function load(force = false): Promise<void> {
     items.value = result.data.items
     warnings.value = result.data.warnings
     truncated.value = result.data.truncated
+    emptyReason.value = result.data.emptyReason ?? ''
     loadedBvid.value = target
   } catch (e) {
     if (id === requestId) {
@@ -112,6 +131,7 @@ watch(
     items.value = []
     warnings.value = []
     truncated.value = false
+    emptyReason.value = ''
     selectedKey.value = ''
     error.value = ''
     pageFilter.value = 0
@@ -197,15 +217,7 @@ function jump(d: DanmakuItem): void {
           弹幕量较大或读取时间较长，只显示了部分结果；字幕不受影响。
         </div>
         <div v-if="warnings.length" class="dm-notice">{{ warnings.slice(0, 2).join('；') }}</div>
-        <div v-if="!matched.length" class="dm-message">
-          {{
-            items.length
-              ? nearApplies
-                ? '当前字幕附近没有弹幕，可关闭「附近」筛选。'
-                : '当前筛选范围没有弹幕。'
-              : '没有可用弹幕，可能是该视频未开放弹幕或接口暂不可用。'
-          }}
-        </div>
+        <div v-if="!matched.length" class="dm-message">{{ listHint }}</div>
         <div v-else class="dm-list" role="list" aria-label="弹幕列表">
           <button
             v-for="d in visible"

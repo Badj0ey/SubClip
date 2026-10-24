@@ -206,7 +206,9 @@ export async function getVideoInfo(bvid: string, cookie = ''): Promise<BiliVideo
     ownerAvatar: String(d.owner?.face || ''),
     seasonId: ugcSeason?.id ? Number(ugcSeason.id) : null,
     seasonTitle: ugcSeason?.title ? String(ugcSeason.title) : null,
-    pages
+    pages,
+    danmakuCount: Number(d.stat?.danmaku) || 0,
+    desc: String(d.desc || '')
   }
 }
 

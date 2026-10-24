@@ -8,7 +8,12 @@
  * - 解析逻辑在 `@shared/danmaku`，这里只负责抓取、回退、缓存与数量限制。
  */
 import type { BiliPageInfo, DanmakuItem, DanmakuResult } from '@shared/types'
-import { DANMAKU_MAX_ITEMS, parseDanmakuSegment, parseDanmakuXml } from '@shared/danmaku'
+import {
+  classifyEmptyDanmaku,
+  DANMAKU_MAX_ITEMS,
+  parseDanmakuSegment,
+  parseDanmakuXml
+} from '@shared/danmaku'
 import { getVideoInfo, UA } from './bilibili'
 import { loadSettings } from './settings'
 
@@ -79,6 +84,13 @@ async function loadDanmaku(bvid: string): Promise<DanmakuResult> {
     items: [],
     truncated: false,
     warnings: []
+  }
+
+  // 视频弹幕总数就是 0：分段接口只会返回空响应，不必白跑几十个请求；
+  // 同时把「为什么没有弹幕」告诉面板，避免把直播回放的空弹幕池说成接口故障。
+  if (info.danmakuCount === 0) {
+    result.emptyReason = classifyEmptyDanmaku(info.desc ?? '', info.title)
+    return remember(bvid, result)
   }
 
   const plans: PagePlan[] = info.pages.map((page) => ({
@@ -191,6 +203,12 @@ async function loadDanmaku(bvid: string): Promise<DanmakuResult> {
     result.truncated = true
   }
 
+  remember(bvid, result)
+  return result
+}
+
+/** 写入 10 分钟内存缓存，并限制缓存条数 */
+function remember(bvid: string, result: DanmakuResult): DanmakuResult {
   cache.set(bvid, { expires: Date.now() + CACHE_TTL_MS, result })
   if (cache.size > CACHE_MAX) {
     const oldest = cache.keys().next()

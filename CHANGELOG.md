@@ -2,6 +2,26 @@
 
 本文件保留对外有用的**版本级变化**，不再把每次开发过程、提示词和逐行修改记录放进发布日志。
 
+## 3.18.1 — 直播回放弹幕说明（2026-10-24）
+
+### 修正
+
+- 直播回放的视频弹幕池本来就是空的（直播期间的聊天弹幕不会迁移进来，B站也没有公开的回放弹幕存档接口），面板却显示「没有可用弹幕，可能是该视频未开放弹幕或接口暂不可用」，被当成获取失败。现在视频信息里的弹幕总数为 0 时直接返回空结果并带上原因：直播回放显示「这是直播回放，直播期间的弹幕不会保存到视频弹幕池里，B站也没有可读取的回放弹幕。」，普通视频显示「该视频在 B 站没有弹幕。」
+- 弹幕总数为 0 时不再发分段请求。以 14,098 秒的直播回放为例，原来要发约 40 个 `seg.so` 请求才能确认没有弹幕，现在只发 1 个视频信息请求。
+- `BiliVideoInfo` 增加可选的 `danmakuCount`（`stat.danmaku`）与 `desc`，`DanmakuResult` 增加可选的 `emptyReason`；不涉及 SQLite 表结构、桥接协议（仍 v4）和既有 IPC。
+
+### 兼容性
+
+- `package.json`、`package-lock.json` 与用户脚本 `@version` 同步为 3.18.1；`tests/wbi.test.ts` 的版本一致性检查仍通过。
+- 不新增 npm 依赖；弹幕仍然不落库、不参与检索、切片或导出。
+
+### 验证
+
+- 2026-10-24：`npm run typecheck`、`npm test`（7 套件：core 181、refactor 6、wbi 20、slice 14、danmaku、smoke 45、bridge 38，均 0 失败）、`npm run build` 通过；`tests/danmaku.test.ts` 新增直播回放分类断言。
+- 真实接口（复用本机配置与 Cookie）：BV1o9J96eESU（直播回放，14,098 秒）返回 `items=0`、`emptyReason=live-replay`，只发 1 个请求；BV1GJ411x7h7（普通视频）仍读到 1,402 条弹幕。
+- 渲染进程实测：临时 `userData` 启动构建产物，桥接注入 BV1o9J96eESU 字幕，展开「弹幕参考」后显示上述直播回放说明；`window.api.getDanmaku('BV1o9J96eESU', true)` 返回 `{ok:true, data:{items:[], emptyReason:'live-replay'}}`。
+- 未覆盖：安装包构建与打包版 GUI 冒烟；本次只验证了源码构建产物。
+
 ## 3.18.0 — 界面文案整理与安装体验（2026-10-24）
 
 ### 改进

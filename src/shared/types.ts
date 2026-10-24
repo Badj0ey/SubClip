@@ -302,6 +302,10 @@ export interface BiliVideoInfo {
   /** 所属合集标题 */
   seasonTitle: string | null
   pages: BiliPageInfo[]
+  /** 视频弹幕总数（B站 `stat.danmaku`）；只用于判断“本来就没有弹幕”，不参与入库 */
+  danmakuCount?: number
+  /** 视频简介原文；直播回放投稿通常保留直播间链接 */
+  desc?: string
 }
 
 /** B站分P信息 */
@@ -770,6 +774,9 @@ export interface DanmakuItem {
   color: number
 }
 
+/** 视频没有弹幕时的原因，供面板显示准确说明 */
+export type DanmakuEmptyReason = 'live-replay' | 'no-danmaku'
+
 /** 一次弹幕读取的结果 */
 export interface DanmakuResult {
   bvid: string
@@ -780,4 +787,6 @@ export interface DanmakuResult {
   truncated: boolean
   /** 部分分P 或分段失败时的可读提示；不影响字幕功能 */
   warnings: string[]
+  /** 弹幕为空时更具体的原因：直播回放，或视频本来就没有弹幕 */
+  emptyReason?: DanmakuEmptyReason
 }

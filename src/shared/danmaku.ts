@@ -8,7 +8,7 @@
  * 解析器只负责把字节 / 文本变成 `DanmakuItem`，不发起网络请求，
  * 这样回归测试可以直接用 node 跑，不需要 Electron 运行时。
  */
-import type { DanmakuItem } from './types'
+import type { DanmakuEmptyReason, DanmakuItem } from './types'
 
 /** 一次读取 / 单段解析最多保留的弹幕条数 */
 export const DANMAKU_MAX_ITEMS = 15000
@@ -171,4 +171,22 @@ function codePoint(value: number, fallback: string): string {
   if (!Number.isFinite(value) || value < 0 || value > 0x10ffff) return fallback
   if (value >= 0xd800 && value <= 0xdfff) return fallback
   return String.fromCodePoint(value)
+}
+
+/** 直播回放投稿的简介通常保留直播间链接 */
+const LIVE_ROOM_LINK = /live\.bilibili\.com\/\d+/
+/** 直播回放的标题通常带场次时间，如「2026年10月19日19点场」 */
+const LIVE_REPLAY_TITLE = /\d{4}年\d{1,2}月\d{1,2}日\d{1,2}点/
+
+/**
+ * 视频弹幕总数为 0 时，判断更可能的原因。
+ *
+ * 直播回放投稿的弹幕池里没有直播期间的聊天弹幕，B站也不提供公开存档接口；
+ * 面板据此直接说明原因，而不是把空弹幕池说成「接口暂不可用」。
+ * 只有简介和标题两个信号同时出现才判为直播回放，避免误判普通视频。
+ */
+export function classifyEmptyDanmaku(desc: string, title: string): DanmakuEmptyReason {
+  return LIVE_ROOM_LINK.test(desc) && LIVE_REPLAY_TITLE.test(title)
+    ? 'live-replay'
+    : 'no-danmaku'
 }
