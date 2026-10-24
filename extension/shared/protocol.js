@@ -6,39 +6,12 @@
 /**
  * 协议版本。
  * v4：新增 `pull-request`（插件请桌面端拉取某视频的**全部分P**）。
- * v5：**统一信封** —— 每条消息都带 `v`（协议版本）与 `caps`（能力表）。
- *
- * 桌面端对不认识的消息类型是静默丢弃的，所以不能只看「发送成功」，
- * 必须靠 `hello-ack.protocol` 与 `hello-ack.caps` 做协商；v5 起以**能力表**为准
- * （版本号只表达整体兼容性，具体功能按能力逐项判断）。
+ *     桌面端对不认识的消息类型是静默丢弃的，所以插件必须靠这个版本号
+ *     判断能力是否可用，否则会误报成功。
  */
-export const PROTOCOL_VERSION = 5
+export const PROTOCOL_VERSION = 4
 export const SERVER_NAME = 'srt-clip-helper'
 export const DEFAULT_PORT = 8765
-
-/**
- * 能力表（与桌面端 bridge.ts 的 BRIDGE_CAPABILITIES 一一对应）。
- * 键是能力名，值是「插件这边是否支持」。
- */
-export const CAPABILITY = {
-  PAGE_INFO: 'pageInfo',
-  SUBTITLE: 'subtitle',
-  COOKIES: 'cookies',
-  PULL_REQUEST: 'pullRequest',
-  REQUEST_SUBTITLES: 'requestSubtitles'
-}
-
-/** 插件支持的能力表（握手时发给桌面端） */
-export function clientCapabilities() {
-  return {
-    [CAPABILITY.PAGE_INFO]: true,
-    [CAPABILITY.SUBTITLE]: true,
-    [CAPABILITY.COOKIES]: true,
-    [CAPABILITY.PULL_REQUEST]: true,
-    // requestSubtitles 是「桌面端要求插件去抓」，插件这边实现了，所以也声明支持
-    [CAPABILITY.REQUEST_SUBTITLES]: true
-  }
-}
 
 /** 页面类型 */
 export const PAGE_TYPE = {
@@ -81,18 +54,8 @@ export function detectBrowser() {
   return 'Chromium'
 }
 
-/**
- * 序列化出站消息，并**自动补上统一信封**（v5）。
- *
- * 与桌面端 `serialize` 对称：调用点不必手写 `v` / `caps`（漏一处就是形状不一致），
- * 统一在这里补；调用方显式给了就以其为准。
- */
 export function serialize(msg) {
-  return JSON.stringify({
-    v: PROTOCOL_VERSION,
-    caps: clientCapabilities(),
-    ...msg
-  })
+  return JSON.stringify(msg)
 }
 
 export function parse(raw) {
@@ -103,9 +66,4 @@ export function parse(raw) {
   } catch {
     return null
   }
-}
-
-/** 对方（桌面端）是否支持某能力；老版本没有 caps 时按「不支持」处理 */
-export function peerSupports(ack, capability) {
-  return Boolean(ack && ack.caps && ack.caps[capability] === true)
 }

@@ -1,17 +1,11 @@
 /**
- * 弹出面板。
- *
- * 结构刻意分成两屏：
- *   主屏 —— 只放「现在该点什么」（连接状态 / 当前页面 / 字幕轨 / 一键同步 / 事件）
- *   设置 —— 端口、配对令牌、自动同步登录状态这些配一次就不动的项，收在右上角齿轮里
- *
- * 主屏不再要求用户判断「该点哪个按钮」：页面类型决定同步动作（见 background 的 syncAll）。
+ * 弹出面板：连接状态、登录状态同步、当前页面信息与字幕抓取。
  */
 
 const $ = (id) => document.getElementById(id)
-const AUTO_COOKIE_KEY = 'scAutoCookie'
 
 let currentStatus = null
+let initialized = false
 
 async function ask(message) {
   try {
@@ -38,41 +32,7 @@ function escapeHtml(s) {
   )
 }
 
-const PAGE_TYPE_LABEL = {
-  video: '视频页',
-  season: '合集页',
-  series: '系列页',
-  favlist: '收藏夹',
-  space: '投稿页',
-  live: '直播间',
-  unknown: '未知页面'
-}
-
-/** 一键同步按钮的文案：让用户一眼知道这次会发生什么 */
-function syncLabel(page) {
-  const t = page?.pageType
-  if (t === 'video') return '同步到桌面端（含全部分P）'
-  if (t === 'season') return '同步这个合集的全部视频'
-  if (t === 'series') return '同步这个系列的全部视频'
-  if (t === 'favlist') return '同步这个收藏夹的全部视频'
-  if (t === 'space') return '同步这位UP主的全部投稿'
-  if (t === 'live') return '直播间没有字幕可同步'
-  return '同步到桌面端'
-}
-
-/* -------------------------------- 视图切换 -------------------------------- */
-
-function showSettings(on) {
-  $('viewMain').hidden = on
-  $('viewSettings').hidden = !on
-  $('btnSettings').textContent = on ? '←' : '⚙'
-  $('btnSettings').title = on ? '返回' : '设置'
-  if (on) void loadAutoCookie()
-}
-$('btnSettings').addEventListener('click', () => showSettings($('viewSettings').hidden))
-$('btnBack').addEventListener('click', () => showSettings(false))
-
-/* --------------------------------- 状态渲染 -------------------------------- */
+/* -------------------------------- 状态渲染 -------------------------------- */
 
 function renderStatus(status) {
   currentStatus = status
@@ -82,14 +42,11 @@ function renderStatus(status) {
   $('statusText').textContent = status.connected
     ? `已连接桌面端${status.serverVersion ? ` v${status.serverVersion}` : ''}`
     : '未连接桌面端'
-
-  // 用户正在输入时不要覆盖（每 1.5 秒刷新一次，会把输入冲掉）
-  if (document.activeElement !== $('port')) $('port').value = status.port
-  if (document.activeElement !== $('token')) $('token').value = status.token || ''
-
+  $('port').value = status.port
+  $('token').value = status.token || ''
   $('hint').textContent = status.connected
-    ? '本地服务运行中，页面信息只在点「同步」时发送。'
-    : status.lastError || '请先启动桌面端「字幕剪 SubClip」。'
+    ? '本地服务运行中，页面信息与字幕会自动同步。'
+    : status.lastError || '请先启动桌面端「SRT 字幕检索与视频切片辅助工具」。'
   $('hint').className = `hint${status.connected ? '' : ' err'}`
 
   renderCookie(status)
@@ -104,6 +61,7 @@ function renderStatus(status) {
     else if (e.level === 'warn') li.className = 'warn'
     events.appendChild(li)
   }
+  // 自动滚到最底部，保证最新事件可见
   events.scrollTop = events.scrollHeight
 }
 
@@ -207,37 +165,45 @@ function renderTracks() {
 
 function renderPage(page) {
   const box = $('pageInfo')
-  const btn = $('btnSync')
   if (!page) {
-    box.textContent = '未识别（请打开 B 站视频 / 合集 / 收藏夹页面）'
+    box.textContent = '未识别（请打开 B 站视频页面）'
     trackList = []
     trackNote = ''
     renderTracks()
-    btn.textContent = '同步到桌面端'
-    btn.disabled = false
     return
   }
+  const typeMap = {
+    video: '视频页',
+    season: '合集页',
+    favlist: '收藏夹',
+    space: '投稿页',
+    unknown: '未知页面'
+  }
   const lines = [
-    `类型：${PAGE_TYPE_LABEL[page.pageType] || page.pageType}`,
+    `类型：${typeMap[page.pageType] || page.pageType}`,
     page.bvid ? `BV号：${page.bvid}${page.page > 1 ? ` （第 ${page.page} P）` : ''}` : '',
     page.title ? `标题：${page.title}` : '',
     page.uploader?.name ? `UP主：${page.uploader.name}` : ''
   ].filter(Boolean)
   box.innerHTML = lines.map((l) => `<div>${escapeHtml(l)}</div>`).join('')
   renderTracks()
-  btn.textContent = syncLabel(page)
-  btn.disabled = page.pageType === 'live'
 }
 
 async function refresh() {
   const status = await ask({ type: 'get-status' })
   renderStatus(status)
 
+  if (!initialized) {
+    initialized = true
+  }
+
+  // 实时读取浏览器登录态（只读，不发送）
   renderLogin(await ask({ type: 'check-login' }))
 
   const live = await askPageInfo()
   if (live) {
     if (currentStatus) currentStatus.livePage = live
+    // 字幕轨要从页面上下文去查（需要 cookie），页面/BV 变了才重新查
     await refreshTracks(live)
     renderPage(live)
   } else {
@@ -259,33 +225,13 @@ $('btnSaveToken').addEventListener('click', async () => {
   renderStatus(await ask({ type: 'set-token', token: $('token').value }))
 })
 
-/** 自动同步登录状态的开关（后台在握手成功后读它） */
-async function loadAutoCookie() {
-  try {
-    const v = await chrome.storage.local.get(AUTO_COOKIE_KEY)
-    $('autoCookie').checked = !v || v[AUTO_COOKIE_KEY] !== false
-  } catch {
-    $('autoCookie').checked = true
-  }
-}
-
-$('autoCookie').addEventListener('change', async () => {
-  const on = $('autoCookie').checked
-  try {
-    await chrome.storage.local.set({ [AUTO_COOKIE_KEY]: on })
-  } catch {
-    /* 存不进去也不影响当前会话 */
-  }
-  $('autoCookie').blur()
-})
-
 $('btnSyncCookies').addEventListener('click', async (e) => {
   const btn = e.currentTarget
   btn.disabled = true
   btn.textContent = '同步中…'
   const res = await ask({ type: 'sync-cookies' })
   btn.disabled = false
-  btn.textContent = '立即同步登录状态'
+  btn.textContent = '同步登录状态到桌面端'
 
   if (!res?.ok) {
     $('cookieState').textContent = res?.message || '同步失败'
@@ -294,23 +240,42 @@ $('btnSyncCookies').addEventListener('click', async (e) => {
   renderStatus(await ask({ type: 'get-status' }))
 })
 
-/** 一键同步：动作由页面类型决定，交给后台的 syncAll 判断 */
+/** 同步当前页面（视频）到桌面端 */
 $('btnSync').addEventListener('click', async (e) => {
   const btn = e.currentTarget
-  const label = btn.textContent
   btn.disabled = true
   btn.textContent = '同步中…'
-  const res = await ask({ type: 'sync-all' })
+  const res = await ask({ type: 'sync-now' })
   btn.disabled = false
-  btn.textContent = label
-  const msg = res?.message || (res?.ok ? '已同步' : '同步失败')
-  // 用字幕轨那一行当结果回显位，避免再加一块区域
-  $('tracks').textContent = msg
-  $('tracks').style.color = res?.ok ? '' : 'var(--err)'
-  renderStatus(await ask({ type: 'get-status' }))
-  if (res?.ok) setTimeout(() => void refresh(), 1600)
+  btn.textContent = '同步该视频到桌面端'
+  if (res?.ok) {
+    renderStatus(res)
+  } else {
+    $('pageInfo').textContent = res?.message || '同步失败'
+  }
 })
 
-void loadAutoCookie()
+$('btnFetch').addEventListener('click', async (e) => {
+  const btn = e.currentTarget
+  const page = currentStatus?.livePage || currentStatus?.lastPage
+  if (!page?.bvid) {
+    $('tracks').textContent = '当前页面没有可抓取的字幕（需要是视频页）'
+    return
+  }
+  btn.disabled = true
+  btn.textContent = '已请求…'
+  // 先把页面信息同步过去，桌面端才知道这个视频归属哪个 UP主 / 合集
+  await ask({ type: 'sync-now' })
+  // 只要 BV 号：抓取交给桌面端，这样不管在哪个分P 触发，都会拉该视频的全部分P
+  const res = await ask({ type: 'pull-video', bvid: page.bvid, page: page.page || 1 })
+  btn.disabled = false
+  btn.textContent = '让桌面端拉取全部分P'
+  renderStatus(await ask({ type: 'get-status' }))
+  $('tracks').textContent = res?.ok
+    ? res.message
+    : res?.message || '请求失败'
+  $('tracks').style.color = res?.ok ? '' : 'var(--err)'
+})
+
 refresh()
 setInterval(refresh, 1500)

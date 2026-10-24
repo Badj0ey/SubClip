@@ -74,21 +74,7 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 >
 > 仓库中早先的文件里若留有「待确认授权」之类的措辞，均以此节为准。
 
-### 3.3 mpegts.js（Apache-2.0，内包在插件里）
-
-`extension/vendor/mpegts.js`（1.8.2 版，275 KB）+ `extension/vendor/mpegts.LICENSE.txt`。
-
-用途：直播间的「只放音频」模式拿到的是 **FLV 纯音频流**（`only_audio=1`），
-浏览器原生 `<audio>` 放不了 FLV，必须用 mpegts.js 把它转成 MSE 可播的分片。
-
-为什么**内包**而不是从 CDN 动态加载：参考过的同类插件是在页面里插一段 CDN 的 script，
-CDN 被墙 / 超时 / 被扩展拦掉时整个功能静默失效，用户只看到「点了没反应」。
-内包后只要插件加载成功，这条路径就不会因为网络原因挂掉。
-
-许可证：Apache-2.0，允许随作品分发，需保留 LICENSE 与 NOTICE。本项目保留了原 `mpegts.LICENSE.txt`，
-未修改其源码（文件为官方构建产物原样拷贝）。
-
-### 3.4 其他
+### 3.3 其他
 
 `src/main/slice/sidx.ts` 的注释提到分片索引思路「仿 A-SOUL 切片插件」。此处仅指接口/格式层面的
 行为参考（SIDX box 解析是公开的 ISO BMFF 规范），未复制其代码，因此不构成衍生作品。
