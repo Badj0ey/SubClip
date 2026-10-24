@@ -106,7 +106,7 @@ onUnmounted(() => {
 }
 
 .ctx-item:hover:not(:disabled) {
-  background: var(--hover);
+  background: var(--row-hover);
 }
 
 .ctx-item:disabled {

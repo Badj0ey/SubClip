@@ -1,18 +1,34 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { IpcRendererEvent } from 'electron'
 import type {
+  AiResult,
+  AiStatus,
+  AiTagSuggestion,
+  AnalysisRecord,
   AppSettings,
   BiliTarget,
   ClipTask,
   Cue,
+  CueSearchPage,
+  DashboardOverview,
+  MediaSession,
   OpResult,
   ParseResult,
   PullProgressInfo,
+  GraphCounts,
+  GraphProgress,
+  GraphTopic,
+  GraphTopicVideo,
+  GraphViewpoint,
+  RecommendationResult,
+  SemanticSearchResult,
+  SemanticStatus,
   SliceCheckResult,
   SliceHistoryEntry,
   SliceProgressInfo,
   SliceRowLike,
   SubtitleDoc,
+  TagInfo,
   TreeNode
 } from '@shared/types'
 import type { BridgePageInfo, BridgeStatus } from '@shared/bridge'
@@ -165,30 +181,21 @@ const api = {
 
   onPullProgress: (cb: (p: PullProgressInfo) => void) => subscribe('bili:pull-progress', cb),
 
-  /* 全库检索 */
+  /* 全库检索（第四阶段：排序权重 / 筛选 / 分页） */
   searchLibrary: (payload: {
     keyword: string
     limit?: number
+    offset?: number
     uploaderId?: number
     collectionId?: number
     videoId?: number
-  }): Promise<
-    Array<{
-      docId: number
-      videoId: number
-      bvid: string
-      page: number
-      index: number
-      start: number
-      end: number
-      text: string
-      videoTitle: string
-      uploaderName: string
-      docLabel: string
-      uploaderId: number | null
-      collectionId: number | null
-    }>
-  > => ipcRenderer.invoke('search:library', payload),
+    tagIds?: number[]
+    favoriteOnly?: boolean
+    createdFrom?: number
+    createdTo?: number
+    minDuration?: number
+    maxDuration?: number
+  }): Promise<CueSearchPage> => ipcRenderer.invoke('search:library', payload),
   addClipsFromSearch: (payload: {
     hits: Array<{
       docId: number
@@ -223,6 +230,16 @@ const api = {
     outPath?: string
   }): Promise<OpResult<{ path: string }>> => ipcRenderer.invoke('clips:export', payload),
 
+  /* 导出任务（3.6.0 拆表后与「片段」分开） */
+  listPendingJobs: (): Promise<any[]> => ipcRenderer.invoke('jobs:listPending'),
+  listAllJobs: (): Promise<any[]> => ipcRenderer.invoke('jobs:listAll'),
+  enqueueJobs: (clipIds: number[]): Promise<number> => ipcRenderer.invoke('jobs:enqueue', clipIds),
+  deleteJob: (id: number): Promise<any[]> => ipcRenderer.invoke('jobs:delete', id),
+  clearPendingJobs: (): Promise<any[]> => ipcRenderer.invoke('jobs:clearPending'),
+  retryJobs: (ids: number[]): Promise<number> => ipcRenderer.invoke('jobs:retry', ids),
+  moveJob: (payload: { id: number; dir: -1 | 1 }): Promise<any[]> =>
+    ipcRenderer.invoke('jobs:move', payload),
+
   /* 设置 */
   getSettings: (): Promise<AppSettings> => ipcRenderer.invoke('settings:get'),
   saveSettings: (patch: Partial<AppSettings>): Promise<AppSettings> =>
@@ -253,6 +270,165 @@ const api = {
     ipcRenderer.invoke('slice:run', { tasks }),
   sliceCancel: (): Promise<boolean> => ipcRenderer.invoke('slice:cancel'),
   onSliceProgress: (cb: (p: SliceProgressInfo) => void) => subscribe('slice:progress', cb),
+
+  /** 首页 Dashboard 的全部卡片数据（第二阶段） */
+  dashboardOverview: (): Promise<DashboardOverview> => ipcRenderer.invoke('dashboard:overview'),
+
+  /* 视频预览（第二阶段）：解析 DASH 流并返回 bilistream:// 地址 */  mediaOpen: (payload: { bvid: string; page: number }): Promise<OpResult<MediaSession>> =>
+    ipcRenderer.invoke('media:open', payload),
+  /** 关闭全部预览会话（换视频 / 卸载播放器时调用） */
+  mediaClose: (): Promise<boolean> => ipcRenderer.invoke('media:close'),
+
+  /* 语义检索（第四阶段下半）：下载模型 / 建索引 / 按意思搜 */
+  semanticStatus: (): Promise<SemanticStatus> => ipcRenderer.invoke('semantic:status'),
+  semanticDownload: (): Promise<OpResult<{ message: string }>> =>
+    ipcRenderer.invoke('semantic:download'),
+  semanticDeleteModel: (): Promise<SemanticStatus> => ipcRenderer.invoke('semantic:deleteModel'),
+  semanticIndex: (): Promise<SemanticStatus> => ipcRenderer.invoke('semantic:index'),
+  semanticStopIndex: (): Promise<SemanticStatus> => ipcRenderer.invoke('semantic:stopIndex'),
+  semanticClearIndex: (): Promise<SemanticStatus> => ipcRenderer.invoke('semantic:clearIndex'),
+  semanticSearch: (payload: {
+    keyword: string
+    limit?: number
+  }): Promise<OpResult<SemanticSearchResult>> => ipcRenderer.invoke('semantic:search', payload),
+  semanticModelPath: (): Promise<string> => ipcRenderer.invoke('semantic:modelPath'),
+
+  /* AI 能力层（第六阶段）：摘要 / 标签建议 / 标题 / 逐句解释 / 云端语义打分 */
+  aiStatus: (): Promise<AiStatus> => ipcRenderer.invoke('ai:status'),
+  aiSummary: (payload: {
+    targetType: 'video' | 'doc'
+    targetId: number
+    title?: string
+  }): Promise<OpResult<AiResult>> => ipcRenderer.invoke('ai:summary', payload),
+  aiTags: (payload: {
+    targetType: 'video' | 'doc'
+    targetId: number
+    title?: string
+  }): Promise<OpResult<AiResult<AiTagSuggestion[]>>> => ipcRenderer.invoke('ai:tags', payload),
+  aiTitle: (payload: { text: string }): Promise<OpResult<string>> =>
+    ipcRenderer.invoke('ai:title', payload),
+  aiExplain: (payload: { docId: number; index: number }): Promise<OpResult<AiResult>> =>
+    ipcRenderer.invoke('ai:explain', payload),
+  aiCached: (payload: {
+    targetType: 'video' | 'doc' | 'cue' | 'clip'
+    targetId: number
+    kind?: string
+  }): Promise<AnalysisRecord[]> => ipcRenderer.invoke('ai:cached', payload),
+  aiRank: (payload: { query: string; candidates: string[] }): Promise<OpResult<number[]>> =>
+    ipcRenderer.invoke('ai:rank', payload),
+
+  /* AI 素材推荐（第八阶段）：用本地向量算，不需要外部模型 */
+  recommendTwins: (payload: {
+    chunkId?: number
+    docId?: number
+    second?: number
+    limit?: number
+  }): Promise<RecommendationResult> => ipcRenderer.invoke('recommend:twins', payload),
+  recommendHighlights: (payload: {
+    videoId: number
+    limit?: number
+  }): Promise<RecommendationResult> => ipcRenderer.invoke('recommend:highlights', payload),
+  recommendTypical: (payload: {
+    videoId: number
+    limit?: number
+  }): Promise<RecommendationResult> => ipcRenderer.invoke('recommend:typical', payload),
+  /** 诊断用：抽样统计跨视频相似度分布（用于按真实语料标定推荐阈值） */
+  recommendStats: (payload: {
+    samples?: number
+    topK?: number
+  }): Promise<{
+    samples: number
+    avgTop: number
+    avgMedian: number
+    buckets: Array<{ range: string; count: number }>
+    topTexts: string[]
+  }> => ipcRenderer.invoke('recommend:stats', payload),
+  /** 诊断用：直接看某个视频的原始向量（排查「自己和自己不像」这类解码问题） */
+  recommendInspect: (payload: { videoId: number }): Promise<{
+    count: number
+    byteLengths: number[]
+    firstElements: number[][]
+    selfCosine: number
+    storedCentroidBytes: number | null
+    centroidFirstElements: number[]
+  }> => ipcRenderer.invoke('recommend:inspect', payload),
+
+  /* 知识图谱（第八阶段）：全部本地抽取，不联网、不依赖 AI */
+  graphBuild: (payload: { rebuild?: boolean }): Promise<OpResult> =>
+    ipcRenderer.invoke('graph:build', payload),
+  graphCancel: (): Promise<void> => ipcRenderer.invoke('graph:cancel'),
+  graphStatus: (): Promise<GraphProgress> => ipcRenderer.invoke('graph:status'),
+  graphCounts: (): Promise<GraphCounts> => ipcRenderer.invoke('graph:counts'),
+  graphTopics: (payload: {
+    keyword?: string
+    limit?: number
+  }): Promise<GraphTopic[]> => ipcRenderer.invoke('graph:topics', payload),
+  graphTopicVideos: (payload: {
+    topicId: number
+    limit?: number
+  }): Promise<GraphTopicVideo[]> => ipcRenderer.invoke('graph:topicVideos', payload),
+  graphVideoTopics: (payload: {
+    videoId: number
+    limit?: number
+  }): Promise<GraphTopic[]> => ipcRenderer.invoke('graph:videoTopics', payload),
+  graphViewpoints: (payload: {
+    videoId: number
+    limit?: number
+  }): Promise<GraphViewpoint[]> => ipcRenderer.invoke('graph:viewpoints', payload),
+
+  /* 剪辑文案模板（第八阶段）：模板 CRUD，渲染在渲染进程做（纯函数） */
+  templateList: (): Promise<
+    Array<{ id: string; name: string; description: string; body: string; builtin: boolean }>
+  > => ipcRenderer.invoke('template:list'),
+  templateSave: (payload: {
+    id: string
+    name: string
+    description?: string
+    body: string
+  }): Promise<OpResult> => ipcRenderer.invoke('template:save', payload),
+  templateDelete: (id: string): Promise<OpResult> => ipcRenderer.invoke('template:delete', id),
+
+  /* 发布素材包（第九阶段）：装配与导出分离，导出前让用户先确认内容 */
+  kitBuild: (payload: {
+    title: string
+    description: string
+    tags: string[]
+    clipIds?: number[]
+  }): Promise<{
+    folder: string
+    files: Array<{ path: string; content: string }>
+    clipCount: number
+    totalDuration: number
+    missingSubtitle: number[]
+  }> => ipcRenderer.invoke('kit:build', payload),
+  kitExport: (payload: {
+    data: {
+      folder: string
+      files: Array<{ path: string; content: string }>
+    }
+  }): Promise<OpResult<{ dir: string; files: number }>> =>
+    ipcRenderer.invoke('kit:export', payload),
+
+  /* 成片拼接（第九阶段）：多条片段 → 一条 mp4 */
+  composeRun: (payload: { clipIds: number[]; title: string }): Promise<OpResult> =>
+    ipcRenderer.invoke('compose:run', payload),
+  composeCancel: (): Promise<void> => ipcRenderer.invoke('compose:cancel'),
+  onComposeProgress: (
+    cb: (p: {
+      phase: 'prepare' | 'slice' | 'concat' | 'done' | 'error'
+      percent: number
+      message: string
+    }) => void
+  ) => subscribe('compose:progress', cb),
+  onComposeDone: (
+    cb: (r: {
+      ok: boolean
+      output?: string
+      outputs: string[]
+      message?: string
+      keptIntermediate?: string[]
+    }) => void
+  ) => subscribe('compose:done', cb),
 
   /* 主进程事件订阅（返回取消订阅函数） */
   onBridgeStatus: (cb: (s: BridgeStatus) => void) => subscribe('bridge:status', cb),
@@ -303,6 +479,15 @@ const api = {
   ) => subscribe('bridge:subtitle', cb),
   onBridgeLog: (cb: (p: { level: string; message: string }) => void) =>
     subscribe('bridge:log', cb),
+  /** 插件协议版本高于桌面端（第七阶段）：界面据此提示用户更新桌面端 */
+  onBridgeVersionSkew: (
+    cb: (p: {
+      clientProtocol: number
+      serverProtocol: number
+      clientVersion: string
+      clientBrowser: string
+    }) => void
+  ) => subscribe('bridge:version-skew', cb),
   onDataWarning: (cb: (p: { missing: number; message: string }) => void) =>
     subscribe('data:warning', cb),
   onBridgeCookies: (
@@ -315,18 +500,53 @@ const api = {
     }) => void
   ) => subscribe('bridge:cookies', cb),
 
-  /* 标签（需求文档 §6 的「分类」） */
-  listTags: (): Promise<Array<{ id: number; name: string; count: number }>> =>
-    ipcRenderer.invoke('tags:list'),
+  /** 标签（需求文档 §6 的「分类」） */
+  listTags: (): Promise<TagInfo[]> => ipcRenderer.invoke('tags:list'),
   createTag: (name: string): Promise<{ id: number; tree: TreeNode[] }> =>
     ipcRenderer.invoke('tags:create', name),
   renameTag: (id: number, name: string): Promise<TreeNode[]> =>
     ipcRenderer.invoke('tags:rename', { id, name }),
   deleteTag: (id: number): Promise<TreeNode[]> => ipcRenderer.invoke('tags:delete', id),
+  /** 改颜色 / 备注（第三阶段） */
+  updateTagMeta: (payload: { id: number; color?: string; note?: string }): Promise<TagInfo[]> =>
+    ipcRenderer.invoke('tags:updateMeta', payload),
   getVideoTags: (videoId: number): Promise<number[]> =>
     ipcRenderer.invoke('tags:ofVideo', videoId),
   setVideoTags: (videoId: number, tagIds: number[]): Promise<TreeNode[]> =>
     ipcRenderer.invoke('tags:setVideo', { videoId, tagIds }),
+  /** 批量给多个视频追加标签（第三阶段） */
+  addTagsToVideos: (payload: { videoIds: number[]; tagIds: number[] }): Promise<OpResult<{ count: number }>> =>
+    ipcRenderer.invoke('tags:addToVideos', payload),
+
+  /* 片段（第三阶段）：切片任务 = 带名字与标签的时间范围收藏 */
+  renameClipName: (id: number, name: string): Promise<ClipTask[]> =>
+    ipcRenderer.invoke('clips:renameName', { id, name }),
+  getClipTags: (clipId: number): Promise<number[]> => ipcRenderer.invoke('clips:tags', clipId),
+  setClipTags: (clipId: number, tagIds: number[]): Promise<ClipTask[]> =>
+    ipcRenderer.invoke('clips:setTags', { clipId, tagIds }),
+  listClipIdsByTag: (tagId: number): Promise<number[]> =>
+    ipcRenderer.invoke('clips:byTag', tagId),
+  toggleClipFavorite: (clipId: number): Promise<{ favorite: boolean; tasks: ClipTask[] }> =>
+    ipcRenderer.invoke('clips:favorite', clipId),
+  /** 片段详情：所属视频 / 字幕 / 作者 / 标签 */
+  getClipDetail: (clipId: number): Promise<{
+    clip: ClipTask
+    docLabel: string
+    videoTitle: string
+    uploaderName: string
+    creators: string[]
+    tagIds: number[]
+  } | null> => ipcRenderer.invoke('clips:detail', clipId),
+
+  /** 按片段内容重新生成名称（第五阶段：把「前缀 #1」变成有意义的标题） */
+  autoNameClips: (): Promise<OpResult<{ renamed: number }>> => ipcRenderer.invoke('clips:autoName'),
+
+  /* 分析结果（第三阶段建表，第六阶段接 AIProvider 写入） */
+  listAnalysis: (payload: {
+    targetType: 'video' | 'doc' | 'cue' | 'clip'
+    targetId: number
+    kind?: string
+  }): Promise<AnalysisRecord[]> => ipcRenderer.invoke('analysis:list', payload),
 
   /* 数据管理 */
   /** 备份整库到用户选定的文件 */

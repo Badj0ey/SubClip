@@ -2,6 +2,12 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { formatTime } from '@shared/time'
 import { rangeDuration, totalDuration } from '@shared/ranges'
+import { useClipStore } from '../stores/clip'
+import { useAiStore } from '../stores/ai'
+import { useTagsStore } from '../stores/tags'
+import { useSubtitleStore } from '../stores/subtitle'
+import { useUiStore } from '../stores/ui'
+import AiPanel from './AiPanel.vue'
 import {
   cancelSlice,
   clearSliceHistory,
@@ -14,6 +20,7 @@ import {
   openSliceOutput,
   ranges,
   renameClip,
+  renameClipName,
   retryFailedSlices,
   startSlice,
   state,
@@ -22,6 +29,70 @@ import {
 
 /** 右侧面板分两个页签：任务列表 / 切片历史 */
 const tab = ref<'tasks' | 'history'>('tasks')
+
+/** 第三阶段：收藏片段要直接改 store（列表项上的星标） */
+const clipStore = useClipStore()
+
+/* ---------------------------- AI 能力层（第六阶段） ---------------------------- */
+const aiStore = useAiStore()
+const tagsStore = useTagsStore()
+const subtitleStore = useSubtitleStore()
+const ui = useUiStore()
+
+/** 有字幕文档在打开时才能做「摘要 / 标签建议」 */
+const aiTarget = computed(() => {
+  const doc = subtitleStore.doc
+  const video = subtitleStore.video
+  if (!doc) return null
+  return {
+    targetType: 'video' as const,
+    targetId: doc.videoId,
+    title: video?.title ?? doc.label
+  }
+})
+
+async function onAiSummary(): Promise<void> {
+  const t = aiTarget.value
+  if (!t) {
+    ui.showToast('请先打开一个字幕文档', 'error')
+    return
+  }
+  await aiStore.summarize(t.targetType, t.targetId, t.title)
+}
+
+/** 标签建议：AI 生成 + 人审核，所以在 AiPanel 里勾选后再保存 */
+async function onAiTags(): Promise<void> {
+  const t = aiTarget.value
+  if (!t) {
+    ui.showToast('请先打开一个字幕文档', 'error')
+    return
+  }
+  await aiStore.suggestTags(t.targetType, t.targetId, t.title)
+}
+
+/** 把审核通过的标签建议落库，并打在当前视频上 */
+async function applyTagSuggestions(names: string[]): Promise<void> {
+  const video = subtitleStore.video
+  if (!video) return
+  const ids: number[] = []
+  for (const name of names) {
+    const id = await tagsStore.create(name)
+    if (id) ids.push(id)
+  }
+  await tagsStore.addToVideos([video.id], ids)
+  aiStore.clearTagSuggestions()
+}
+
+// 换视频时把上一篇的摘要/建议清掉（否则会以为是当前这篇的）
+watch(
+  () => subtitleStore.doc?.videoId,
+  (id) => {
+    aiStore.clearTagSuggestions()
+    if (id != null) void aiStore.loadCachedSummary('video', id)
+    else aiStore.summary = ''
+  },
+  { immediate: true }
+)
 
 const failedCount = computed(() => state.sliceHistory.filter((h) => h.status !== 'ok').length)
 const okCount = computed(() => state.sliceHistory.filter((h) => h.status === 'ok').length)
@@ -32,78 +103,33 @@ const editingId = ref<number | null>(null)
 const editingNote = ref('')
 const noteEl = ref<HTMLInputElement | null>(null)
 
-async function startRenameClip(id: number, note: string): Promise<void> {
+async function startRenameClip(id: number, name: string): Promise<void> {
   editingId.value = id
-  editingNote.value = note
+  editingNote.value = name
   await nextTick()
   noteEl.value?.focus()
   noteEl.value?.select()
 }
 
+/** 提交改名：改的是「片段名称」，输出文件名（note）不受影响 */
 async function commitRenameClip(): Promise<void> {
   const id = editingId.value
   if (id == null) return
-  const note = editingNote.value.trim()
+  const name = editingNote.value.trim()
   editingId.value = null
-  if (!note) return
-  await renameClip(id, note)
+  if (!name) return
+  await renameClipName(id, name)
 }
 
 /* ---------------------------- 任务：排序与导入导出 ---------------------------- */
 
-async function onMove(id: number, dir: -1 | 1): Promise<void> {
-  await moveClip(id, dir)
-}
-
-async function onImportJson(): Promise<void> {
-  await importClipsJson()
-}
-
-async function onExportJson(): Promise<void> {
-  await exportClipsJson()
-}
-
-/* -------------------------------- 历史 -------------------------------- */
-
-const STATUS_TEXT: Record<string, string> = {
-  ok: '成功',
-  error: '失败',
-  canceled: '已取消'
-}
-
-async function onRetryFailed(): Promise<void> {
-  await retryFailedSlices()
-}
-
-async function onClearHistory(): Promise<void> {
-  if (!state.sliceHistory.length) return
-  if (!window.confirm(`确定清空 ${state.sliceHistory.length} 条切片历史？`)) return
-  await clearSliceHistory()
-  toast('已清空切片历史', 'success')
-}
-
-async function openOutput(path: string): Promise<void> {
-  const err = await window.api.openPath(path)
-  if (err) toast(err, 'error', 4200)
-}
-
-const PHASE_TEXT: Record<string, string> = {
-  resolve: '解析',
-  download: '下载',
-  cut: '裁剪',
-  done: '完成',
-  error: '失败'
-}
-
-const slicePhase = computed(() => PHASE_TEXT[state.sliceProgress?.phase ?? ''] ?? '')
-
-async function onSlice(): Promise<void> {
-  await startSlice()
-}
-
-async function onCancelSlice(): Promise<void> {
-  await cancelSlice()
-}
+/*
+ * 3.7.0 瘦身：这一节原有的「任务排序 / 导入 / 导出 / 智能命名 / 任务页签」
+ * 全部随任务列表一起搬去「剪辑任务」页（或随任务列表一起删掉）。
+ *
+ * 右栏现在只负责「当前选择 → 保存片段 → 添加到任务」，
+ * 所以这里只留「打开输出目录」这类与当前面板直接相关的小动作。
+ */
 
 async function onOpenOutput(): Promise<void> {
   await openSliceOutput()
@@ -119,18 +145,6 @@ const total = computed(() => totalDuration(ranges.value))
 
 async function onEnqueue(): Promise<void> {
   await enqueueCurrentRanges(notePrefix.value || undefined)
-}
-
-async function onDeleteClip(id: number): Promise<void> {
-  state.clips = await window.api.deleteClip(id)
-}
-
-async function onClearClips(): Promise<void> {
-  if (!state.clips.length) return
-  if (!window.confirm(`确定清空全部 ${state.clips.length} 条切片任务？`)) return
-  await window.api.clearClips()
-  await loadClips()
-  toast('已清空切片任务', 'success')
 }
 
 async function onExport(format: 'csv' | 'xlsx'): Promise<void> {
@@ -156,14 +170,17 @@ watch(currentVideoTitle, (title) => {
 </script>
 
 <template>
-  <aside class="pane pane-right" role="complementary" aria-label="选择结果与切片任务">
+  <aside class="pane pane-right" role="complementary" aria-label="当前选择与片段">
     <div class="pane-head">
-      <strong style="font-size: 13px">选择结果 / 切片任务</strong>
+      <strong style="font-size: 13px">当前选择</strong>
       <span class="grow"></span>
-      <span class="muted">{{ state.clips.length }} 条任务</span>
+      <span class="muted">{{ state.clips.length }} 个片段</span>
     </div>
 
     <div class="pane-body">
+      <!-- AI 助手（第六阶段）：摘要 / 标签建议。未启用时只提示，不影响其它功能 -->
+      <AiPanel @summary="onAiSummary" @tags="onAiTags" @apply-tags="applyTagSuggestions" />
+
       <!-- 当前文档信息 -->
       <div class="seg">
         <div class="seg-title">当前字幕</div>
@@ -241,191 +258,20 @@ watch(currentVideoTitle, (title) => {
         </div>
       </div>
 
-      <!-- 切片任务列表 / 历史 -->
-      <div class="seg">
-        <div class="seg-title">
-          <button
-            class="btn sm"
-            :class="{ primary: tab === 'tasks' }"
-            @click="tab = 'tasks'"
-          >
-            任务 {{ state.clips.length }}
-          </button>
-          <button
-            class="btn sm"
-            :class="{ primary: tab === 'history' }"
-            :title="`切片历史：成功 ${okCount}，失败/取消 ${failedCount}`"
-            @click="tab = 'history'"
-          >
-            历史 {{ state.sliceHistory.length }}
-            <template v-if="failedCount"> · {{ failedCount }} 待重试</template>
-          </button>
-          <span class="grow"></span>
-          <template v-if="tab === 'tasks'">
-            <button class="btn sm" :disabled="!state.clips.length" @click="onExportJson">
-              导出 JSON
-            </button>
-            <button class="btn sm" title="从 JSON 追加导入任务" @click="onImportJson">导入</button>
-            <button class="btn sm danger" :disabled="!state.clips.length" @click="onClearClips">
-              清空
-            </button>
-          </template>
-          <template v-else>
-            <button
-              class="btn sm"
-              :disabled="!failedCount"
-              title="把失败/取消的任务重新加入任务列表"
-              @click="onRetryFailed"
-            >
-              重试失败
-            </button>
-            <button
-              class="btn sm danger"
-              :disabled="!state.sliceHistory.length"
-              @click="onClearHistory"
-            >
-              清空
-            </button>
-          </template>
-        </div>
-
-        <!-- 任务列表 -->
-        <template v-if="tab === 'tasks'">
-          <div v-if="!state.clips.length" class="muted">暂无任务</div>
-          <div v-for="(t, i) in state.clips" :key="t.id" class="range-item">
-            <div class="order-ops">
-              <button
-                class="del"
-                type="button"
-                :disabled="i === 0"
-                title="上移"
-                :aria-label="`把「${t.note}」上移`"
-                @click="onMove(t.id, -1)"
-              >
-                ▲
-              </button>
-              <button
-                class="del"
-                type="button"
-                :disabled="i === state.clips.length - 1"
-                title="下移"
-                :aria-label="`把「${t.note}」下移`"
-                @click="onMove(t.id, 1)"
-              >
-                ▼
-              </button>
-            </div>
-            <div style="flex: 1 1 auto; min-width: 0">
-              <div style="font-size: 12px; font-variant-numeric: tabular-nums">
-                {{ formatTime(t.start) }} → {{ formatTime(t.end) }}
-              </div>
-              <div class="muted" style="word-break: break-all">
-                {{ t.bvid || '（无BV号）' }} ·
-                <template v-if="t.segments && t.segments.length > 1">
-                  <span class="badge-soft" style="margin-right: 4px">
-                    跨P {{ t.segments.map((s) => `P${s.page}`).join(' + ') }}
-                  </span>
-                </template>
-                <template v-else>P{{ t.page }} ·</template>
-              </div>
-              <input
-                v-if="editingId === t.id"
-                ref="noteEl"
-                v-model="editingNote"
-                class="input"
-                style="width: 100%; margin-top: 2px"
-                spellcheck="false"
-                @keydown.enter.prevent="commitRenameClip"
-                @keydown.esc.prevent="editingId = null"
-                @blur="commitRenameClip"
-              />
-              <div
-                v-else
-                class="note-text"
-                title="双击可改名（备注就是输出文件名）"
-                @dblclick="startRenameClip(t.id, t.note)"
-              >
-                {{ t.note }}
-              </div>
-            </div>
-            <button
-              class="del"
-              type="button"
-              title="删除该任务"
-              :aria-label="`删除任务「${t.note}」`"
-              @click="onDeleteClip(t.id)"
-            >
-              ✕
-            </button>
-          </div>
-        </template>
-
-        <!-- 切片历史 -->
-        <template v-else>
-          <div v-if="!state.sliceHistory.length" class="muted">还没有切片记录</div>
-          <div v-for="h in state.sliceHistory" :key="h.id" class="range-item">
-            <span
-              class="badge-soft"
-              :class="{ 'badge-err': h.status !== 'ok' }"
-              style="flex: 0 0 auto"
-            >
-              {{ STATUS_TEXT[h.status] }}
-            </span>
-            <div style="flex: 1 1 auto; min-width: 0">
-              <div class="note-text" :title="h.note">{{ h.note }}</div>
-              <div class="muted" style="word-break: break-all">
-                {{ h.bvid || '（无BV号）' }} · P{{ h.page }} ·
-                {{ formatTime(h.start) }} → {{ formatTime(h.end) }}
-              </div>
-              <div v-if="h.status === 'ok' && h.output" class="muted out-path">
-                <span>{{ h.output }}</span>
-                <button class="btn sm" @click="openOutput(h.output)">打开</button>
-              </div>
-              <div v-else-if="h.message" class="err-msg">{{ h.message }}</div>
-            </div>
-          </div>
-        </template>
-      </div>
     </div>
 
-    <!-- 切片进度 -->
-    <div v-if="state.sliceRunning && state.sliceProgress" class="slice-progress">
-      <div class="progress-bar">
-        <div class="progress-inner" :style="{ width: `${state.sliceProgress.percent}%` }"></div>
-      </div>
-      <div class="slice-progress-text">
-        <span class="muted">
-          {{ slicePhase }} {{ state.sliceProgress.index + 1 }}/{{ state.sliceProgress.total }}
-          · {{ state.sliceProgress.note }}
-        </span>
-        <button class="btn sm danger" @click="onCancelSlice">取消</button>
-      </div>
-    </div>
+    <!--
+      3.7.0：切片执行相关的界面（切片按钮、进度、取消、输出目录、ffmpeg 提示）
+      已全部搬到「剪辑任务」页。
 
-    <!-- ffmpeg 未就绪提示 -->
-    <div v-if="!state.ffmpegReady" class="slice-warn">
-      未检测到 ffmpeg，本地切片不可用。
-      <button class="btn sm" @click="state.view = 'settings'">去设置</button>
-    </div>
-
-    <!-- 切片输出目录（可自定义） -->
-    <div class="slice-out">
-      <span class="muted">输出到</span>
-      <input :value="outputDir" class="input grow" readonly :title="outputDir" />
-      <button class="btn sm" @click="pickOutputDir">更改</button>
-    </div>
-
+      为什么搬：右栏的职责是「当前选择」，而执行是队列的事。
+      混在一起时用户只是想保存片段，却很容易点到「本地切片」——
+      实测这正是「片段与任务混淆」最容易出问题的地方。
+      现在右栏只负责：看当前文档 → 调时间范围 → 命名 → 保存片段 → 添加到任务。
+    -->
     <div class="footer-actions">
       <button class="btn" :disabled="!state.clips.length" @click="onExport('xlsx')">
         导出 XLSX
-      </button>
-      <button
-        class="btn primary grow"
-        :disabled="!state.clips.length || state.sliceRunning || !state.ffmpegReady"
-        :title="state.ffmpegReady ? '在本机直接切片' : '需要先配置 ffmpeg'"
-        @click="onSlice"
-      >
-        {{ state.sliceRunning ? '切片中…' : `本地切片（${state.clips.length}）` }}
       </button>
       <button
         class="btn icon"
@@ -473,6 +319,36 @@ watch(currentVideoTitle, (title) => {
   color: var(--accent);
 }
 
+/* 第三阶段：片段名称（主标题）+ 输出文件名（副行） */
+.clip-title-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.clip-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: text;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.clip-name:hover {
+  color: var(--accent);
+}
+
+.note-hint {
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
 .badge-err {
   color: var(--danger);
   background: color-mix(in srgb, var(--danger) 15%, transparent);
@@ -504,7 +380,7 @@ watch(currentVideoTitle, (title) => {
 
 .slice-progress {
   padding: 10px 14px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   background: var(--panel-2);
 }
 
@@ -552,7 +428,7 @@ watch(currentVideoTitle, (title) => {
   align-items: center;
   gap: 8px;
   padding: 8px 14px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   background: var(--panel-2);
 }
 

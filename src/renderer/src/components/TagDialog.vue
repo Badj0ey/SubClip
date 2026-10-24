@@ -6,13 +6,14 @@
  * 标签是正交的另一维，同一个视频可以同时是「待剪辑」和「重点」。
  */
 import { computed, onMounted, ref } from 'vue'
+import type { TagInfo } from '@shared/types'
 import { state, toast } from '../store'
 import { useEscapeToClose } from '../composables/useEscapeToClose'
 
 const props = defineProps<{ videoId: number; title: string }>()
 const emit = defineEmits<{ (e: 'close'): void }>()
 
-const all = ref<Array<{ id: number; name: string; count: number }>>([])
+const all = ref<TagInfo[]>([])
 const checked = ref<Set<number>>(new Set())
 const draft = ref('')
 const busy = ref(false)
@@ -74,8 +75,16 @@ async function save(): Promise<void> {
         </div>
         <label v-for="t in all" :key="t.id" class="tag-row">
           <input type="checkbox" :checked="checked.has(t.id)" @change="toggle(t.id)" />
+          <span
+            v-if="t.color"
+            class="tag-dot"
+            :style="{ background: t.color }"
+            aria-hidden="true"
+          ></span>
           <span class="tag-name">{{ t.name }}</span>
-          <span class="muted">{{ t.count }} 个视频</span>
+          <span class="muted">
+            {{ t.videoCount }} 个视频<template v-if="t.clipCount"> · {{ t.clipCount }} 个片段</template>
+          </span>
         </label>
       </div>
 
@@ -127,7 +136,7 @@ async function save(): Promise<void> {
 }
 
 .tag-row:hover {
-  background: var(--hover);
+  background: var(--row-hover);
 }
 
 .tag-name {

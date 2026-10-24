@@ -1,980 +1,463 @@
-import { computed, reactive, ref } from 'vue'
+/**
+ * 渲染进程状态入口门面（第一阶段-1 / 1-2）。
+ *
+ * ## 为什么还留着这个文件
+ *
+ * 状态已经从「一个 1100 行的模块级 reactive」拆成 `stores/` 下的八个 Pinia store。
+ * 但十来个组件都在 `import { state, xxx } from '../store'`，
+ * 一次性全改完风险太大（任何一处漏改都是运行时白屏，而不是类型错误）。
+ *
+ * 所以这里保留**原样不变的对外 API**，内部全部转发到新 store：
+ * - 组件不需要改一行，功能表现与我们重构前完全一致；
+ * - 后续哪个组件有空，就把它改成直接 `useXxxStore()`；
+ * - store 全部迁完后再删掉本文件。
+ *
+ * ## 实现要点（踩过的坑）
+ *
+ * 1. **store 必须在调用时才解析**（`pinia()`）：本模块会在 `createApp()`
+ *    之前被 import，那时 Pinia 还没装上。
+ * 2. `state` 用 Proxy 做**属性级转发**，不是 `reactive()` 快照 ——
+ *    否则 `state.tree` 读到的会是拷贝，界面不会跟着变。
+ * 3. 组件里存在 `state.tree = ...` 这种**直接赋值**，setter 必须一并实现。
+ * 4. 撤销 / 重做栈、删除快照等放在 store 内部，不经过门面，避免被响应式包成 Proxy
+ *    （Proxy 无法通过 IPC 的结构化克隆，这是老代码里明确记过的坑）。
+ */
+import { computed, ref } from 'vue'
 import type {
   AppSettings,
   ClipTask,
   Cue,
   CueSearchHit,
+  MergedCue,
   SliceHistoryEntry,
   SubtitleDoc,
   TimeRange,
   TreeNode,
   VideoItem
 } from '@shared/types'
-import type { BridgeStatus } from '@shared/bridge'
-import type { MergedCue, PullProgressInfo, SliceProgressInfo } from '@shared/types'
-import { buildRanges } from '@shared/ranges'
+import { useUiStore } from './stores/ui'
+import { useSettingsStore } from './stores/settings'
+import { useResourceStore } from './stores/resource'
+import { useSubtitleStore } from './stores/subtitle'
+import { useClipStore } from './stores/clip'
+import { useSearchStore } from './stores/search'
+import { useSemanticStore } from './stores/semantic'
+import { useAiStore } from './stores/ai'
+import { setupIpcEvents, setupBusWiring } from './stores/ipcEvents'
+import { hitKey } from './stores/search'
 
-interface ToastState {
-  text: string
-  type: 'info' | 'error' | 'success'
-  visible: boolean
-  timer: number | null
+type Stores = {
+  ui: ReturnType<typeof useUiStore>
+  settings: ReturnType<typeof useSettingsStore>
+  resource: ReturnType<typeof useResourceStore>
+  subtitle: ReturnType<typeof useSubtitleStore>
+  clip: ReturnType<typeof useClipStore>
+  search: ReturnType<typeof useSearchStore>
+  semantic: ReturnType<typeof useSemanticStore>
+  ai: ReturnType<typeof useAiStore>
 }
 
-export const state = reactive({
-  tree: [] as TreeNode[],
-  expanded: new Set<string>(),
-  treeFilter: '',
-  favoriteOnly: false,
+/** 惰性取全部 store（Pinia 未装时会抛出，提示信息足够明确） */
+let cached: Stores | null = null
 
-  activeKey: '' as string,
-  activeDocId: null as number | null,
-  /** 打开文档后需要聚焦到的来源文档（阅读区据此滚动到该分P 的第一条字幕） */
-  focusDocId: null as number | null,
-  /** 需要精确聚焦到某一条（全库检索跳转用；为 null 时只定位到该分P 的第一条） */
-  focusCueIndex: null as number | null,
-  /** 每次点击都自增：即使重复点同一个分P 也能重新触发跳转 */
-  focusNonce: 0,
-  doc: null as SubtitleDoc | null,
-  /** 当前视频下的全部字幕文档（多P 合并阅读时用） */
-  docs: [] as SubtitleDoc[],
-  video: null as (VideoItem & { uploaderName?: string }) | null,
-  cues: [] as MergedCue[],
+function stores(): Stores {
+  if (!cached) {
+    try {
+      cached = {
+        ui: useUiStore(),
+        settings: useSettingsStore(),
+        resource: useResourceStore(),
+        subtitle: useSubtitleStore(),
+        clip: useClipStore(),
+        search: useSearchStore(),
+        semantic: useSemanticStore(),
+        ai: useAiStore()
+      }
+    } catch (err) {
+      throw new Error(
+        'store 尚未初始化：请在 createApp 后调用 installPinia()（详见 main.ts）。' +
+          `原始错误：${(err as Error).message}`
+      )
+    }
+  }
+  return cached
+}
 
-  selected: new Set<number>(),
-  anchor: null as number | null,
-  cursor: 1,
+/** `installPinia()` 里调用：清掉缓存，让下次访问重新解析到新 Pinia */
+export function resetStoreCache(): void {
+  cached = null
+}
 
-  keyword: '',
-  maxGap: 0.5,
+/* ------------------------------ 状态转发（Proxy） ---------------------------- */
 
-  clips: [] as ClipTask[],
-  settings: null as AppSettings | null,
-  view: 'library' as 'library' | 'search' | 'settings',
-  loading: false,
-  bridge: null as BridgeStatus | null,
+/**
+ * 门面状态的可写键 → 落到哪个 store 的哪个字段。
+ *
+ * 这份表就是「哪些状态被门面暴露」的**唯一事实来源**：
+ * 漏一个键组件里读到的就是 undefined，会比类型错误更早暴露出来。
+ */
+const STATE_ROUTES = {
+  /* 界面 */
+  view: ['ui', 'view'],
+  loading: ['ui', 'loading'],
+  bridge: ['ui', 'bridge'],
+  pendingCollection: ['ui', 'pendingCollection'],
+  pluginPull: ['ui', 'pluginPull'],
+  sliceRunning: ['ui', 'sliceRunning'],
+  sliceProgress: ['ui', 'sliceProgress'],
+  sliceResult: ['ui', 'sliceResult'],
+  toast: ['ui', 'toast'],
+
+  /* 设置 */
+  settings: ['settings', 'settings'],
+
+  /* 资源库 */
+  tree: ['resource', 'tree'],
+  expanded: ['resource', 'expanded'],
+  activeKey: ['resource', 'activeKey'],
+  lastDeleted: ['resource', 'lastDeleted'],
+  lastDeletedLabel: ['resource', 'lastDeletedLabel'],
+
+  /* 字幕 */
+  activeDocId: ['subtitle', 'activeDocId'],
+  doc: ['subtitle', 'doc'],
+  docs: ['subtitle', 'docs'],
+  video: ['subtitle', 'video'],
+  cues: ['subtitle', 'cues'],
+  focusDocId: ['subtitle', 'focusDocId'],
+  focusCueIndex: ['subtitle', 'focusCueIndex'],
+  focusNonce: ['subtitle', 'focusNonce'],
+  editRequest: ['subtitle', 'editNonce'],
+  selected: ['subtitle', 'selected'],
+  anchor: ['subtitle', 'anchor'],
+  cursor: ['subtitle', 'cursor'],
+  keyword: ['subtitle', 'keyword'],
+  maxGap: ['subtitle', 'maxGap'],
+  siblingDocs: ['subtitle', 'siblingDocs'],
+  compareDocId: ['subtitle', 'compareDocId'],
+  comparePage: ['subtitle', 'comparePage'],
+  compareCues: ['subtitle', 'compareCues'],
+
+  /* 切片 */
+  clips: ['clip', 'clips'],
+  sliceHistory: ['clip', 'history'],
+  ffmpegReady: ['clip', 'ffmpegReady'],
+  ffmpegPath: ['clip', 'ffmpegPath'],
 
   /* 全库检索 */
-  searchKeyword: '',
-  /** 检索范围：全部 / 当前视频 / 当前分组（合集或「单视频」） */
-  searchScope: 'all' as 'all' | 'video' | 'collection',
-  searchResults: [] as CueSearchHit[],
-  /** 用 `${docId}:${index}` 作 key，避免跨文档时序号撞车 */
-  searchSelected: new Set<string>(),
-  searching: false,
-  /* 双语对照 */
-  /** 同一视频的全部字幕轨（含不同语言） */
-  siblingDocs: [] as SubtitleDoc[],
-  /** 对照轨的 docId；为 null 表示未开启对照 */
-  compareDocId: null as number | null,
-  /** 对照轨属于哪个分P（对照只在同一分P 内有意义） */
-  comparePage: null as number | null,
-  /** 对照轨的正文 */
-  compareCues: [] as Cue[],
+  searchKeyword: ['search', 'keyword'],
+  searchScope: ['search', 'scope'],
+  searchResults: ['search', 'results'],
+  searchSelected: ['search', 'selected'],
+  searching: ['search', 'searching'],
+  searchDone: ['search', 'done'],
+  searchNotePrefix: ['search', 'notePrefix']
+} as const
 
-  /** 是否已经搜过一次（用于区分「还没搜」和「没结果」） */
-  searchDone: false,
-  searchNotePrefix: '检索',
+type StateKey = keyof typeof STATE_ROUTES
 
-  /* 插件联动 */
+/**
+ * 门面状态对象。
+ *
+ * `reactive()` 不能直接包 Pinia store（拿不到属性级转发），所以用 Proxy 转发。
+ * 读取走 store 的当前值，写入落到对应 store —— 组件里 `state.tree = xxx` 才会生效。
+ */
+export const state = new Proxy({} as Record<StateKey, unknown>, {
+  get(_t, key: string | symbol): unknown {
+    if (typeof key !== 'string') return undefined
+    const route = STATE_ROUTES[key as StateKey]
+    if (!route) return undefined
+    const [name, field] = route
+    return (stores()[name] as unknown as Record<string, unknown>)[field]
+  },
+  set(_t, key: string | symbol, value: unknown): boolean {
+    const route = STATE_ROUTES[key as StateKey]
+    if (!route) {
+      throw new Error(`[store] 未知的状态字段：${String(key)}（请同步更新 STATE_ROUTES）`)
+    }
+    const [name, field] = route
+    ;(stores()[name] as unknown as Record<string, unknown>)[field] = value
+    return true
+  },
+  has(_t, key: string | symbol): boolean {
+    return typeof key === 'string' && key in STATE_ROUTES
+  }
+}) as unknown as AppState
+
+/** 门面暴露的状态类型（与拆分前的 `state` 形状一致） */
+export interface AppState {
   /**
-   * 插件浏览到合集 / 收藏夹时待用户确认的批量拉取。
-   * App.vue 看到它就打开预填好的「拉取字幕」对话框。
+   * 当前主视图。
+   *
+   * ⚠️ 这里要和 `stores/ui.ts` 的 `AppView` **保持一致** ——
+   * 加一级导航项时容易只改 store 忘了改门面，症状是
+   * `state.view === 'xxx'` 报「类型没有重叠」（类型系统会拦住，实测踩到过）。
    */
-  pendingCollection: null as {
+  view: import('./stores/ui').AppView
+  loading: boolean
+  bridge: import('@shared/bridge').BridgeStatus | null
+  pendingCollection: {
     pageType: string
     seasonId: number | null
     uid: number | null
     title: string
     url: string
-  } | null,
-  /** 插件请求拉取时的进度（用于顶部提示） */
-  pluginPull: null as PullProgressInfo | null,
+  } | null
+  pluginPull: import('@shared/types').PullProgressInfo | null
+  sliceRunning: boolean
+  sliceProgress: import('@shared/types').SliceProgressInfo | null
+  sliceResult: { ok: number; failed: number; outputs: string[]; messages: string[] } | null
+  toast: { text: string; type: 'info' | 'error' | 'success'; visible: boolean; timer: number | null }
 
-  /* 本地切片 */
-  ffmpegReady: false,
-  ffmpegPath: '',
-  sliceRunning: false,
-  sliceProgress: null as SliceProgressInfo | null,
-  /** 切片历史（最近 200 条），用于查失败与一键重试 */
-  sliceHistory: [] as SliceHistoryEntry[],
-  sliceResult: null as { ok: number; failed: number; outputs: string[]; messages: string[] } | null,
+  settings: AppSettings | null
 
-  toast: { text: '', type: 'info', visible: false, timer: null } as ToastState
-})
+  tree: TreeNode[]
+  expanded: Set<string>
+  activeKey: string
+  lastDeleted: unknown
+  lastDeletedLabel: string
+
+  activeDocId: number | null
+  doc: SubtitleDoc | null
+  docs: SubtitleDoc[]
+  video: (VideoItem & { uploaderName?: string }) | null
+  cues: MergedCue[]
+  focusDocId: number | null
+  focusCueIndex: number | null
+  focusNonce: number
+  editRequest: number
+  selected: Set<number>
+  anchor: number | null
+  cursor: number
+  keyword: string
+  maxGap: number
+  siblingDocs: SubtitleDoc[]
+  compareDocId: number | null
+  comparePage: number | null
+  compareCues: Cue[]
+
+  clips: ClipTask[]
+  sliceHistory: SliceHistoryEntry[]
+  ffmpegReady: boolean
+  ffmpegPath: string
+
+  searchKeyword: string
+  searchScope: 'all' | 'video' | 'collection'
+  searchResults: CueSearchHit[]
+  searchSelected: Set<string>
+  searching: boolean
+  searchDone: boolean
+  searchNotePrefix: string
+
+  [key: string]: unknown
+}
 
 /* --------------------------------- 计算属性 -------------------------------- */
 
-export const matchedIndexes = computed<number[]>(() => {
-  const kw = state.keyword.trim().toLowerCase()
-  if (!kw) return []
-  return state.cues
-    .filter((c) => c.text.toLowerCase().includes(kw) || String(c.index) === kw)
-    .map((c) => c.index)
-})
+export const matchedIndexes = computed<number[]>(() => stores().subtitle.matchedIndexes)
 
-export const ranges = computed<TimeRange[]>(() =>
-  buildRanges(state.cues, state.selected, state.maxGap)
-)
+export const ranges = computed<TimeRange[]>(() => stores().subtitle.ranges)
 
-export const selectedCues = computed(() => state.cues.filter((c) => state.selected.has(c.index)))
+export const selectedCues = computed<MergedCue[]>(() => stores().subtitle.selectedCues)
+
+export const searchSelectedHits = computed<CueSearchHit[]>(() => stores().search.selectedHits)
+
+export const lastDeletedLabel = computed<string>(() => stores().resource.lastDeletedLabel)
+
+export const undoDepth = computed<number>(() => stores().subtitle.undoDepth)
+export const undoLabel = computed<string>(() => stores().subtitle.undoLabel)
+export const redoDepth = computed<number>(() => stores().subtitle.redoDepth)
+export const redoLabel = computed<string>(() => stores().subtitle.redoLabel)
+
+/** 编辑请求信号：组件 watch 它进入编辑态 */
+export const editRequest = computed<number>(() => stores().subtitle.editNonce)
 
 /* ---------------------------------- 工具 ---------------------------------- */
 
-export function toast(text: string, type: ToastState['type'] = 'info', duration = 2600): void {
-  const t = state.toast
-  if (t.timer) window.clearTimeout(t.timer)
-  t.text = text
-  t.type = type
-  t.visible = true
-  t.timer = window.setTimeout(() => {
-    t.visible = false
-    t.timer = null
-  }, duration)
+export function toast(text: string, type: 'info' | 'error' | 'success' = 'info', duration = 2600): void {
+  stores().ui.showToast(text, type, duration)
 }
 
 export function applyTheme(theme: AppSettings['theme']): void {
-  const root = document.documentElement
-  let effective = theme
-  if (theme === 'system') {
-    effective = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
-  }
-  root.setAttribute('data-theme', effective)
-  if (state.settings) {
-    root.style.setProperty('--font-family', state.settings.fontFamily || '')
-    root.style.setProperty('font-size', `${state.settings.fontSize}px`)
-  }
+  stores().settings.applyTheme(theme)
 }
 
 export function applyReadingStyle(): void {
-  const s = state.settings
-  if (!s) return
-  document.documentElement.style.setProperty('--line-height', String(s.lineHeight))
-  document.documentElement.style.setProperty('--font-size', `${s.fontSize}px`)
-  document.body.style.fontSize = `${s.fontSize}px`
+  stores().settings.applyReadingStyle()
 }
 
-/* ---------------------------------- 加载 ---------------------------------- */
+/* ---------------------------------- 启动 ---------------------------------- */
 
 export async function initApp(): Promise<void> {
-  state.settings = await window.api.getSettings()
-  applyTheme(state.settings.theme)
-  applyReadingStyle()
-  setupBridgeListeners()
-  window.api.onSliceProgress((p) => {
-    state.sliceProgress = p
-  })
-  await loadTree()
-  await loadClips()
-  await loadSliceHistory()
+  const s = stores()
+  await s.settings.load()
+  s.settings.applyTheme()
+  s.settings.applyReadingStyle()
+  // IPC → store / 总线的桥接只注册一次（内部幂等）
+  setupIpcEvents()
+  // store 之间的联动（字幕选择 → 播放器跟随）也在这里接上
+  setupBusWiring()
+  await s.resource.load()
+  await s.clip.loadClips()
+  await s.clip.loadHistory()
   await loadBridgeStatus()
-  await refreshSliceCheck()
+  await s.clip.refreshCheck()
+  // AI 状态（第六阶段）：启动时探一次，右侧面板才能正确显示「已连接 / 未启用」。
+  // 不 await：探测要打网络，失败也不该拖慢启动。
+  void s.ai.probe()
+  void s.semantic.refresh()
 }
 
 /* ------------------------------ 浏览器插件通信 ----------------------------- */
 
-/**
- * 已经自动询问过的合集（key = 类型:合集id:uid）。
- *
- * 用户在合集里翻分P 时页面会反复变化、反复上报同一个合集，
- * 不去重的话对话框会一直弹。
- */
-const askedCollections = new Set<string>()
-
 export async function loadBridgeStatus(): Promise<void> {
+  const s = stores()
   try {
-    state.bridge = await window.api.bridgeStatus()
+    s.ui.setBridge(await window.api.bridgeStatus())
   } catch {
-    state.bridge = null
+    s.ui.setBridge(null)
   }
 }
 
 export async function restartBridge(port?: number): Promise<void> {
-  state.bridge = await window.api.bridgeRestart(port)
-  toast(
-    state.bridge.running ? `本地服务已启动，端口 ${state.bridge.port}` : '本地服务启动失败',
-    state.bridge.running ? 'success' : 'error'
+  const s = stores()
+  const status = await window.api.bridgeRestart(port)
+  s.ui.setBridge(status)
+  s.ui.showToast(
+    status.running ? `本地服务已启动，端口 ${status.port}` : '本地服务启动失败',
+    status.running ? 'success' : 'error'
   )
-}
-
-function setupBridgeListeners(): void {
-  window.api.onBridgeStatus((s) => {
-    state.bridge = s
-  })
-
-  window.api.onBridgePageInfo(({ info, videoId, message }) => {
-    if (videoId) {
-      toast(`插件已同步：${info.title || info.bvid}`, 'success')
-      // 展开到刚同步的视频，但不影响其它已展开的分支
-      void loadTree(`video:${videoId}`)
-    } else {
-      // 合集页 / 收藏夹 / 投稿页没有具体视频，不再因此建出空条目
-      toast(message || '该页面没有可同步的视频', 'info', 4200)
-      void loadTree()
-    }
-  })
-
-  window.api.onBridgeSubtitle((p) => {
-    if (!p.ok) {
-      toast(
-        `插件推送的字幕为空或缺少 BV 号：${p.bvid || '(无 BV 号)'} P${p.page}`,
-        'error',
-        4200
-      )
-      void loadTree()
-      return
-    }
-    const action = p.created ? '已导入' : '已更新'
-    const where = p.unlinked
-      ? '，暂时归入「未关联」，同步页面信息后会自动归位'
-      : p.title
-        ? ` → ${p.title}`
-        : ''
-    toast(
-      `插件${action}字幕：${p.label}（${p.count} 条）${where}`,
-      p.unlinked ? 'info' : 'success',
-      p.unlinked ? 5200 : 4000
-    )
-    void loadTree()
-  })
-
-  window.api.onBridgeLog(({ level, message }) => {
-    if (level === 'error' || level === 'warn') toast(message, 'error', 4200)
-  })
-
-  /* ---------------- 插件浏览到合集 / 收藏夹：问用户是否批量拉取 ---------------- */
-
-  window.api.onBridgeCollection((hint) => {
-    if (!hint?.url) return
-    // 同一个合集只自动问一次：用户在合集里翻分P 时会反复触发页面变化
-    const key = `${hint.pageType}:${hint.seasonId ?? ''}:${hint.uid ?? ''}`
-    if (askedCollections.has(key)) return
-    askedCollections.add(key)
-
-    state.pendingCollection = { ...hint }
-    toast(
-      `插件检测到${hint.pageType === 'favlist' ? '收藏夹' : hint.pageType === 'space' ? 'UP主投稿页' : '合集'}，已列出可拉取的视频`,
-      'info',
-      5200
-    )
-  })
-
-  /* -------------------- 插件请求拉取某视频字幕（全部分P） -------------------- */
-
-  window.api.onBridgePullProgress((p) => {
-    state.pluginPull = p
-  })
-
-  window.api.onBridgePull((p) => {
-    state.pluginPull = null
-    if (!p.ok) {
-      if (p.needCookie) {
-        toast(p.message || '桌面端缺少 B站登录状态', 'error', 8000)
-      } else {
-        toast(p.message || '拉取失败', 'error', 6000)
-      }
-      return
-    }
-    void loadTree()
-    const { docs = 0, updated = 0, failed = 0, skipped = 0, videos = 0 } = p
-    const parts: string[] = []
-    if (docs) parts.push(`新增 ${docs} 条`)
-    if (updated) parts.push(`更新 ${updated} 条`)
-    if (skipped) parts.push(`${skipped} 个已齐全跳过`)
-    if (failed) parts.push(`${failed} 个失败`)
-    toast(
-      parts.length
-        ? `插件请求拉取完成：${parts.join('，')}（${videos} 个视频）`
-        : '没有拉到新字幕，本地可能已是最新',
-      docs + updated > 0 ? 'success' : 'info',
-      5600
-    )
-    if (p.messages?.length) toast(p.messages.slice(0, 2).join('\n'), 'error', 7000)
-  })
-
-  window.api.onDataWarning(({ message }) => {
-    toast(message, 'error', 8000)
-  })
-
-  window.api.onBridgeCookies((p) => {
-    if (p.ok) {
-      toast(
-        `已从浏览器同步登录状态${p.userName ? `（${p.userName}）` : ''}，现在可直接拉取字幕`,
-        'success',
-        4600
-      )
-      void refreshSettings()
-      void loadBridgeStatus()
-    } else {
-      toast(`登录状态同步失败：${p.message ?? '未知原因'}`, 'error', 4600)
-    }
-  })
 }
 
 /** 重新拉取设置（例如插件刚同步了 Cookie） */
 export async function refreshSettings(): Promise<void> {
-  state.settings = await window.api.getSettings()
+  await stores().settings.load()
 }
 
-/** 找出从根到某个节点的整条路径 */
-function findPath(nodes: TreeNode[], key: string, path: string[] = []): string[] | null {
-  for (const n of nodes) {
-    const next = [...path, n.key]
-    if (n.key === key) return next
-    if (n.children?.length) {
-      const found = findPath(n.children, key, next)
-      if (found) return found
-    }
-  }
-  return null
-}
+/* -------------------------------- 资源库 ---------------------------------- */
 
-/** 展开到指定节点（只追加，不收起已经展开的分支） */
 export function expandTo(key: string): void {
-  const path = findPath(state.tree, key)
-  if (path) for (const k of path) state.expanded.add(k)
+  stores().resource.expandTo(key)
 }
 
-/**
- * 刷新资源树。
- * 已展开的分支会保留（不会因为刷新而收起），可选地展开到指定节点。
- */
 export async function loadTree(expandKey?: string): Promise<void> {
-  state.tree = await window.api.listTree()
-  // 首次加载时默认展开第一层
-  if (state.expanded.size === 0) {
-    for (const n of state.tree) state.expanded.add(n.key)
-  }
-  if (expandKey) expandTo(expandKey)
+  await stores().resource.load(expandKey)
 }
 
-export async function loadClips(): Promise<void> {
-  state.clips = await window.api.listClips()
+export async function deleteTreeNode(key: string, label: string): Promise<void> {
+  const s = stores()
+  await s.resource.deleteNode(key, label)
+  s.ui.showToast(`已删除「${label}」，可用左侧的「撤销删除」恢复`, 'success', 4600)
 }
 
-/**
- * 打开字幕文档。
- * 会把同一视频的所有分P 字幕合并成一个连续列表，便于连续阅读与跨P 切片。
- *
- * @param focusOrigIndex 需要精确跳到的那一条（全库检索用），不传则定位到该分P 的第一条
- */
-export async function openDoc(docId: number, key = '', focusOrigIndex?: number): Promise<void> {
-  state.loading = true
-  try {
-    const merged = await window.api.loadMerged(docId)
-    if (!merged) {
-      toast('字幕不存在', 'error')
-      return
-    }
-    state.activeDocId = docId
-    state.doc = merged.doc as SubtitleDoc
-    state.video = merged.video
-    state.docs = merged.docs as SubtitleDoc[]
-    state.cues = merged.cues as MergedCue[]
-    state.selected = new Set<number>()
-    state.anchor = null
-    // 光标落在该分P 的第一条上；阅读区渲染后会把这一条对齐到阅读条
-    const firstOfDoc = state.cues.findIndex((c) => c.docId === docId)
-    state.cursor = firstOfDoc >= 0 ? state.cues[firstOfDoc].index : 1
-    state.focusDocId = docId
-    state.focusCueIndex = focusOrigIndex ?? null
-    state.focusNonce++
-    if (key) state.activeKey = key
-    state.view = 'library'
-    // 换文档了，对照轨要跟着重算（不在同一视频里就自动关掉）
-    await loadSiblingDocs()
-  } finally {
-    state.loading = false
-  }
+export async function undoDelete(): Promise<void> {
+  await stores().resource.undoDelete()
 }
 
-/* ---------------------------------- 选择 ---------------------------------- */
+/* --------------------------------- 字幕 ---------------------------------- */
+
+export async function openDoc(
+  docId: number,
+  key = '',
+  focusOrigIndex?: number
+): Promise<void> {
+  const s = stores()
+  await s.subtitle.open(docId, focusOrigIndex)
+  if (key) s.resource.activeKey = key
+}
+
+export async function reloadActiveDoc(): Promise<void> {
+  await stores().subtitle.reload()
+}
 
 export function toggleSelect(index: number, shift = false): void {
-  if (shift && state.anchor !== null) {
-    const from = Math.min(state.anchor, index)
-    const to = Math.max(state.anchor, index)
-    const on = !state.selected.has(index)
-    for (let i = from; i <= to; i++) {
-      if (on) state.selected.add(i)
-      else state.selected.delete(i)
-    }
-  } else {
-    if (state.selected.has(index)) state.selected.delete(index)
-    else state.selected.add(index)
-    state.anchor = index
-  }
-  state.cursor = index
+  stores().subtitle.toggleSelect(index, shift)
 }
 
 export function selectAll(): void {
-  for (const c of state.cues) state.selected.add(c.index)
+  stores().subtitle.selectAll()
 }
 
 export function clearSelection(): void {
-  state.selected = new Set<number>()
-  state.anchor = null
+  stores().subtitle.clearSelection()
 }
 
 export function invertSelection(): void {
-  const next = new Set<number>()
-  for (const c of state.cues) if (!state.selected.has(c.index)) next.add(c.index)
-  state.selected = next
+  stores().subtitle.invertSelection()
 }
 
-/** 选中当前搜索结果 */
 export function selectMatches(): void {
-  for (const i of matchedIndexes.value) state.selected.add(i)
+  stores().subtitle.selectMatches()
 }
 
 export function moveCursor(delta: number, extend = false): void {
-  if (!state.cues.length) return
-  const idx = state.cues.findIndex((c) => c.index === state.cursor)
-  const nextIdx = Math.max(0, Math.min(state.cues.length - 1, (idx < 0 ? 0 : idx) + delta))
-  const target = state.cues[nextIdx]
-  if (!target) return
-  if (extend) {
-    if (state.anchor === null) state.anchor = state.cursor
-    toggleSelect(target.index, true)
-  }
-  state.cursor = target.index
+  stores().subtitle.moveCursor(delta, extend)
 }
 
-/**
- * 滚动定位委托给字幕列表组件。
- * 虚拟滚动下目标行可能尚未渲染，不能直接 querySelector。
- */
-let scroller: ((index: number) => void) | null = null
-
 export function registerScroller(fn: ((index: number) => void) | null): void {
-  scroller = fn
+  stores().subtitle.registerScroller(fn)
 }
 
 export function scrollToCursor(): void {
-  scroller?.(state.cursor)
+  stores().subtitle.scrollToCursor()
 }
-
-/** 请求进入第 cursor 条的编辑态（由快捷键触发，组件监听） */
-export const editRequest = ref(0)
 
 export function requestEditCurrent(): void {
-  if (!state.cues.length) return
-  editRequest.value++
+  stores().subtitle.requestEditCurrent()
 }
 
-/* --------------------------------- 切片任务 -------------------------------- */
-
-export async function enqueueCurrentRanges(notePrefix?: string): Promise<void> {
-  if (!state.doc || !state.video) {
-    toast('请先打开一个字幕文档', 'error')
-    return
-  }
-  if (!ranges.value.length) {
-    toast('还没有选中任何字幕', 'error')
-    return
-  }
-  const res = await window.api.addClips({
-    docId: state.doc.id,
-    bvid: state.video.bvid || '',
-    page: state.doc.page || 1,
-    ranges: ranges.value.map((r) => ({
-      start: r.start,
-      end: r.end,
-      segments: r.segments
-    })),
-    notePrefix: notePrefix || state.video.title || 'clip'
-  })
-  if (!res.ok) {
-    toast(res.message || '加入切片任务失败', 'error')
-    return
-  }
-  await loadClips()
-  toast(`已加入 ${res.data?.count ?? 0} 条切片任务`, 'success')
-}
-
-export async function exportSlice(format: 'csv' | 'xlsx'): Promise<void> {
-  if (!state.clips.length) {
-    toast('切片任务列表为空，请先加入任务', 'error')
-    return
-  }
-  const missing = state.clips.filter((t) => !t.bvid)
-  if (missing.length) {
-    toast(`有 ${missing.length} 条任务缺少 BV 号，切片工具可能无法处理`, 'error', 4200)
-  }
-
-  // 跨分P 的切片无法用单行表格表示，拆成多行输出
-  const rows: Array<{ bvid: string; page: number; start: number; end: number; note: string }> = []
-  let splitCount = 0
-  for (const t of state.clips) {
-    if (t.segments && t.segments.length > 1) {
-      splitCount++
-      t.segments.forEach((s, i) => {
-        rows.push({
-          bvid: t.bvid,
-          page: s.page,
-          start: s.start,
-          end: s.end,
-          note: `${t.note}_p${i + 1}`
-        })
-      })
-    } else {
-      rows.push({ bvid: t.bvid, page: t.page, start: t.start, end: t.end, note: t.note })
-    }
-  }
-
-  const res = await window.api.exportClips({ rows, format })
-  if (!res.ok || !res.data) {
-    toast(res.message || '导出失败', 'error')
-    return
-  }
-  toast(
-    `已导出：${res.data.path}${splitCount ? `（${splitCount} 条跨分P 切片已拆成多行）` : ''}`,
-    'success',
-    5600
-  )
-  await window.api.showItem(res.data.path)
-}
-
-/* --------------------------------- 本地切片 -------------------------------- */
-
-export async function refreshSliceCheck(): Promise<void> {
-  try {
-    const res = await window.api.sliceCheck()
-    state.ffmpegReady = res.available
-    state.ffmpegPath = res.ffmpeg
-  } catch {
-    state.ffmpegReady = false
-  }
-}
-
-/** 用当前切片任务列表在本机直接切片 */
-export async function startSlice(): Promise<void> {
-  if (state.sliceRunning) return
-  if (!state.clips.length) {
-    toast('切片任务列表为空', 'error')
-    return
-  }
-  if (!state.ffmpegReady) {
-    toast('未检测到 ffmpeg，请先在「设置 → 本地切片」中配置', 'error', 5200)
-    return
-  }
-
-  const usable = state.clips.filter((t) => t.bvid)
-  if (!usable.length) {
-    toast('所有任务都缺少 BV 号，无法切片', 'error', 5200)
-    return
-  }
-
-  state.sliceRunning = true
-  state.sliceProgress = null
-  state.sliceResult = null
-
-  try {
-    const res = await window.api.sliceRun(
-      usable.map((t) => ({
-        bvid: t.bvid,
-        page: t.page,
-        start: t.start,
-        end: t.end,
-        note: t.note,
-        segments: t.segments,
-        clipId: t.id
-      }))
-    )
-    if (!res.ok || !res.data) {
-      toast(res.message || '切片失败', 'error', 5200)
-      return
-    }
-    state.sliceResult = res.data
-    if (res.data.ok > 0) {
-      toast(
-        `切片完成：成功 ${res.data.ok} 个${res.data.failed ? `，失败 ${res.data.failed} 个` : ''}`,
-        'success',
-        5200
-      )
-    } else {
-      toast('没有生成任何切片', 'error', 5200)
-    }
-    if (res.data.messages.length) {
-      toast(res.data.messages.slice(0, 3).join('\n'), 'error', 7000)
-    }
-  } finally {
-    state.sliceRunning = false
-    state.sliceProgress = null
-    await loadSliceHistory()
-  }
-}
-
-/* ------------------------------- 切片任务管理 ------------------------------ */
-
-export async function loadSliceHistory(): Promise<void> {
-  state.sliceHistory = await window.api.listSliceHistory(200)
-}
-
-export async function moveClip(id: number, dir: -1 | 1): Promise<void> {
-  state.clips = await window.api.moveClip(id, dir)
-}
-
-export async function renameClip(id: number, note: string): Promise<void> {
-  state.clips = await window.api.renameClip(id, note)
-}
-
-export async function exportClipsJson(): Promise<void> {
-  const res = await window.api.exportClipsJson()
-  if (!res.ok || !res.data) {
-    if (res.message !== '已取消') toast(res.message || '导出失败', 'error')
-    return
-  }
-  toast(`已导出 ${res.data.count} 条任务：${res.data.path}`, 'success', 5600)
-}
-
-export async function importClipsJson(): Promise<void> {
-  const res = await window.api.importClipsJson()
-  if (!res.ok || !res.data) {
-    if (res.message !== '已取消') toast(res.message || '导入失败', 'error', 5200)
-    return
-  }
-  await loadClips()
-  toast(
-    `已导入 ${res.data.count} 条任务${res.data.warnings.length ? `（跳过 ${res.data.warnings.length} 条）` : ''}`,
-    'success',
-    5600
-  )
-  if (res.data.warnings.length) {
-    toast(res.data.warnings.slice(0, 3).join('\n'), 'error', 7000)
-  }
-}
-
-export function clearSliceHistory(): Promise<void> {
-  return window.api.clearSliceHistory().then(() => {
-    state.sliceHistory = []
-  })
-}
-
-/**
- * 把失败（或被取消）的切片重新加回任务列表。
- * 这是「跑 20 条挂了 3 条」时最省事的补救方式：不用回去重新勾字幕。
- */
-export async function retryFailedSlices(): Promise<void> {
-  const failed = state.sliceHistory.filter((h) => h.status !== 'ok')
-  if (!failed.length) {
-    toast('没有失败的任务需要重试', 'info')
-    return
-  }
-  // 逐条带自己的 bvid / 分P，所以走 addClipsFromSearch 那条通道
-  //（clips:add 是「一个文档 + 多个时间范围」，这里恰好相反）
-  const added = await window.api.addClipsFromSearch({
-    hits: failed.map((h) => ({
-      docId: 0,
-      bvid: h.bvid,
-      page: h.page,
-      start: h.start,
-      end: h.end,
-      text: h.note,
-      videoTitle: h.note
-    })),
-    notePrefix: '重试'
-  })
-  if (!added.ok) {
-    toast(added.message || '重试失败', 'error')
-    return
-  }
-  await loadClips()
-  toast(`已把 ${added.data?.count ?? 0} 条失败任务重新加入列表`, 'success', 5200)
-}
-
-export async function cancelSlice(): Promise<void> {
-  await window.api.sliceCancel()
-  toast('已请求取消切片', 'info')
-}
-
-export async function openSliceOutput(): Promise<void> {
-  const dir = state.settings?.sliceOutputDir?.trim() || state.settings?.outputDir || ''
-  if (!dir) {
-    toast('尚未设置输出目录', 'error')
-    return
-  }
-  const err = await window.api.openPath(dir)
-  if (err) toast(err, 'error', 4200)
-}
-
-/* -------------------------------- 双语对照 -------------------------------- */
-
-/**
- * 列出同一视频的全部字幕轨，供「对照」下拉选择。
- * 合并阅读每分P 只取一条轨，所以另一条语言不在 state.docs 里，必须单独查。
- */
 export async function loadSiblingDocs(): Promise<void> {
-  const id = state.doc?.id
-  state.siblingDocs = id == null ? [] : await window.api.listSiblingDocs(id)
-  // 当前对照轨已不在这个视频里（比如换视频了）就自动关掉
-  if (state.compareDocId != null && !state.siblingDocs.some((d) => d.id === state.compareDocId)) {
-    state.compareDocId = null
-    state.comparePage = null
-    state.compareCues = []
-  }
+  await stores().subtitle.loadSiblingDocs()
 }
 
-/** 开启 / 关闭对照，或换一条对照轨 */
 export async function setCompareDoc(docId: number | null): Promise<void> {
-  if (docId == null) {
-    state.compareDocId = null
-    state.comparePage = null
-    state.compareCues = []
-    return
-  }
-  const doc = state.siblingDocs.find((d) => d.id === docId)
-  state.compareDocId = docId
-  state.comparePage = doc?.page ?? null
-  state.compareCues = (await window.api.getCues(docId)) as Cue[]
+  await stores().subtitle.setCompareDoc(docId)
 }
 
-/**
- * 找出与某条合并字幕对应的对照文本。
- *
- * 前提是「同一分P」—— 拿 P1 的中文去对 P2 的英文没有意义，所以分P 不同直接返回空。
- * 优先按相同原始序号匹配（翻译轨通常与原文轨一一对应）；
- * 对不上时退化为时间重叠最多的那条。
- */
 export function compareTextFor(cue: MergedCue): string {
-  if (!state.compareCues.length || state.comparePage == null) return ''
-  if (state.comparePage !== cue.page) return ''
-
-  const exact = state.compareCues.find((c) => c.index === cue.origIndex)
-  if (exact) return exact.text
-
-  let best = ''
-  let bestScore = -1
-  for (const c of state.compareCues) {
-    const overlap = Math.min(cue.end, c.end) - Math.max(cue.start, c.start)
-    if (overlap > bestScore) {
-      bestScore = overlap
-      best = c.text
-    }
-  }
-  return bestScore > 0 ? best : ''
+  return stores().subtitle.compareTextFor(cue)
 }
 
-/* -------------------------------- 拖拽导入 -------------------------------- */
-
-/**
- * 把拖进窗口的字幕文件导入资源库。
- * 路径校验在主进程做（只认 .srt/.vtt/.txt 且真实存在），这里只负责提示与刷新。
- */
-export async function importDroppedSrt(paths: string[]): Promise<void> {
-  const res = await window.api.importDroppedSrt(paths)
-  if (!res.ok || !res.data) {
-    toast(res.message || '导入失败', 'error', 5200)
-    return
-  }
-  await loadTree()
-  const { imported, updated, failures } = res.data
-  toast(
-    `已导入 ${imported} 个，更新 ${updated} 个${failures.length ? `，跳过 ${failures.length} 个` : ''}`,
-    'success',
-    5200
-  )
-  if (failures.length) toast(failures.slice(0, 3).join('\n'), 'error', 7000)
-}
-
-/* ------------------------------ 删除与撤销删除 ------------------------------ */
-
-/**
- * 最近一次删除的快照。
- *
- * ⚠️ **刻意放在响应式状态之外**：`reactive` 会把嵌套对象包成 Proxy，
- * 而 Proxy 无法通过 IPC 的结构化克隆（会静默失败或抛错），撤销就写不回去了。
- * 界面上只需要一个标签，所以用普通变量 + 一个 ref 标签。
- */
-let lastDeletedSnapshot: unknown = null
-
-/** 供界面显示「撤销删除」按钮 */
-export const lastDeletedLabel = ref('')
-
-/** 删除节点；把返回的快照留一份，之后可以整棵恢复 */
-export async function deleteTreeNode(key: string, label: string): Promise<void> {
-  const res = await window.api.deleteNode(key)
-  state.tree = res.tree
-  lastDeletedSnapshot = res.snapshot
-  lastDeletedLabel.value = label
-
-  // 当前打开的字幕被删掉时清空阅读区
-  const stillThere = JSON.stringify(state.tree).includes(`"doc:${state.activeDocId}"`)
-  if (state.activeDocId != null && !stillThere) {
-    state.activeDocId = null
-    state.doc = null
-    state.docs = []
-    state.cues = []
-    state.selected = new Set<number>()
-  }
-  toast(`已删除「${label}」，可用左侧的「撤销删除」恢复`, 'success', 4600)
-}
-
-/** 撤销最近一次删除（按原 id 写回整棵子树） */
-export async function undoDelete(): Promise<void> {
-  if (!lastDeletedSnapshot) {
-    toast('没有可恢复的删除', 'info')
-    return
-  }
-  const label = lastDeletedLabel.value
-  state.tree = await window.api.restoreNode(lastDeletedSnapshot)
-  lastDeletedSnapshot = null
-  lastDeletedLabel.value = ''
-  toast(`已恢复「${label}」`, 'success')
-}
-
-/* -------------------------------- 编辑撤销 -------------------------------- */
-
-interface UndoEntry {
-  docId: number
-  label: string
-  cues: Cue[]
-}
-
-/** 内存里的编辑撤销栈（最多 20 步，关掉应用即清空） */
-const undoStack: UndoEntry[] = []
-/** 重做栈：撤销时把「撤销前的状态」压进来 */
-const redoStack: UndoEntry[] = []
-
-export const undoDepth = ref(0)
-export const undoLabel = ref('')
-export const redoDepth = ref(0)
-export const redoLabel = ref('')
-
-function syncUndoState(): void {
-  undoDepth.value = undoStack.length
-  undoLabel.value = undoStack.length ? undoStack[undoStack.length - 1].label : ''
-  redoDepth.value = redoStack.length
-  redoLabel.value = redoStack.length ? redoStack[redoStack.length - 1].label : ''
-}
-
-/**
- * 在破坏性编辑之前记一份快照。
- * 快照取的是**该文档自己的字幕**（不是合并列表），因此还原时直接写回即可。
- *
- * 新编辑一旦发生，重做链就断了（这是撤销/重做的通用语义）。
- */
 export async function pushUndo(docId: number, label: string): Promise<void> {
-  try {
-    const cues = await window.api.getCues(docId)
-    undoStack.push({ docId, label, cues })
-    while (undoStack.length > 20) undoStack.shift()
-  } catch {
-    /* 拿不到快照就不记，不影响编辑本身 */
-  }
-  redoStack.length = 0
-  syncUndoState()
-}
-
-/** 重新加载当前打开的文档（编辑/撤销后刷新阅读区） */
-export async function reloadActiveDoc(): Promise<void> {
-  const id = state.activeDocId
-  if (id == null) return
-  const merged = await window.api.loadMerged(id)
-  if (!merged) return
-  state.doc = merged.doc as SubtitleDoc
-  state.video = merged.video
-  state.docs = merged.docs as SubtitleDoc[]
-  state.cues = merged.cues as MergedCue[]
+  await stores().subtitle.pushUndo(docId, label)
 }
 
 export async function undoLastEdit(): Promise<void> {
-  const entry = undoStack.pop()
-  if (!entry) {
-    syncUndoState()
-    toast('没有可撤销的操作', 'info')
-    return
-  }
-  // 把「撤销前」的状态压进重做栈，才能再重做回来
-  try {
-    const current = await window.api.getCues(entry.docId)
-    redoStack.push({ docId: entry.docId, label: entry.label, cues: current })
-  } catch {
-    /* 拿不到当前状态就不支持重做这一步，撤销本身照做 */
-  }
-  await window.api.updateCues(entry.docId, entry.cues)
-  await reloadActiveDoc()
-  syncUndoState()
-  toast(`已撤销：${entry.label}`, 'success')
+  await stores().subtitle.undoLastEdit()
 }
 
 export async function redoLastEdit(): Promise<void> {
-  const entry = redoStack.pop()
-  if (!entry) {
-    syncUndoState()
-    toast('没有可重做的操作', 'info')
-    return
-  }
-  // 与撤销对称：把当前状态压回撤销栈
-  try {
-    const current = await window.api.getCues(entry.docId)
-    undoStack.push({ docId: entry.docId, label: entry.label, cues: current })
-  } catch {
-    /* 同上 */
-  }
-  await window.api.updateCues(entry.docId, entry.cues)
-  await reloadActiveDoc()
-  syncUndoState()
-  toast(`已重做：${entry.label}`, 'success')
+  await stores().subtitle.redoLastEdit()
 }
 
-/* ------------------------------ 字幕合并 / 拆分 ----------------------------- */
-
-/** 合并当前选中的若干条字幕（必须都在当前打开的文档里） */
 export async function mergeSelectedCues(): Promise<void> {
-  const docId = state.doc?.id
-  if (docId == null) {
-    toast('请先打开一个字幕文档', 'error')
-    return
-  }
-  const picked = state.cues.filter((c) => state.selected.has(c.index) && c.docId === docId)
-  if (picked.length < 2) {
-    toast('请先勾选同一分P 里至少 2 条字幕', 'error', 4600)
-    return
-  }
-  await pushUndo(docId, `合并 ${picked.length} 条字幕`)
-  const res = await window.api.mergeCues(
-    docId,
-    picked.map((c) => c.origIndex)
-  )
-  if (!res.ok) {
-    toast(res.message || '合并失败', 'error')
-    return
-  }
-  state.selected = new Set<number>()
-  await reloadActiveDoc()
-  toast(`已合并 ${res.data?.merged ?? 0} 条字幕`, 'success')
+  await stores().subtitle.mergeSelected()
 }
 
-/** 在某一条的内部时间点拆分它 */
 export async function splitCueAt(cue: MergedCue, atSecond: number): Promise<void> {
-  await pushUndo(cue.docId, `拆分第 ${cue.index} 条`)
-  const res = await window.api.splitCue(cue.docId, cue.origIndex, atSecond)
-  if (!res.ok) {
-    toast(res.message || '拆分失败', 'error', 4600)
-    return
-  }
-  await reloadActiveDoc()
-  toast(`已在 ${atSecond.toFixed(2)} 秒处拆分`, 'success')
+  await stores().subtitle.splitAt(cue, atSecond)
 }
 
 /* -------------------------------- 复制到剪贴板 ------------------------------- */
 
 /** 复制指定几条字幕的文本；不传就按当前选中（没选中则全部） */
 export async function copyCueTexts(cues?: MergedCue[]): Promise<void> {
+  const s = stores()
   const list =
     cues ??
-    (state.selected.size ? state.cues.filter((c) => state.selected.has(c.index)) : state.cues)
+    (s.subtitle.selected.size
+      ? s.subtitle.cues.filter((c) => s.subtitle.selected.has(c.index))
+      : s.subtitle.cues)
   const text = list
     .map((c) => c.text.trim())
     .filter(Boolean)
     .join('\n')
   if (!text) {
-    toast('没有可复制的内容', 'error')
+    s.ui.showToast('没有可复制的内容', 'error')
     return
   }
   await window.api.copyText(text)
-  toast(`已复制 ${list.length} 条字幕文本`, 'success')
+  s.ui.showToast(`已复制 ${list.length} 条字幕文本`, 'success')
 }
 
 export function copySelectedText(): Promise<void> {
@@ -986,15 +469,16 @@ export function copySelectedText(): Promise<void> {
  * 直接粘到浏览器就能跳到那一刻，比手抄时间方便得多。
  */
 export async function copyCueLink(cue?: MergedCue): Promise<void> {
-  const target = cue ?? state.cues.find((c) => c.index === state.cursor)
-  const video = state.video
+  const s = stores()
+  const target = cue ?? s.subtitle.cues.find((c) => c.index === s.subtitle.cursor)
+  const video = s.subtitle.video
   if (!video?.bvid || !target) {
-    toast('需要先打开一个带 BV 号的视频', 'error')
+    s.ui.showToast('需要先打开一个带 BV 号的视频', 'error')
     return
   }
   const url = `https://www.bilibili.com/video/${video.bvid}?p=${target.page}&t=${Math.max(0, Math.floor(target.start))}`
   await window.api.copyText(url)
-  toast(`已复制链接：${url}`, 'success', 4600)
+  s.ui.showToast(`已复制链接：${url}`, 'success', 4600)
 }
 
 export function copyTimestampLink(): Promise<void> {
@@ -1003,104 +487,137 @@ export function copyTimestampLink(): Promise<void> {
 
 /** 单独把某一条字幕加进切片任务（右键菜单用） */
 export async function enqueueSingleCue(cue: MergedCue): Promise<void> {
-  const res = await window.api.addClips({
-    docId: cue.docId,
-    bvid: state.video?.bvid ?? '',
-    page: cue.page,
-    ranges: [{ start: cue.start, end: cue.end }],
-    notePrefix: state.video?.title || 'clip'
-  })
-  if (!res.ok) {
-    toast(res.message || '加入切片任务失败', 'error')
+  await stores().clip.enqueueOne(cue.start, cue.end, cue.page, cue.docId)
+}
+
+/* -------------------------------- 切片任务 -------------------------------- */
+
+export async function loadClips(): Promise<void> {
+  await stores().clip.loadClips()
+}
+
+export async function enqueueCurrentRanges(notePrefix?: string): Promise<void> {
+  await stores().clip.enqueueCurrentRanges(notePrefix)
+}
+
+export async function exportSlice(format: 'csv' | 'xlsx'): Promise<void> {
+  await stores().clip.exportTable(format)
+}
+
+export async function loadSliceHistory(): Promise<void> {
+  await stores().clip.loadHistory()
+}
+
+export async function moveClip(id: number, dir: -1 | 1): Promise<void> {
+  await stores().clip.move(id, dir)
+}
+
+export async function renameClip(id: number, note: string): Promise<void> {
+  await stores().clip.rename(id, note)
+}
+
+/* ------------------------------ 片段（第三阶段） ----------------------------- */
+
+/** 改名：片段名称（与输出文件名分开） */
+export async function renameClipName(id: number, name: string): Promise<void> {
+  await stores().clip.renameName(id, name)
+}
+
+export async function toggleClipFavorite(id: number): Promise<void> {
+  await stores().clip.toggleFavorite(id)
+}
+
+export async function getClipTagIds(clipId: number): Promise<number[]> {
+  return stores().clip.getTagIds(clipId)
+}
+
+export async function setClipTags(clipId: number, tagIds: number[]): Promise<void> {
+  await stores().clip.setTags(clipId, tagIds)
+}
+
+export async function exportClipsJson(): Promise<void> {
+  await stores().clip.exportJson()
+}
+
+export async function importClipsJson(): Promise<void> {
+  await stores().clip.importJson()
+}
+
+export async function clearSliceHistory(): Promise<void> {
+  await stores().clip.clearHistory()
+}
+
+export async function retryFailedSlices(): Promise<void> {
+  await stores().clip.retryFailed()
+}
+
+export async function refreshSliceCheck(): Promise<void> {
+  await stores().clip.refreshCheck()
+}
+
+export async function startSlice(): Promise<void> {
+  await stores().clip.startSlice()
+}
+
+export async function cancelSlice(): Promise<void> {
+  await stores().clip.cancel()
+}
+
+export async function openSliceOutput(): Promise<void> {
+  await stores().clip.openOutputDir()
+}
+
+/* -------------------------------- 拖拽导入 -------------------------------- */
+
+/**
+ * 把拖进窗口的字幕文件导入资源库。
+ * 路径校验在主进程做（只认 .srt/.vtt/.txt 且真实存在），这里只负责提示与刷新。
+ */
+export async function importDroppedSrt(paths: string[]): Promise<void> {
+  const s = stores()
+  const res = await window.api.importDroppedSrt(paths)
+  if (!res.ok || !res.data) {
+    s.ui.showToast(res.message || '导入失败', 'error', 5200)
     return
   }
-  await loadClips()
-  toast('已加入 1 条切片任务', 'success')
+  await s.resource.load()
+  const { imported, updated, failures } = res.data
+  s.ui.showToast(
+    `已导入 ${imported} 个，更新 ${updated} 个${failures.length ? `，跳过 ${failures.length} 个` : ''}`,
+    'success',
+    5200
+  )
+  if (failures.length) s.ui.showToast(failures.slice(0, 3).join('\n'), 'error', 7000)
 }
 
 /* -------------------------------- 全库检索 -------------------------------- */
 
-/** 命中的稳定 key（跨文档时序号会重复，必须带上 docId） */
-export function searchHitKey(hit: CueSearchHit): string {
-  return `${hit.docId}:${hit.index}`
-}
+export const searchHitKey = hitKey
 
 export function openLibrarySearch(): void {
-  state.view = 'search'
+  stores().ui.view = 'search'
 }
 
-/** 按当前关键词与范围检索整个字幕库 */
 export async function runLibrarySearch(): Promise<void> {
-  const keyword = state.searchKeyword.trim()
-  if (!keyword) {
-    toast('请输入要检索的关键词', 'error')
-    return
-  }
-  state.searching = true
-  try {
-    // 范围只取自「当前打开的文档」，不需要额外查询
-    const scope: { videoId?: number; collectionId?: number } = {}
-    if (state.searchScope === 'video' && state.doc) {
-      scope.videoId = state.doc.videoId
-    } else if (state.searchScope === 'collection' && state.video?.collectionId != null) {
-      scope.collectionId = state.video.collectionId
-    }
-    state.searchResults = await window.api.searchLibrary({ keyword, limit: 500, ...scope })
-    state.searchSelected = new Set<string>()
-    state.searchDone = true
-  } finally {
-    state.searching = false
-  }
+  await stores().search.run()
 }
 
 export function toggleSearchHit(hit: CueSearchHit): void {
-  const key = searchHitKey(hit)
-  const next = new Set(state.searchSelected)
-  if (next.has(key)) next.delete(key)
-  else next.add(key)
-  state.searchSelected = next
+  stores().search.toggle(hit)
 }
 
 export function selectAllSearchHits(): void {
-  state.searchSelected = new Set(state.searchResults.map(searchHitKey))
+  stores().search.selectAll()
 }
 
 export function clearSearchHits(): void {
-  state.searchSelected = new Set<string>()
+  stores().search.clearSelected()
 }
 
-/** 点检索结果 → 打开对应文档并精确跳到那一条 */
 export async function openSearchHit(hit: CueSearchHit): Promise<void> {
-  await openDoc(hit.docId, `video:${hit.videoId}`, hit.index)
+  await stores().search.jump(hit)
 }
 
-export const searchSelectedHits = computed(() =>
-  state.searchResults.filter((h) => state.searchSelected.has(searchHitKey(h)))
-)
-
-/** 把选中的检索结果批量加入切片任务（每条命中 = 一个时间范围） */
 export async function enqueueSearchHits(): Promise<void> {
-  const hits = searchSelectedHits.value
-  if (!hits.length) {
-    toast('请先勾选要加入的检索结果', 'error')
-    return
-  }
-  const res = await window.api.addClipsFromSearch({
-    hits: hits.map((h) => ({
-      docId: h.docId,
-      bvid: h.bvid,
-      page: h.page,
-      start: h.start,
-      end: h.end,
-      text: h.text,
-      videoTitle: h.videoTitle
-    })),
-    notePrefix: state.searchNotePrefix || '检索'
-  })
-  if (!res.ok) {
-    toast(res.message || '加入切片任务失败', 'error')
-    return
-  }
-  await loadClips()
-  toast(`已加入 ${res.data?.count ?? 0} 条切片任务`, 'success')
+  await stores().search.enqueueSelected()
 }

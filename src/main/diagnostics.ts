@@ -19,8 +19,13 @@ export interface DiagnosticsInput {
   recentPluginEvents: unknown
 }
 
-/** 需要脱敏的字段：只报告是否配置与长度，不写内容 */
-const SECRET_KEYS = ['biliCookie', 'bridgeToken'] as const
+/**
+ * 需要脱敏的字段：只报告是否配置与长度，不写内容。
+ *
+ * 第六阶段加了 `aiOpenaiKey`：API Key 泄露等于把账号交给别人，
+ * 与 Cookie / 配对令牌同一级别。**以后新增任何凭证类设置都要加到这里。**
+ */
+const SECRET_KEYS = ['biliCookie', 'bridgeToken', 'aiOpenaiKey'] as const
 
 export function redactSettings(settings: AppSettings): Record<string, unknown> {
   const out: Record<string, unknown> = { ...settings }

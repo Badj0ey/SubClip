@@ -20,8 +20,12 @@ export function defaultSettings(): AppSettings {
     lineHeight: 1.7,
     treePaneWidth: 290,
     taskPaneWidth: 380,
+    /** 视频预览高度（中栏上下分割线上方的部分） */
+    videoPaneHeight: 300,
     shortcuts: normalizeShortcuts(undefined),
     readLine: true,
+    /** 视频预览：点击选中字幕时自动把播放器跳到那一刻（第二阶段） */
+    videoAutoFollow: true,
     sliceQuality: 80,
     sliceConcurrency: 3,
     sliceNameTemplate: DEFAULT_NAME_TEMPLATE,
@@ -34,7 +38,21 @@ export function defaultSettings(): AppSettings {
     outputDir: join(app.getPath('documents'), 'subtitle-clips'),
     port: DEFAULT_PORT,
     bridgeToken: '',
-    biliCookie: ''
+    biliCookie: '',
+    // 语义检索（第四阶段下半）。默认走国内可用的镜像：直连 huggingface.co 会因证书链不全失败
+    embedModel: 'Xenova/bge-small-zh-v1.5',
+    embedHost: 'https://hf-mirror.com',
+    embedInsecureTls: false,
+    embedWindowSeconds: 45,
+    // AI 能力层（第六阶段）。**默认关闭**：基础功能不依赖 AI，这一点必须体现在默认值上
+    aiProvider: 'off',
+    aiOllamaUrl: 'http://127.0.0.1:11434',
+    aiOllamaModel: 'qwen2.5:7b',
+    aiOpenaiUrl: 'https://api.openai.com/v1',
+    aiOpenaiKey: '',
+    aiOpenaiModel: 'gpt-4o-mini',
+    aiTemperature: 0.3,
+    aiTimeoutSeconds: 60
   }
 }
 

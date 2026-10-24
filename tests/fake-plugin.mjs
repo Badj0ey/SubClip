@@ -1,10 +1,25 @@
 /**
  * 开发调试用：模拟用户脚本连接桌面端，发送页面信息与字幕。
  * 用法：node tests/fake-plugin.mjs [port]
+ *
+ * 第七阶段（协议 v5）后，模拟插件按**统一信封**发消息：带 `v` 与 `caps`，
+ * 否则桌面端会把它当成 v4 老客户端（走宽限期放行，但设置页会显示「未声明能力」）。
+ * 环境变量 `LEGACY=1` 可以强制模拟老插件（不带信封），用来验证宽限期行为。
  */
 import WebSocket from 'ws'
 
 const port = Number(process.argv[2] || 8765)
+const LEGACY = process.env.LEGACY === '1'
+const PROTOCOL = LEGACY ? 1 : 5
+
+/** v4 老插件不带信封；新插件每条消息都带 v + caps */
+const envelope = LEGACY
+  ? {}
+  : {
+      v: PROTOCOL,
+      caps: { pageInfo: true, subtitle: true, cookies: true, pullRequest: true, requestSubtitles: true }
+    }
+
 const ws = new WebSocket(`ws://127.0.0.1:${port}`)
 
 const PAGE = {
@@ -28,15 +43,21 @@ const CUES = [
 ]
 
 ws.on('open', () => {
-  console.log('✓ 已连接桌面端')
-  ws.send(JSON.stringify({ type: 'hello', version: '1.0.0', browser: 'Edge' }))
+  console.log(LEGACY ? '✓ 已连接（模拟 v4 老插件，不带信封）' : '✓ 已连接（协议 v5）')
+  ws.send(JSON.stringify({ type: 'hello', ...envelope, version: '2.4.0', browser: 'Edge' }))
   setTimeout(() => {
     console.log('→ 发送页面信息')
-    ws.send(JSON.stringify({ type: 'page-info', payload: PAGE }))
+    ws.send(JSON.stringify({ type: 'page-info', ...envelope, payload: PAGE }))
   }, 200)
   setTimeout(() => {
     console.log('→ 发送字幕（5 条）')
-    ws.send(JSON.stringify({ type: 'subtitle', payload: { bvid: PAGE.bvid, page: 1, lang: 'zh-CN', label: '简体中文（AI）', cues: CUES } }))
+    ws.send(
+      JSON.stringify({
+        type: 'subtitle',
+        ...envelope,
+        payload: { bvid: PAGE.bvid, page: 1, lang: 'zh-CN', label: '简体中文（AI）', cues: CUES }
+      })
+    )
   }, 700)
   setTimeout(() => {
     ws.close()

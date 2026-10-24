@@ -348,7 +348,7 @@ async function openSettings(): Promise<void> {
   gap: 10px;
   padding: 7px 10px;
   cursor: pointer;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--hairline);
   transition: background 0.12s;
 }
 

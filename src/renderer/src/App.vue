@@ -23,11 +23,38 @@ import SubtitleReader from './components/SubtitleReader.vue'
 import ClipPanel from './components/ClipPanel.vue'
 import SettingsView from './components/SettingsView.vue'
 import SearchView from './components/SearchView.vue'
+import ClipsView from './components/ClipsView.vue'
+import DashboardView from './components/DashboardView.vue'
+import VideoPreview from './components/VideoPreview.vue'
+import ClipJobsView from './components/ClipJobsView.vue'
+import AppNav from './components/AppNav.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import PullDialog from './components/PullDialog.vue'
+import { useVideoStore } from './stores/video'
+import { useSubtitleStore } from './stores/subtitle'
 
 const showImport = ref(false)
 const showPull = ref(false)
+const videoStore = useVideoStore()
+const subtitleStore = useSubtitleStore()
+
+/**
+ * 打开的文档一变就自动解析预览流（第二阶段）。
+ *
+ * 依赖里带上 `bvid` 与 `page`：同一条字幕在 P1/P2 之间切换、
+ * 或从「本地导入（无 BV 号）」换到 B站视频，都必须重新解析。
+ * 没有 BV 号（纯本地字幕）时直接关掉预览，避免留一个空面板。
+ */
+watch(
+  () => [subtitleStore.activeDocId, subtitleStore.video?.bvid, subtitleStore.doc?.page] as const,
+  ([docId, bvid, page]) => {
+    if (docId == null || !bvid) {
+      void videoStore.close()
+      return
+    }
+    void videoStore.open(bvid, page ?? 1)
+  }
+)
 
 /** 用户脚本检测到合集 / 收藏夹时，在对话框顶部说明来源 */
 const collectionNote = computed(() => {
@@ -66,7 +93,21 @@ const shortcuts = computed(() => state.settings?.shortcuts ?? DEFAULT_SHORTCUTS)
 
 const treeWidth = ref(290)
 const taskWidth = ref(380)
-const dragging = ref<'left' | 'right' | null>(null)
+/** 中栏里视频预览的高度（第二阶段，可拖拽并记忆） */
+const previewHeight = ref(300)
+const dragging = ref<'left' | 'right' | 'preview' | null>(null)
+
+/**
+ * 视频预览是否收起（3.8.0）。
+ *
+ * 为什么需要：中栏是「预览（上）+ 字幕阅读（下）」，而这两者的使用比重会变 ——
+ * 挑片段、调时间范围时你会一直盯着字幕，预览只是想确认一下边界。
+ * 有了收起，字幕阅读就能占满整个中栏（实测 300px 的预览对长字幕列表是明显浪费）。
+ *
+ * 这个状态**不持久化**：它是一次性的查看偏好，不是配置；
+ * 下次打开还按默认布局最符合预期（和 `publish` 草稿同样的取舍）。
+ */
+const previewCollapsed = ref(false)
 
 watch(
   () => state.settings,
@@ -74,6 +115,7 @@ watch(
     if (!s) return
     treeWidth.value = s.treePaneWidth || 290
     taskWidth.value = s.taskPaneWidth || 380
+    previewHeight.value = s.videoPaneHeight || 300
   },
   { immediate: true }
 )
@@ -82,13 +124,19 @@ function clamp(v: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, v))
 }
 
-function startDrag(which: 'left' | 'right', e: MouseEvent): void {
+function startDrag(which: 'left' | 'right' | 'preview', e: MouseEvent): void {
   e.preventDefault()
   dragging.value = which
   const startX = e.clientX
-  const startW = which === 'left' ? treeWidth.value : taskWidth.value
+  const startY = e.clientY
+  const startW = which === 'left' ? treeWidth.value : which === 'right' ? taskWidth.value : 0
+  const startH = previewHeight.value
 
   const onMove = (ev: MouseEvent): void => {
+    if (which === 'preview') {
+      previewHeight.value = clamp(startH + (ev.clientY - startY), 120, 720)
+      return
+    }
     const delta = ev.clientX - startX
     if (which === 'left') treeWidth.value = clamp(startW + delta, 200, 560)
     else taskWidth.value = clamp(startW - delta, 280, 680)
@@ -96,11 +144,16 @@ function startDrag(which: 'left' | 'right', e: MouseEvent): void {
   const onUp = (): void => {
     document.removeEventListener('mousemove', onMove)
     document.removeEventListener('mouseup', onUp)
+    const was = dragging.value
     dragging.value = null
-    void window.api.saveSettings({
-      treePaneWidth: treeWidth.value,
-      taskPaneWidth: taskWidth.value
-    })
+    if (was === 'preview') {
+      void window.api.saveSettings({ videoPaneHeight: previewHeight.value })
+    } else {
+      void window.api.saveSettings({
+        treePaneWidth: treeWidth.value,
+        taskPaneWidth: taskWidth.value
+      })
+    }
   }
   document.addEventListener('mousemove', onMove)
   document.addEventListener('mouseup', onUp)
@@ -109,7 +162,8 @@ function startDrag(which: 'left' | 'right', e: MouseEvent): void {
 function resetPaneWidths(): void {
   treeWidth.value = 290
   taskWidth.value = 380
-  void window.api.saveSettings({ treePaneWidth: 290, taskPaneWidth: 380 })
+  previewHeight.value = 300
+  void window.api.saveSettings({ treePaneWidth: 290, taskPaneWidth: 380, videoPaneHeight: 300 })
 }
 
 /* -------------------------------- 拖拽导入 -------------------------------- */
@@ -269,6 +323,17 @@ function onKey(e: KeyboardEvent): void {
       e.preventDefault()
       requestEditCurrent()
       break
+    case 'togglePlay':
+      // 空格播放/暂停（第九阶段补：之前没有任何播放入口）。
+      // 输入框里按空格是打字 —— 上面的 `typing` 守卫已经把这种情况挡掉了，
+      // 所以这里不必再判断焦点。
+      //
+      // 这里走 store：store 的 `togglePlay()` 依赖组件注册进来的播放句柄，
+      // 而预览**没有挂载**时句柄为空（静默返回，这是合理的 —— 没开预览就不该有反应）。
+      // 预览自己的按钮走组件本地调用，不受注册时序影响。
+      e.preventDefault()
+      videoStore.togglePlay()
+      break
     case 'selectAll':
       e.preventDefault()
       selectAll()
@@ -307,8 +372,16 @@ function onImported(): void {
 <template>
   <div class="app">
     <header class="topbar">
-      <span class="title">SRT 字幕检索与视频切片辅助工具</span>
+      <!-- 品牌 -->
+      <span class="title">字幕剪 <span class="title-en">SubClip</span></span>
 
+      <!-- ---------------------------------------------------------------------
+        一级导航：只切页面（纯切换语义，不再「再点一次返回」）
+        与动作、工具在视觉上明确区分 —— 页签样式 vs 按钮样式。
+        --------------------------------------------------------------------- -->
+      <AppNav />
+
+      <!-- 插件连接状态：属于「环境状态」，不占主导航位置 -->
       <span class="plugin-badge" :class="{ on: pluginOnline }" :title="pluginTitle">
         {{ pluginOnline ? '🔌 已连接' : '🔌 未连接' }}
       </span>
@@ -323,7 +396,15 @@ function onImported(): void {
         {{ state.pluginPull.title ? `· ${state.pluginPull.title}` : '' }}
       </span>
 
-      <button class="btn" title="导入本地 SRT 字幕文件" @click="showImport = true">导入 SRT</button>
+      <span class="grow"></span>
+
+      <!-- ---------------------------------------------------------------------
+        动作区：做一件事，**不切换页面**。
+        「导入 SRT」是次要动作，「拉取字幕」是主要动作（日常最高频的入口）。
+        --------------------------------------------------------------------- -->
+      <button class="btn" title="导入本地 SRT 字幕文件" @click="showImport = true">
+        导入 SRT
+      </button>
       <button
         class="btn primary"
         title="从视频 / 合集 / 系列 / 收藏夹 / UP主主页拉取字幕"
@@ -331,23 +412,18 @@ function onImported(): void {
       >
         拉取字幕
       </button>
-      <button
-        class="btn"
-        :class="{ primary: state.view === 'search' }"
-        :title="`全库检索：搜库里所有视频的字幕（${shortcuts.librarySearch || 'Ctrl+Shift+F'}）`"
-        @click="state.view = state.view === 'search' ? 'library' : 'search'"
-      >
-        全库检索
-      </button>
 
-      <span class="grow"></span>
+      <span class="topbar-sep" aria-hidden="true"></span>
 
+      <!-- 工具区：全局设置类操作 -->
       <button class="btn sm" title="恢复默认面板宽度" @click="resetPaneWidths">重置布局</button>
       <button
-        class="btn"
-        @click="state.view = state.view === 'settings' ? 'library' : 'settings'"
+        class="btn sm"
+        :class="{ primary: state.view === 'settings' }"
+        title="设置：账号、切片、检索、插件、AI 等全部配置"
+        @click="state.view = 'settings'"
       >
-        {{ state.view === 'settings' ? '← 返回工作区' : '设置' }}
+        设置
       </button>
       <button
         class="btn icon"
@@ -360,7 +436,11 @@ function onImported(): void {
 
     <div
       class="main"
-      :style="{ '--tree-w': `${treeWidth}px`, '--task-w': `${taskWidth}px` }"
+      :style="{
+        '--tree-w': `${treeWidth}px`,
+        '--task-w': `${taskWidth}px`,
+        '--preview-h': `${previewHeight}px`
+      }"
     >
       <template v-if="state.view === 'library'">
         <ResourceTree />
@@ -370,7 +450,21 @@ function onImported(): void {
           title="拖动调整宽度"
           @mousedown="startDrag('left', $event)"
         ></div>
-        <SubtitleReader />
+
+        <!-- 中栏：视频预览（上） / 字幕阅读（下），中间可拖拽；预览可收起 -->
+        <div class="pane-column">
+          <template v-if="!previewCollapsed">
+            <VideoPreview @collapse="previewCollapsed = true" />
+            <div
+              class="resizer-h"
+              :class="{ active: dragging === 'preview' }"
+              title="拖动调整预览高度"
+              @mousedown="startDrag('preview', $event)"
+            ></div>
+          </template>
+          <SubtitleReader :preview-collapsed="previewCollapsed" @expand-preview="previewCollapsed = false" />
+        </div>
+
         <div
           class="resizer"
           :class="{ active: dragging === 'right' }"
@@ -379,6 +473,13 @@ function onImported(): void {
         ></div>
         <ClipPanel />
       </template>
+      <DashboardView
+        v-else-if="state.view === 'home'"
+        @import="showImport = true"
+        @pull="showPull = true"
+      />
+      <ClipsView v-else-if="state.view === 'clips'" />
+      <ClipJobsView v-else-if="state.view === 'clipjobs'" />
       <SearchView v-else-if="state.view === 'search'" />
       <SettingsView v-else />
     </div>

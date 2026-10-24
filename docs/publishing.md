@@ -21,8 +21,12 @@
 
 ### 2. `CHANGELOG.md`
 
-文件末尾有一段 HTML 注释，写着怎么把 `## [未发布]` 换成带版本号与日期的章节，
-并补一个对比链接。
+版本号按 2.0 重构路线图的里程碑走（`0.1.0` → `1.5.0` → `2.0.0` → `3.0.0`），
+每完成一个阶段就新增一节，字段用「新增 / 变更 / 修复 / 安全 / 说明 / 验证」。
+文件末尾有一段 HTML 注释，写着怎么给最新版本补对比链接。
+
+注意：`package.json` 与 `extension/manifest.json` 的版本号**必须同步改**
+（`npm run test:wbi` 会断言两者一致）；README 的「重构升级进度」表也要跟着更新状态与版本。
 
 ### 3. `README.md` / `README.en.md`
 
@@ -44,8 +48,8 @@
 ## 二、打第一个版本
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v1.5.0
+git push origin v1.5.0
 ```
 
 推 tag 会触发 `.github/workflows/ci.yml`：

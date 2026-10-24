@@ -36,8 +36,15 @@ export interface SliceTaskInput {
   note: string
   /** 跨分P：多段依次裁剪后拼接（单段时留空） */
   segments?: SliceSegmentInput[]
-  /** 来源切片任务的 id，仅用于把结果写回历史（跑切片本身不需要） */
+  /** 来源**片段**的 id（拆表后仅作追溯：片段可能已被删或改名） */
   clipId?: number
+  /**
+   * 来源**任务**的 id（3.7.0 起）。
+   *
+   * 有了它，一次切片就能把 `export_jobs` 里对应那条从 pending 推到 running → done/failed；
+   * 没有它的话跑完只能补一条历史，队列里那条会永远停在「排队中」。
+   */
+  jobId?: number
 }
 
 export type SlicePhase = 'resolve' | 'download' | 'cut' | 'mux' | 'done' | 'error'

@@ -51,12 +51,25 @@ function persistVideoInfo(info: BiliVideoInfo): number {
       )
     : db.upsertCollection(uploaderId, null, '单视频')
 
-  return db.upsertVideo(collectionId, info.bvid, info.title, {
+  const videoId = db.upsertVideo(collectionId, info.bvid, info.title, {
     url: `https://www.bilibili.com/video/${info.bvid}`,
     cover: info.cover,
     duration: info.duration,
     pageCount: info.pages.length
   })
+
+  // 第三阶段：记录**内容署名**（与 UP主 分开）。
+  // 现在 B站 接口只稳定给出 owner 一个人，将来接口给出 staff 时这里直接接上，
+  // 不需要再改表 —— 这也是把作者做成独立表而不是 videos 里一个字段的原因。
+  try {
+    db.setVideoCreators(videoId, [
+      { name: info.ownerName, mid: info.ownerUid || null }
+    ])
+  } catch {
+    /* 署名失败不该影响视频入库 */
+  }
+
+  return videoId
 }
 
 /**

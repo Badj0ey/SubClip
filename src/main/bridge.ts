@@ -32,7 +32,10 @@ import {
   BRIDGE_SERVER_NAME,
   isBridgeOriginAllowed,
   parseClientMessage,
-  serialize
+  requiredCapability,
+  serialize,
+  serverCapabilities,
+  supportsCap
 } from '@shared/bridge'
 
 interface Client {
@@ -51,6 +54,18 @@ export interface BridgeEvents {
   subtitle: (payload: BridgeSubtitle, clientId: number) => void
   cookies: (payload: BridgeCookies, clientId: number) => void
   log: (level: 'info' | 'warn' | 'error', message: string) => void
+  /**
+   * 插件的协议版本**高于**桌面端（第七阶段）。
+   *
+   * 这种事只写进 `lastEvent` 用户是看不到的，而它的后果是「新功能悄悄不可用」，
+   * 所以单独发一个事件让界面弹一次明确提示。
+   */
+  'version-skew': (info: {
+    clientProtocol: number
+    serverProtocol: number
+    clientVersion: string
+    clientBrowser: string
+  }) => void
 }
 
 const HEARTBEAT_MS = 30_000
@@ -84,6 +99,8 @@ export class BridgeServer extends EventEmitter {
 
   private allowedOrigins: string[] = [...BRIDGE_ALLOWED_ORIGINS]
   private token = ''
+  /** 「插件协议比桌面端新」只提示一次（每次连接都弹会变成噪音） */
+  private versionSkewNotified = false
 
   /** 运行期可以调整（设置里改了端口/令牌后调用） */
   configure(options: BridgeOptions): void {
@@ -212,7 +229,10 @@ export class BridgeServer extends EventEmitter {
       cookieSynced: false,
       origin: origin ?? '',
       // 没配令牌时默认就是「已认证」
-      authenticated: !this.token
+      authenticated: !this.token,
+      // 握手前先按最低版本与「没有能力」记，收到 hello 后由插件自报覆盖
+      protocol: 1,
+      caps: {}
     }
 
     // 关键的一道闸门：拒绝来历不明的网页。握手已经被接受（WebSocket 无法在升级阶段
@@ -225,6 +245,7 @@ export class BridgeServer extends EventEmitter {
           server: BRIDGE_SERVER_NAME,
           version: this.version,
           protocol: BRIDGE_PROTOCOL_VERSION,
+          caps: serverCapabilities(),
           autoFetchSubtitles: false,
           tokenRequired: Boolean(this.token),
           rejected: true
@@ -304,16 +325,48 @@ export class BridgeServer extends EventEmitter {
       server: BRIDGE_SERVER_NAME,
       version: this.version,
       protocol: BRIDGE_PROTOCOL_VERSION,
+      caps: serverCapabilities(),
       autoFetchSubtitles: true,
       tokenRequired: Boolean(this.token)
     }
   }
 
   private handleMessage(client: Client, msg: ClientMessage): void {
+    // 统一信封：先记下对方自报的协议版本与能力表（每类消息都带，用最新的那次）
+    if (typeof msg.v === 'number') client.info.protocol = msg.v
+    if (msg.caps) client.info.caps = msg.caps
+
+    // 能力校验（宽限期语义）：
+    // - 插件**完全没声明能力表**（v4 及更早）→ 视为「老客户端」，照旧放行。
+    //   绝不能在协议升级时把老插件一脚踢开 —— 那等于用一次升级换掉既有功能。
+    // - 插件**声明了**能力表，却没声明这条消息需要的能力 → 丢弃并记账。
+    //   这是给「明明声明了不支持、却还发这类消息」兜底（也用于排查写错的插件）。
+    const declaredCaps = Object.keys(client.info.caps ?? {}).length > 0
+    const needed = requiredCapability(msg.type)
+    if (declaredCaps && needed && !supportsCap(client.info.caps, needed)) {
+      this.touch(`插件 #${client.id} 未声明能力「${needed}」，已忽略 ${msg.type}`)
+      return
+    }
+
     switch (msg.type) {
       case 'hello': {
         client.info.version = msg.version
         client.info.browser = msg.browser
+        // 协议版本差异只记录、不断连：版本号是用来协商的。
+        // 但「插件比桌面端新」需要让**界面**知道（只写进「最近事件」用户看不到），
+        // 所以额外发一个事件，由 wire 转成渲染进程的提示。
+        if (client.info.protocol > BRIDGE_PROTOCOL_VERSION && !this.versionSkewNotified) {
+          this.versionSkewNotified = true
+          this.touch(
+            `插件 #${client.id} 协议 v${client.info.protocol} 高于桌面端 v${BRIDGE_PROTOCOL_VERSION}，建议更新桌面端`
+          )
+          this.emit('version-skew', {
+            clientProtocol: client.info.protocol,
+            serverProtocol: BRIDGE_PROTOCOL_VERSION,
+            clientVersion: client.info.version,
+            clientBrowser: client.info.browser
+          })
+        }
 
         // 配了令牌就必须带上正确的值，否则只能握手、不能发业务消息
         if (this.token) {

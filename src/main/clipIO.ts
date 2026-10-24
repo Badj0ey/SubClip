@@ -7,7 +7,14 @@
  */
 import type { ClipTask } from '@shared/types'
 
-export const CLIP_JSON_KIND = 'srt-clip-helper/clip-tasks'
+export const CLIP_JSON_KIND = 'subclip/clip-tasks'
+/**
+ * 老版本导出的清单用这些 kind。
+ *
+ * 必须继续认：用户以前导出的 `*.json` 表如果直接打不开，
+ * 那就是「更名把功能改坏了」—— 改名字不该让已有文件失效。
+ */
+export const LEGACY_CLIP_JSON_KINDS = ['srt-clip-helper/clip-tasks']
 export const CLIP_JSON_VERSION = 1
 
 export interface ClipJsonFile {
@@ -75,6 +82,22 @@ export function parseClipTasksJson(text: string): ParsedClipTasks {
 
   if (!Array.isArray(list)) {
     throw new Error('文件里没有找到任务数组（期望 { tasks: [...] } 或直接是数组）')
+  }
+
+  /**
+   * kind 只在**明显不对**时给一条告警，不拒绝导入。
+   *
+   * 为什么不拒绝：这个格式是「无信封也能读」的宽容设计 ——
+   * 用户可能手写一个数组、也可能用旧版本导出的文件（kind 还是老名字）。
+   * 把 kind 当硬门槛会把这两种正常情况一并挡掉。
+   */
+  const declaredKind = (raw as { kind?: unknown })?.kind
+  if (
+    typeof declaredKind === 'string' &&
+    declaredKind !== CLIP_JSON_KIND &&
+    !LEGACY_CLIP_JSON_KINDS.includes(declaredKind)
+  ) {
+    warnings.push(`文件标记的类型是「${declaredKind}」，不是本工具导出的清单，仍按任务列表尝试读取`)
   }
 
   const tasks: ParsedClipTasks['tasks'] = []

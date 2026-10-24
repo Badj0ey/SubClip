@@ -1,4 +1,8 @@
-# SRT Clip Helper
+# SubClip
+
+> **A subtitle-search-driven smart clipping workbench for Bilibili videos.**
+
+> Formerly SRT Clip Helper; renamed to SubClip in 3.4.0.
 
 English | [简体中文](README.md)
 

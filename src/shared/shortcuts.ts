@@ -12,6 +12,7 @@ export type ShortcutAction =
   | 'extendPrev'
   | 'toggleSelect'
   | 'editCue'
+  | 'togglePlay'
   | 'selectAll'
   | 'clearSelection'
   | 'addClip'
@@ -41,6 +42,12 @@ export const SHORTCUT_DEFS: ShortcutDef[] = [
   { id: 'extendPrev', label: '向上扩展选择', description: '从锚点连续选中到上一行', fallback: 'Shift+ArrowUp' },
   { id: 'toggleSelect', label: '勾选当前行', description: '选中 / 取消当前字幕', fallback: 'Enter' },
   { id: 'editCue', label: '编辑当前行', description: '进入字幕正文编辑', fallback: 'F2' },
+  {
+    id: 'togglePlay',
+    label: '播放 / 暂停',
+    description: '播放或暂停视频预览',
+    fallback: 'Space'
+  },
   { id: 'selectAll', label: '全选', description: '选中全部字幕', fallback: 'Ctrl+A' },
   { id: 'clearSelection', label: '清除选择', description: '取消所有已选字幕', fallback: 'Escape' },
   { id: 'addClip', label: '加入切片任务', description: '把当前时间范围加入任务列表', fallback: 'Ctrl+Enter' },

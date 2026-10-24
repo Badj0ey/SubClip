@@ -4,6 +4,15 @@ import type { Cue, MergedCue } from '@shared/types'
 import { formatTime } from '@shared/time'
 import { totalDuration } from '@shared/ranges'
 import { useVirtualList } from '../composables/useVirtualList'
+
+/**
+ * 视频预览是否已收起（3.8.0）。
+ *
+ * 由 App.vue 传入：预览收起后**该组件会被卸载**，所以「展开预览」的按钮
+ * 只能放在我这里 —— 这也是为什么收起/展开是这一对 prop + emit 而不是本地状态。
+ */
+defineProps<{ previewCollapsed?: boolean }>()
+const emit = defineEmits<{ (e: 'expandPreview'): void }>()
 import {
   applyReadingStyle,
   clearSelection,
@@ -35,7 +44,74 @@ import {
 } from '../store'
 import EditToolsDialog from './EditToolsDialog.vue'
 import ContextMenu from './ContextMenu.vue'
+import TimelineBar from './TimelineBar.vue'
 import type { MenuItem } from './ContextMenu.vue'
+import { useVideoStore } from '../stores/video'
+import { useSubtitleStore } from '../stores/subtitle'
+import { useAiStore } from '../stores/ai'
+
+/**
+ * 视频预览的播放位置（时间轴画进度用）。
+ * 通过 store 读，而不是让父组件层层传 props。
+ */
+const videoStore = useVideoStore()
+const subtitleStore = useSubtitleStore()
+const aiStore = useAiStore()
+
+/* ------------------------------ 时间轴交互（第五阶段） ------------------------------ */
+
+/**
+ * 时间轴拖选 → 勾选对应字幕。
+ *
+ * 这里刻意**复用 `state.selected`**（与列表复选框同一份状态），
+ * 而不是让时间轴维护自己的选区：两套选择状态必然会出现「列表显示选中、时间轴不认」
+ * 这类对不上的情况，而用户根本无法判断该信哪个。
+ */
+function onTimelineSelect(payload: { indexes: number[]; additive: boolean }): void {
+  const next = payload.additive
+    ? new Set([...state.selected, ...payload.indexes])
+    : new Set(payload.indexes)
+  state.selected = next
+  if (!payload.indexes.length) {
+    toast('这一段里没有字幕', 'info')
+    return
+  }
+  // 光标跟着落到选区里第一条，跟读时不会「选了一片但阅读区还停在老地方」
+  state.cursor = Math.min(...payload.indexes)
+  scrollToCue(state.cursor)
+
+  // 汇总一句人话：拖动很容易一下选中几百条（跨分P 的时间轴是各 P 拼起来的），
+  // 只说「已选中 N 条」用户没法判断是不是选多了，所以把分P 数与时间跨度一起报出来。
+  const picked = state.cues.filter((c) => payload.indexes.includes(c.index))
+  const start = Math.min(...picked.map((c) => c.start))
+  const end = Math.max(...picked.map((c) => c.end))
+  const secs = Math.round((end - start) * 10) / 10
+  const pages = [...new Set(picked.map((c) => c.page))].sort((a, b) => a - b)
+  const pageText = pages.length > 1 ? `跨 ${pages.length} 个分P` : `P${pages[0]}`
+  toast(
+    `${payload.additive ? '已追加' : '已选中'} ${payload.indexes.length} 条 · ${pageText} · 跨度 ${secs}s`,
+    'success',
+    4200
+  )
+}
+
+/** 时间轴单击 → 光标移到那一刻的字幕，并让播放器跟过去 */
+function onTimelineSeek(payload: { index: number; second: number }): void {
+  state.cursor = payload.index
+  scrollToCue(state.cursor)
+  // 经总线广播，由 ipcEvents 里的接线交给播放器（组件不直接驱动 video store）
+  subtitleStore.followCueAt(payload.index)
+}
+
+/** 复制 AI 解释内容 */
+async function copyExplanation(): Promise<void> {
+  const idx = aiStore.explainIndex
+  if (idx == null) return
+  const text = aiStore.explanations[idx]
+  if (!text) return
+  await window.api.copyText(text)
+  toast('已复制解释', 'success')
+}
 
 const showTools = ref(false)
 const canUndo = computed(() => undoDepth.value > 0)
@@ -413,6 +489,13 @@ const cueMenuItems = computed<MenuItem[]>(() => {
       divider: true,
       disabled: !state.video?.bvid,
       action: () => void enqueueSingleCue(cue)
+    },
+    {
+      // 第六阶段：AI 逐句解释（未启用时点它会弹提示，引导去设置）
+      label: 'AI 解释这句话',
+      icon: '🤖',
+      divider: true,
+      action: () => void aiStore.explain(cue.docId, cue.origIndex, cue.text)
     }
   ]
   return items
@@ -574,6 +657,22 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
 
       <span class="divider-v"></span>
 
+      <!--
+        预览收起后，这里要能把它放回来。
+        「收起」而不是「关闭」：预览是确认切片边界的主要手段，
+        彻底关掉会让人以为功能没了。
+      -->
+      <button
+        v-if="previewCollapsed"
+        class="btn sm"
+        title="展开视频预览（用来核对片段边界）"
+        @click="emit('expandPreview')"
+      >
+        🎬 展开预览
+      </button>
+
+      <span class="divider-v"></span>
+
       <button class="btn sm" title="选中全部字幕" @click="selectAll">全选</button>
       <button class="btn sm" title="反选" @click="invertSelection">反选</button>
       <button class="btn sm" title="清除选择" @click="clearSelection">清除</button>
@@ -632,6 +731,47 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
     </div>
 
     <EditToolsDialog v-if="showTools" @close="showTools = false" />
+
+    <!-- AI 逐句解释（第六阶段）：结果会落库，同一句再点直接读缓存 -->
+    <div v-if="aiStore.explainIndex != null" class="mask" @click.self="aiStore.closeExplain()">
+      <div class="dialog ai-explain" role="dialog" aria-label="AI 解释">
+        <h3 class="ai-explain-title">
+          AI 解释
+          <span class="muted" style="font-size: 12px; font-weight: 400">
+            第 {{ aiStore.explainIndex }} 条
+          </span>
+        </h3>        <blockquote class="ai-explain-cue">
+          {{ state.cues.find((c) => c.origIndex === aiStore.explainIndex)?.text ?? '' }}
+        </blockquote>
+        <div v-if="aiStore.busyKind === 'explain'" class="muted">正在解释…</div>
+        <p v-else class="ai-explain-text">
+          {{ aiStore.explanations[aiStore.explainIndex] || '（没有结果）' }}
+        </p>
+        <div class="ai-explain-actions">
+          <button
+            class="btn sm"
+            :disabled="!aiStore.explanations[aiStore.explainIndex]"
+            @click="copyExplanation"
+          >
+            复制
+          </button>
+          <span class="grow"></span>
+          <button class="btn" @click="aiStore.closeExplain()">关闭</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 时间轴（第五阶段）：拖动选择一段 → 范围内的字幕被勾选 -->
+    <TimelineBar
+      v-if="state.cues.length"
+      :cues="state.cues"
+      :selected="state.selected"
+      :duration="state.video?.duration ?? 0"
+      :cursor="state.cursor"
+      :play-position="videoStore.position"
+      @select="onTimelineSelect"
+      @seek="onTimelineSeek"
+    />
 
     <div v-if="!state.cues.length" class="empty pane-body">
       <div class="empty-art">📄</div>
@@ -790,20 +930,20 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
 
 .divider-v {
   width: 1px;
-  height: 16px;
-  background: var(--border);
+  height: 14px;
+  background: var(--hairline);
   flex: 0 0 auto;
 }
 
 .status-bar {
   display: flex;
   align-items: center;
-  gap: 10px;
-  padding: 5px 12px;
-  font-size: 11px;
+  gap: var(--sp-3);
+  padding: var(--sp-1) var(--sp-3);
+  font-size: var(--fs-xs);
   color: var(--text-dim);
-  border-top: 1px solid var(--border);
-  background: var(--panel);
+  border-top: 1px solid var(--hairline);
+  background: var(--bg);
   flex: 0 0 auto;
   white-space: nowrap;
   overflow: hidden;
@@ -863,13 +1003,16 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
   width: 24px;
   height: 24px;
   border: none;
-  border-radius: 6px;
+  border-radius: var(--radius-xs);
   background: transparent;
   color: var(--text-dim);
   cursor: pointer;
   opacity: 0;
-  transition: opacity 0.15s, background 0.15s, color 0.15s;
-  font-size: 12px;
+  transition:
+    opacity 0.15s var(--ease),
+    background 0.15s var(--ease),
+    color 0.15s var(--ease);
+  font-size: var(--fs-sm);
   line-height: 1;
 }
 
@@ -911,5 +1054,39 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+</style>
+
+<style scoped>
+/* AI 逐句解释弹窗（第六阶段）。遮罩与 .dialog 的外观来自全局 styles.css */
+.ai-explain-title {
+  margin: 0 0 10px;
+  font-size: 15px;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.ai-explain-cue {
+  margin: 0 0 10px;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: color-mix(in srgb, var(--accent) 8%, transparent);
+  font-size: 13px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.ai-explain-text {
+  margin: 0 0 12px;
+  font-size: 13px;
+  line-height: 1.8;
+  white-space: pre-wrap;
+}
+
+.ai-explain-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
 }
 </style>

@@ -1,59 +1,266 @@
-/* ============================== 设计变量 ============================== */
-:root {
-  --bg: #f5f6f9;
-  --panel: #ffffff;
-  --panel-2: #fafbfd;
-  --border: #e8eaf0;
-  --border-strong: #d9dde6;
-  --text: #1b1f27;
-  --text-dim: #767e8c;
-  --accent: #4f7cff;
-  --accent-hover: #6a90ff;
-  --accent-soft: #eef2ff;
-  --danger: #e5484d;
-  --danger-soft: #fdecec;
-  --success: #15a34a;
-  --warn: #d97706;
-  --warn-soft: #fff8ec;
-  --warn-border: #f2d9a8;
-  --mark: #fff1a8;
-  --mark-text: #7a4b00;
-  --row-hover: #f2f4f8;
-  --row-active: #e9efff;
+/* ============================== 页面骨架（共享） ============================== */
 
-  --radius: 12px;
-  --radius-sm: 8px;
-  --radius-xs: 6px;
-  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
-  --shadow: 0 2px 6px rgba(16, 24, 40, 0.06), 0 8px 24px rgba(16, 24, 40, 0.06);
-  --shadow-lg: 0 8px 20px rgba(16, 24, 40, 0.1), 0 24px 56px rgba(16, 24, 40, 0.12);
-  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+/*
+ * 一级页面的页头（3.10.0 提取为共享样式）。
+ *
+ * 为什么提到全局：`SearchView` 与 `ClipsView` 都用这套页头，
+ * 而它们各自是 `scoped` 样式 —— 组件里各写一份的下场就是
+ * 「两个页面的标题字号/间距慢慢长歪」。页面骨架属于设计系统，不属于某个页面。
+ *
+ * 约定：标题（`view-title`）+ 一行摘要（`view-sub`）+ 撑开 + 右侧动作。
+ * 摘要必须是**一句话说明当前状态或用途**，不是按钮堆。
+ */
+.view-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--sp-3);
+  margin-bottom: var(--sp-4);
+  flex-wrap: wrap;
 }
 
+.view-title {
+  margin: 0;
+  /*
+   * 页面级标题用 `--fs-lg` 而不是 `--fs-xl`：
+   * 这是桌面工具，内容密度高，标题太大会把首屏的可用高度吃掉。
+   */
+  font-size: var(--fs-lg);
+  font-weight: var(--fw-bold);
+}
+
+.view-sub {
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+
+/*
+ * 一级页面里的页签（共享）。
+ * 与全局导航、剪辑任务页保持同一套语言：下边框表示选中，不用按钮样式。
+ */
+.stage-tabs {
+  display: flex;
+  gap: 2px;
+  margin-bottom: var(--sp-4);
+  border-bottom: 1px solid var(--hairline);
+}
+
+.stage-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: var(--fs-base);
+  font-weight: var(--fw-medium);
+  height: var(--h-lg);
+  padding: 0 var(--sp-4);
+  border-radius: var(--radius-sm) var(--radius-sm) 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  transition:
+    color 0.14s var(--ease),
+    border-color 0.14s var(--ease),
+    background 0.14s var(--ease);
+}
+
+.stage-tab:hover:not(.active) {
+  background: var(--row-hover);
+  color: var(--text);
+}
+
+.stage-tab.active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+.stage-tab:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+}
+
+/* ============================== 设计变量 ============================== */
+
+/*
+ * 配色（3.13.0 重做）
+ *
+ * 目标：**中性、纯净**。旧版面板色（深色 #1c1f26 / 浅色 #ffffff 配 #e8eaf0 边框）
+ * 偏蓝偏灰，而且每块面板都靠 1px 边框划分，视觉上像「一堆盒子拼起来」。
+ *
+ * 现在的层级靠**明度差 + 留白**建立：
+ *   bg（最底）< panel（内容面）< panel-2（抬升面）< row-hover（交互反馈）
+ * 越是抬升的面越亮（深色）/ 越白（浅色），而不是靠描边。
+ */
+:root {
+  --bg: #fafafa;
+  --panel: #ffffff;
+  --panel-2: #f4f4f5;
+
+  /*
+   * 边框分三档，**默认几乎看不见**：
+   * `--border` 只用于「确实需要一条线」的地方（表格行、输入框轮廓），
+   * `--border-strong` 用于需要明确分隔的少数位置，
+   * `--hairline` 是极低对比度的细分隔（面板之间首选它，而不是实体边框）。
+   */
+  --border: #e8e8ea;
+  --border-strong: #dcdce0;
+  --hairline: #f0f0f2;
+
+  --text: #18181b;
+  --text-dim: #7d7d87;
+
+  /* 强调色：柔和的蓝紫，只用于主操作 / 选中 / 选区 */
+  --accent: #5b6cff;
+  --accent-hover: #4a5cf0;
+  --accent-soft: #eef0ff;
+  /* 主操作按钮的填充色（浅色下用主色本身即可，饱和但不刺眼） */
+  --accent-solid: #5b6cff;
+
+  --danger: #e5484d;
+  --danger-soft: #fdecec;
+  --success: #17994a;
+  --warn: #c2740a;
+  --warn-soft: #fff7ea;
+  --warn-border: #f0dcb4;
+  --mark: #fff1a8;
+  --mark-text: #7a4b00;
+
+  /* 交互反馈：悬停只做很轻的明度变化，不做位移与发光 */
+  --row-hover: #f4f4f5;
+  --row-active: #eef0ff;
+
+  --radius: 10px;
+  --radius-sm: 7px;
+  --radius-xs: 6px;
+
+  /* 阴影只留给真正浮起来的层（弹窗 / 下拉 / 提示条），面板一律不用 */
+  --shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04);
+  --shadow: 0 4px 16px rgba(16, 24, 40, 0.08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, 0.14);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  /* ---------------------------------------------------------------------------
+   * 设计系统补全（3.5.0）
+   *
+   * 之前只有颜色/圆角/阴影，而**间距、字号、字重、控件高度、图标尺寸、层级**
+   * 都是各组件里写死的数值 —— 于是「同一个视觉层级」在不同页面长得不一样
+   * （例如空状态留白、按钮高度、标题字号各处不同）。
+   * 把这几类补成 token，后续页面重构才能有一致的基准。
+   *
+   * 命名规则：`--sp-*` 间距、`--fs-*` 字号、`--fw-*` 字重、`--h-*` 控件高度、
+   * `--ico-*` 图标、`--z-*` 层级。
+   * ------------------------------------------------------------------------- */
+
+  /* 间距（4 的倍数，UI 里最常用的一档） */
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 20px;
+  --sp-7: 24px;
+  --sp-8: 32px;
+
+  /*
+   * 行高：正文 1.6 是中文界面的舒适值
+   *（中文没有西文那样的升部/降部空间，行距太紧会显得挤）。
+   */
+  --line-height: 1.6;
+
+  /*
+   * 界面字体：**系统 UI 字体优先**，中文字体作为回退。
+   * 旧版把 'Microsoft YaHei' 放在第一位 —— 它在 macOS 上不存在，
+   * 在 Windows 上也不如系统 UI 字体精致（字面更大、笔画更粗）。
+   * 用户在设置里覆盖时会通过行内 `--font-family` 生效。
+   */
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui,
+    sans-serif;
+
+  /* 字号：正文 13px 是这套界面的基准（信息密度偏高，但要保证可读） */
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 15px;
+  --fs-xl: 18px;
+  --fs-title: 20px;
+
+  /* 字重：只保留三档，避免各组件随手写 500/550/600 混用 */
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-bold: 600;
+
+  /* 控件高度：同一行里的输入框/按钮/下拉必须等高，否则视觉上会「参差」 */
+  --h-sm: 26px;
+  --h-base: 30px;
+  --h-lg: 34px;
+
+  /* 图标尺寸 */
+  --ico-sm: 14px;
+  --ico-base: 16px;
+  --ico-lg: 20px;
+
+  /* 层级：提示条/下拉 → 对话框 → 遮罩。集中管理避免出现「对话框被下拉盖住」 */
+  --z-sticky: 10;
+  --z-dropdown: 40;
+  --z-dialog: 60;
+  --z-toast: 80;
+
+  /* 禁用态：用一组统一的值，而不是每个组件各自 opacity: 0.5 */
+  --disabled-opacity: 0.45;
+  --disabled-bg: var(--panel-2);
+}
+
+/*
+ * 深色主题（3.13.0 重做）
+ *
+ * 主背景接近纯黑，面板只比它亮一点点 ——
+ * 旧版的 `#14161b` / `#1c1f26` 偏蓝灰，大面积铺开后整屏发灰、不纯净。
+ * 层级靠明度递增：bg < panel < panel-2 < row-hover。
+ *
+ * ⚠️ 层级跨度要**收得紧**：第一版做到 #0d0f12 / #14161a / #1c1f25，
+ * 截图核验时发现卡片仍一块块浮在黑底上，「盒子拼接」的残留感没消掉。
+ * 现在收紧到 2~3 个明度级差，层级更多交给留白与排版。
+ */
 html[data-theme='dark'] {
-  --bg: #14161b;
-  --panel: #1c1f26;
-  --panel-2: #22262e;
-  --border: #2f3440;
-  --border-strong: #3c4250;
-  --text: #e7e9ee;
-  --text-dim: #98a1b0;
-  --accent: #6b93ff;
-  --accent-hover: #85a6ff;
-  --accent-soft: #262f47;
+  --bg: #0b0c0e;
+  --panel: #111316;
+  --panel-2: #171a1e;
+
+  --border: #23262c;
+  --border-strong: #2c3037;
+  --hairline: #1a1d21;
+
+  --text: #edeef0;
+  --text-dim: #8a8f98;
+
+  /*
+   * 深色下强调色压暗一档：`#7488ff` 作大面积选中底时太跳，
+   * 而「选中」在这套界面里出现在导航、页签、树节点、字幕行等很多地方 ——
+   * 一滴亮色铺开就会盖过内容。真正的强调交给文字色与描边。
+   */
+  --accent: #6b7cff;
+  --accent-hover: #7d8dff;
+  --accent-soft: #1a1e33;
+  /* 主操作按钮的填充色：比 --accent 再暗一档，避免大块高饱和色块 */
+  --accent-solid: #3f4bd6;
+
   --danger: #ff6b6f;
-  --danger-soft: #3a2224;
-  --success: #3ecf8e;
-  --warn: #f0b429;
-  --warn-soft: #33280f;
-  --warn-border: #5a4720;
+  --danger-soft: #2c1b1d;
+  --success: #4ecf8e;
+  --warn: #e0a63a;
+  --warn-soft: #2a2213;
+  --warn-border: #4a3c1e;
   --mark: #6b5b12;
   --mark-text: #ffe9a8;
-  --row-hover: #252a33;
-  --row-active: #2a3450;
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
-  --shadow: 0 2px 8px rgba(0, 0, 0, 0.32), 0 12px 32px rgba(0, 0, 0, 0.28);
-  --shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.45), 0 28px 64px rgba(0, 0, 0, 0.4);
+
+  --row-hover: #1a1d21;
+  --row-active: #232838;
+
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 4px 16px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 36px rgba(0, 0, 0, 0.55);
 }
 
 * {
@@ -68,12 +275,14 @@ body,
 }
 
 body {
-  font-family: var(--font-family, 'Microsoft YaHei', 'PingFang SC', 'Segoe UI', system-ui, sans-serif);
-  font-size: 14px;
+  font-family: var(--font-family, var(--font-ui));
+  font-size: var(--fs-md);
+  line-height: var(--line-height);
   color: var(--text);
   background: var(--bg);
   overflow: hidden;
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
 }
 
@@ -132,11 +341,12 @@ select,
 .topbar {
   display: flex;
   align-items: center;
-  gap: 8px;
-  height: 52px;
-  padding: 0 14px;
-  background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  gap: var(--sp-2);
+  height: 48px;
+  padding: 0 var(--sp-4);
+  background: var(--bg);
+  /* 顶栏与内容之间只留一条几乎看不见的分隔，而不是实体边框 */
+  border-bottom: 1px solid var(--hairline);
   flex: 0 0 auto;
   z-index: 10;
 }
@@ -147,6 +357,22 @@ select,
   letter-spacing: -0.01em;
   margin-right: 6px;
   white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+}
+
+/*
+ * 英文名（SubClip）：作为中文名旁的次级标识。
+ * 用更小字号 + 次级色而不是同样粗细 —— 两个名字等重会让顶栏显得吵，
+ * 而品牌只需要一个视觉重心（中文名），英文名是补充信息。
+ */
+.topbar .title-en {
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.02em;
+  color: var(--text-dim);
+  text-transform: none;
 }
 
 .topbar .spacer {
@@ -157,12 +383,33 @@ select,
   flex: 1 1 auto;
 }
 
+/*
+ * 动作区与工具区之间的分隔线。
+ * 用一条 1px 竖线而不是更大间距：间距只能表达「有点远」，
+ * 而竖线明确表达「这是另一类操作」。
+ */
+.topbar .topbar-sep {
+  width: 1px;
+  height: 18px;
+  background: var(--border-strong);
+  margin: 0 var(--sp-1);
+  flex-shrink: 0;
+}
+
 .main {
   display: flex;
   flex: 1 1 auto;
   min-height: 0;
 }
 
+/*
+ * 面板（3.13.0）
+ *
+ * 旧版三栏各自带边框（右栏 `border-left`、面板头 `border-bottom`），
+ * 中间还夹两条 6px 拖拽条 —— 整屏因此被切成「一堆盒子」。
+ * 现在：**面板之间不用边框**，靠背景明度差与留白区分；
+ * 只有中栏（内容区，背景是 `--bg`）与两侧面板之间有自然分界。
+ */
 .pane {
   display: flex;
   flex-direction: column;
@@ -174,6 +421,7 @@ select,
 .pane-left {
   width: var(--tree-w, 290px);
   flex: 0 0 var(--tree-w, 290px);
+  background: var(--bg);
 }
 
 .pane-center {
@@ -182,25 +430,79 @@ select,
   background: var(--bg);
 }
 
+/**
+ * 中栏垂直分割（第二阶段）：视频预览在上、字幕阅读在下。
+ * 高度由 --preview-h 控制（来自设置，可拖拽），下半部分吃掉剩余空间。
+ */
+.pane-column {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg);
+}
+
+.preview-pane {
+  height: var(--preview-h, 300px);
+  flex: 0 0 auto;
+  min-height: 120px;
+}
+
+.pane-column > .reader-pane {
+  flex: 1 1 auto;
+  min-height: 160px;
+}
+
+/* 水平拖拽条（调整预览高度） */
+.resizer-h {
+  flex: 0 0 6px;
+  margin: -3px 0;
+  cursor: row-resize;
+  background: transparent;
+  z-index: 6;
+  position: relative;
+}
+
+.resizer-h::after {
+  content: '';
+  position: absolute;
+  inset: 2px 0;
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.12s;
+}
+
+.resizer-h:hover::after,
+.resizer-h.active::after {
+  opacity: 1;
+  background: var(--accent);
+}
+
 .pane-right {
   width: var(--task-w, 380px);
   flex: 0 0 var(--task-w, 380px);
-  border-left: 1px solid var(--border);
+  background: var(--bg);
 }
 
+/*
+ * 面板头（3.13.0）
+ *
+ * 去掉了 `border-bottom`：面板头与面板内容的区分靠**字号/字重与间距**就够了，
+ * 一条横线只会把整页切成更多块。
+ */
 .pane-head {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--sp-2);
+  padding: 0 var(--sp-4);
   flex: 0 0 auto;
-  height: 46px;
+  height: 44px;
 }
 
 .pane-head strong {
-  font-size: 13px;
-  font-weight: 600;
+  font-size: var(--fs-base);
+  font-weight: var(--fw-bold);
   letter-spacing: 0.01em;
 }
 
@@ -236,51 +538,71 @@ select,
 }
 
 /* ================================ 控件 ================================ */
+
+/*
+ * 按钮（3.13.0 重做）
+ *
+ * 旧版每一个按钮都是「1px 描边 + 白底 + 阴影 + hover 上浮 + hover 变主色」——
+ * 一个工具栏里十几个按钮就等于十几个矩形轮廓，噪声远大于信息。
+ *
+ * 现在：
+ * - **默认无描边、无阴影、透明底**（次要操作退成「文字」，靠位置与字号表达可点）；
+ * - hover 只做**很轻的背景明度变化**（不做位移、不做发光、不变主色）；
+ * - 主操作（`.primary`）保留填充，但用柔和蓝紫而不是高饱和亮蓝；
+ * - 危险操作默认也是文字色，只有 hover 才出红底。
+ */
 .btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 5px;
-  padding: 6px 12px;
-  border: 1px solid var(--border);
+  height: var(--h-base);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  background: var(--panel);
+  background: transparent;
   color: var(--text);
   cursor: pointer;
   white-space: nowrap;
-  font-size: 13px;
-  box-shadow: var(--shadow-sm);
-  transition: background 0.16s var(--ease), border-color 0.16s var(--ease),
-    transform 0.12s var(--ease), color 0.16s var(--ease), box-shadow 0.16s var(--ease);
+  font-size: var(--fs-base);
+  transition:
+    background 0.14s var(--ease),
+    color 0.14s var(--ease),
+    border-color 0.14s var(--ease),
+    opacity 0.14s var(--ease);
 }
 
 .btn:hover:not(:disabled) {
-  border-color: var(--accent);
-  color: var(--accent);
-  transform: translateY(-1px);
-  box-shadow: var(--shadow);
+  background: var(--row-hover);
 }
 
 .btn:active:not(:disabled) {
-  transform: translateY(0) scale(0.985);
+  background: var(--panel-2);
+}
+
+/* 键盘聚焦才给环：鼠标点击不该留下一圈描边 */
+.btn:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
 }
 
 .btn:disabled {
-  opacity: 0.42;
+  opacity: var(--disabled-opacity);
   cursor: not-allowed;
-  box-shadow: none;
+  background: transparent;
 }
 
 .btn.primary {
-  background: var(--accent);
+  background: var(--accent-solid);
   color: #fff;
-  border-color: var(--accent);
 }
 
 .btn.primary:hover:not(:disabled) {
   background: var(--accent-hover);
-  border-color: var(--accent-hover);
-  color: #fff;
+}
+
+.btn.primary:active:not(:disabled) {
+  background: var(--accent-solid);
 }
 
 .btn.danger {
@@ -288,31 +610,43 @@ select,
 }
 
 .btn.danger:hover:not(:disabled) {
-  border-color: var(--danger);
-  color: var(--danger);
   background: var(--danger-soft);
+  color: var(--danger);
 }
 
 .btn.sm {
-  padding: 4px 9px;
-  font-size: 12px;
-  border-radius: var(--radius-xs);
+  height: var(--h-sm);
+  padding: 0 var(--sp-2);
+  font-size: var(--fs-sm);
 }
 
 .btn.icon {
-  padding: 6px 9px;
+  padding: 0 var(--sp-2);
 }
 
+/*
+ * 输入框 / 下拉（3.13.0 重做）
+ *
+ * 旧版是「白底 + 1px 描边」，在浅色主题里满屏都是小方框；
+ * 深色主题里描边与背景对比更强，更吵。
+ * 现在默认**柔和背景、无描边**，聚焦时才出现主色环 ——
+ * 「哪里能输入」由背景与留白表达，而不是靠描边。
+ */
 .input,
 .select {
-  padding: 6px 10px;
-  border: 1px solid var(--border);
+  height: var(--h-base);
+  padding: 0 var(--sp-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  background: var(--panel);
+  background: var(--panel-2);
+  color: var(--text);
   outline: none;
   min-width: 0;
-  transition: border-color 0.16s var(--ease), box-shadow 0.16s var(--ease),
-    background 0.16s var(--ease);
+  font-size: var(--fs-base);
+  transition:
+    background 0.14s var(--ease),
+    border-color 0.14s var(--ease),
+    box-shadow 0.14s var(--ease);
 }
 
 /*
@@ -350,20 +684,21 @@ select,
   }
 }
 
+/* 悬停只轻微加深底色，不出现描边 */
 .input:hover:not(:disabled),
 .select:hover:not(:disabled) {
-  border-color: var(--border-strong);
+  background: var(--row-hover);
 }
 
+/* 聚焦：主色环（用 box-shadow 而不是 border，避免尺寸跳动） */
 .input:focus,
 .select:focus {
-  border-color: var(--accent);
-  box-shadow: 0 0 0 3px var(--accent-soft);
   background: var(--panel);
+  box-shadow: 0 0 0 2px var(--accent-soft), 0 0 0 1px var(--accent) inset;
 }
 
 .input:disabled {
-  opacity: 0.6;
+  opacity: var(--disabled-opacity);
   cursor: not-allowed;
 }
 
@@ -372,9 +707,15 @@ select,
   min-width: 0;
 }
 
+/*
+ * 辅助文字（`.muted`）
+ *
+ * 只改颜色、**不改字号** —— 旧版顺手写了 `font-size: 12px`，
+ * 于是凡是套了 `.muted` 的文字都会比周围小一号，
+ * 而它本意只是「次要信息」。字号应该由使用处决定（需要更小时显式写）。
+ */
 .muted {
   color: var(--text-dim);
-  font-size: 12px;
 }
 
 .empty {
@@ -407,21 +748,37 @@ select,
 
 /* ================================ 资源树 ================================ */
 .tree-search {
-  padding: 10px 12px;
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
   display: flex;
-  gap: 6px;
-  border-bottom: 1px solid var(--border);
+  gap: var(--sp-2);
 }
 
 .tree {
-  padding: 6px 6px 22px;
+  padding: var(--sp-1) var(--sp-2) var(--sp-7);
 }
 
+/*
+ * 搜索状态提示（标题命中 / 正文命中 / 正在搜）。
+ * 用一行小字而不是 toast：它是**持续状态**而不是一次性事件，
+ * 用 toast 会一闪而过，用户回头就不知道结果为什么是这些。
+ */
+.tree-hint {
+  font-size: var(--fs-xs);
+  padding: var(--sp-2) var(--sp-3) var(--sp-1);
+  line-height: 1.5;
+}
+
+/*
+ * 树节点（3.13.0）
+ *
+ * 行高与 padding 略增（5px → 6px），选中态改为「主色极淡底 + 主色文字」——
+ * 旧版是蓝底 + 加粗，在长列表里每行都像被框住。
+ */
 .tnode {
   display: flex;
   align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
+  gap: var(--sp-2);
+  padding: 6px var(--sp-2);
   border-radius: var(--radius-xs);
   cursor: pointer;
   white-space: nowrap;
@@ -434,8 +791,9 @@ select,
 }
 
 .tnode.active {
-  background: var(--row-active);
-  font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: var(--fw-medium);
 }
 
 .tnode .arrow {
@@ -500,7 +858,7 @@ select,
   gap: 7px;
   padding: 8px 12px;
   background: var(--panel);
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--hairline);
   flex: 0 0 auto;
   flex-wrap: wrap;
 }
@@ -579,36 +937,51 @@ mark {
 }
 
 /* ============================== 右侧任务面板 ============================== */
+
+/*
+ * 分段（3.13.0）：去掉分段之间的横线。
+ * 右栏本来就被 `.seg` 切成四五块、每块一条 `border-bottom`，
+ * 加上每块内部又用盒子包元素，整栏看起来像抽屉堆叠。
+ * 现在只靠间距与「小标题 + 次级色」建立分组。
+ */
 .seg {
-  padding: 12px 14px;
-  border-bottom: 1px solid var(--border);
+  padding: var(--sp-4) var(--sp-4) var(--sp-3);
+}
+
+.seg + .seg {
+  padding-top: var(--sp-2);
 }
 
 .seg-title {
-  font-size: 12px;
+  font-size: var(--fs-sm);
   color: var(--text-dim);
-  margin-bottom: 8px;
+  margin-bottom: var(--sp-2);
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: var(--sp-2);
   letter-spacing: 0.02em;
+  font-weight: var(--fw-medium);
 }
 
+/*
+ * 列表行（时间范围 / 片段 / 历史共用）：**无边框、有底色**。
+ * 旧版每行都是「1px 描边 + 灰底」，一屏十几行就是十几个方框。
+ */
 .range-item {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 7px 10px;
-  border: 1px solid var(--border);
+  gap: var(--sp-2);
+  padding: var(--sp-2) var(--sp-3);
+  border: 1px solid transparent;
   border-radius: var(--radius-xs);
-  margin-bottom: 6px;
-  background: var(--panel-2);
-  font-size: 13px;
-  transition: border-color 0.16s var(--ease), background 0.16s var(--ease);
+  margin-bottom: var(--sp-1);
+  background: transparent;
+  font-size: var(--fs-base);
+  transition: background 0.14s var(--ease);
 }
 
 .range-item:hover {
-  border-color: var(--border-strong);
+  background: var(--row-hover);
 }
 
 .range-item .idx {
@@ -642,7 +1015,7 @@ mark {
   gap: 8px;
   flex-wrap: wrap;
   padding: 12px 14px;
-  border-top: 1px solid var(--border);
+  border-top: 1px solid var(--hairline);
   flex: 0 0 auto;
 }
 
@@ -663,7 +1036,7 @@ mark {
   font-weight: 600;
   margin: 30px 0 12px;
   padding-bottom: 9px;
-  border-bottom: 1px solid var(--border);
+  border-bottom: 1px solid var(--hairline);
   letter-spacing: -0.01em;
 }
 
@@ -754,15 +1127,22 @@ mark {
 }
 
 /* ================================ 弹窗 ================================ */
+
+/*
+ * 遮罩：中性黑 + 轻模糊，不加蓝调。
+ * 旧值 `rgba(12,16,24,.45)` 带蓝，压在深色主题上会泛蓝；
+ * `backdrop-filter` 的模糊从 2px 提到 3px，让浮层与背景的分离更干净
+ *（比加粗阴影更「轻」）。
+ */
 .mask {
   position: fixed;
   inset: 0;
-  background: rgba(12, 16, 24, 0.45);
-  backdrop-filter: blur(2px);
+  background: rgba(0, 0, 0, 0.42);
+  backdrop-filter: blur(3px);
   display: flex;
   align-items: center;
   justify-content: center;
-  z-index: 800;
+  z-index: var(--z-dialog);
   animation: mask-in 0.16s var(--ease);
 }
 
@@ -775,13 +1155,13 @@ mark {
 .modal {
   background: var(--panel);
   border-radius: var(--radius);
-  padding: 20px 22px;
+  padding: var(--sp-6);
   width: 540px;
   max-width: 92vw;
   max-height: 86vh;
   overflow: auto;
+  /* 浮层靠阴影与遮罩分离，不再补一圈描边 */
   box-shadow: var(--shadow-lg);
-  border: 1px solid var(--border);
   animation: modal-in 0.2s var(--ease);
 }
 
@@ -792,34 +1172,62 @@ mark {
   }
 }
 
+/**
+ * 通用对话框（与 `.modal` 同样的外观，但更窄、适合「AI 解释」这类只读内容）。
+ * 放在全局是因为多个组件都用它，分散到各自的 scoped 样式里会不一致。
+ */
+/*
+ * 通用对话框（3.13.0）：去掉 1px 描边。
+ * 浮层本来就靠阴影与遮罩与背景分离，再加一圈边框属于噪声。
+ */
+.dialog {
+  background: var(--panel);
+  border-radius: var(--radius);
+  padding: var(--sp-5) var(--sp-5) var(--sp-4);
+  width: 520px;
+  max-width: 92vw;
+  max-height: 80vh;
+  overflow: auto;
+  box-shadow: var(--shadow-lg);
+  animation: modal-in 0.2s var(--ease);
+}
+
 .modal h3 {
-  margin: 0 0 16px;
-  font-size: 16px;
-  font-weight: 600;
+  margin: 0 0 var(--sp-4);
+  font-size: var(--fs-md);
+  font-weight: var(--fw-bold);
 }
 
 .modal .actions {
   display: flex;
   justify-content: flex-end;
-  gap: 8px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+  gap: var(--sp-2);
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--hairline);
 }
 
 /* ================================ Toast ================================ */
+/* ================================ Toast ================================ */
+
+/*
+ * 提示条（3.13.0）：改成**跟随主题的面板色**，而不是写死的深色 #2a2f3a。
+ * 写死深色在浅色主题下很突兀，而且与整体中性配色不统一。
+ * 错误/成功仍用语义色填充 —— 那两种情况需要一眼被看到。
+ */
 .toast {
   position: fixed;
   left: 50%;
-  bottom: 30px;
+  bottom: var(--sp-7);
   transform: translateX(-50%);
-  padding: 10px 18px;
+  padding: var(--sp-3) var(--sp-5);
   border-radius: var(--radius-sm);
-  background: #2a2f3a;
-  color: #fff;
+  background: var(--panel-2);
+  color: var(--text);
+  border: 1px solid var(--hairline);
   box-shadow: var(--shadow-lg);
-  z-index: 999;
-  font-size: 13px;
+  z-index: var(--z-toast);
+  font-size: var(--fs-base);
   line-height: 1.6;
   max-width: 70vw;
   white-space: pre-wrap;
@@ -842,9 +1250,14 @@ mark {
 }
 
 /* ============================== 滚动条 ============================== */
+
+/*
+ * 滚动条（3.13.0）：更细、更弱。
+ * 旧版 11px 宽 + `--border-strong` 色，在深色主题里几乎和内容抢注意力。
+ */
 ::-webkit-scrollbar {
-  width: 11px;
-  height: 11px;
+  width: 10px;
+  height: 10px;
 }
 
 ::-webkit-scrollbar-track {
@@ -852,7 +1265,7 @@ mark {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--border-strong);
+  background: var(--border);
   border-radius: 6px;
   border: 3px solid transparent;
   background-clip: content-box;

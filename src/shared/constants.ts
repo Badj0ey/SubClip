@@ -14,7 +14,7 @@ export const DEFAULT_PORT = 8765
  * 业务数据目录名（位于 userData 下）。
  * 刻意避开 `cache` / `Cache`，否则会被 Chromium 的磁盘缓存接管并清空。
  */
-export const APP_DATA_DIR = 'srt-tool-data'
+export const APP_DATA_DIR = 'subclip-data'
 
 /** 本地切片画质选项（B站 qn 值） */
 export const QUALITY_OPTIONS = [

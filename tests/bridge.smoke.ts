@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { TreeNode } from '../src/shared/types'
+import { BRIDGE_ALLOWED_ORIGINS, BRIDGE_PROTOCOL_VERSION } from '../src/shared/bridge'
 import { bridge } from '../src/main/bridge'
 import * as db from '../src/main/db'
 import { loadSettings } from '../src/main/settings'
@@ -96,14 +97,29 @@ async function run(): Promise<void> {
   check('连接后收到服务端主动握手', () => {
     const hello = inbox.find((m) => m.type === 'hello-ack')
     assert.ok(hello, '没有收到 hello-ack')
-    assert.strictEqual(hello.server, 'srt-clip-helper')
+    assert.strictEqual(hello.server, 'subclip')
     assert.strictEqual(typeof hello.protocol, 'number')
+  })
+
+  /* --------------------- 统一信封与能力表（第七阶段，v5） --------------------- */
+
+  check('出站握手带统一信封：v + caps', () => {
+    const hello = inbox.find((m) => m.type === 'hello-ack')
+    assert.strictEqual(hello.v, BRIDGE_PROTOCOL_VERSION, 'hello-ack 应带协议版本')
+    assert.ok(hello.caps && typeof hello.caps === 'object', 'hello-ack 应带能力表')
+    assert.strictEqual(
+      hello.caps.pullRequest,
+      true,
+      '桌面端应声明支持「插件请求拉取全部分P」'
+    )
+    assert.strictEqual(hello.caps.requestSubtitles, true, '也应声明能要求插件抓某一 P')
   })
 
   check('连接数统计为 1', () => {
     assert.strictEqual(bridge.status().clients.length, 1)
   })
 
+  // 老客户端（不带 v / caps）—— 模拟 v4 插件
   ws.send(JSON.stringify({ type: 'hello', version: '1.0.0', browser: 'Edge' }))
   await wait(250)
 
@@ -111,6 +127,12 @@ async function run(): Promise<void> {
     const c = bridge.status().clients[0]
     assert.strictEqual(c.browser, 'Edge')
     assert.strictEqual(c.version, '1.0.0')
+  })
+
+  check('老插件（不带信封）按 v1 + 空能力表记录', () => {
+    const c = bridge.status().clients[0]
+    assert.strictEqual(c.protocol, 1, '缺 v 时按 1 记，而不是报错或拒绝')
+    assert.deepStrictEqual(c.caps, {}, '没声明能力表就是空表')
   })
 
   /* ------------------------------ 页面信息同步 ----------------------------- */
@@ -635,6 +657,69 @@ async function run(): Promise<void> {
   })
 
   pullWs.close()
+  await wait(200)
+
+  /* --------------- 协议版本倒挂与能力校验（第七阶段，v5） --------------- */
+
+  // 声明了能力表、但**故意不声明** pageInfo 的连接
+  const capsWs = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const capsInbox: any[] = []
+  capsWs.on('message', (raw) => capsInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    capsWs.on('open', () => resolve())
+    capsWs.on('error', reject)
+  })
+  capsWs.send(
+    JSON.stringify({
+      type: 'hello',
+      v: BRIDGE_PROTOCOL_VERSION + 1,
+      caps: { subtitle: true },
+      version: '9.9.9',
+      browser: 'Edge'
+    })
+  )
+  await wait(250)
+
+  check('插件协议高于桌面端时推一次 version-skew 事件（界面据此提示更新桌面端）', () => {
+    const ev = pushes.find((p) => p.channel === 'bridge:version-skew')
+    assert.ok(ev, `应推送 bridge:version-skew，实际推送：${pushes.map((p) => p.channel).join(',')}`)
+    const info = ev!.payload as { clientProtocol: number; serverProtocol: number }
+    assert.strictEqual(info.clientProtocol, BRIDGE_PROTOCOL_VERSION + 1)
+    assert.strictEqual(info.serverProtocol, BRIDGE_PROTOCOL_VERSION)
+  })
+
+  check('能力表按声明记录（只记显式 true 的项）', () => {
+    const c = bridge.status().clients.find((x) => x.version === '9.9.9')
+    assert.ok(c, '应能找到该连接')
+    assert.strictEqual(c!.protocol, BRIDGE_PROTOCOL_VERSION + 1, '协议版本按信封记录')
+    assert.deepStrictEqual(c!.caps, { subtitle: true }, '未声明的能力不会凭空出现')
+  })
+
+  check('声明了能力表却没声明该能力 → 对应消息被丢弃', () => {
+    const before = pushes.filter((p) => p.channel === 'bridge:page-info').length
+    capsWs.send(
+      JSON.stringify({
+        type: 'page-info',
+        v: BRIDGE_PROTOCOL_VERSION + 1,
+        caps: { subtitle: true },
+        payload: {
+          pageType: 'video',
+          bvid: 'BV1GJ411x7h7',
+          title: '不该被处理的页面信息',
+          url: 'https://www.bilibili.com/video/BV1GJ411x7h7',
+          page: 1,
+          uploader: { uid: 1, name: 'n' }
+        }
+      })
+    )
+    assert.strictEqual(
+      pushes.filter((p) => p.channel === 'bridge:page-info').length,
+      before,
+      '没声明 pageInfo 能力的连接发来的 page-info 应被丢弃'
+    )
+  })
+
+  capsWs.close()
   await wait(200)
 
   db.closeDb()

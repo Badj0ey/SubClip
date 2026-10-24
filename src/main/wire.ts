@@ -148,6 +148,13 @@ export function wireBridge(push: PushFn): void {
   })
 
   bridge.on('log', (level, message) => push('bridge:log', { level, message }))
+
+  /**
+   * 插件协议版本高于桌面端（第七阶段）。
+   * 转发给渲染进程弹一次提示 ——「新功能悄悄不可用」是版本倒挂最典型的后果，
+   * 而这种信息只写在 `lastEvent` 里用户看不到。
+   */
+  bridge.on('version-skew', (info) => push('bridge:version-skew', info))
 }
 
 /** 仅供测试重置换线状态 */
