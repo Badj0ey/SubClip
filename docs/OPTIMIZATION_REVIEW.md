@@ -33,9 +33,9 @@
 
 - 合并范围：与 3.16.0 逐文件比对后确认，整合包相对本仓库只有 5 个源码文件差异（`src/main/settings.ts`、`ImportDialog.vue`、`AppNav.vue`、`commands.ts`、`polish.css`）和本文档；其余文件完全一致，没有夹带构建产物或可执行文件。
 - 类型检查：`npm run typecheck` 通过（vue-tsc + tsc）。
-- 自动化测试：`npm test` 通过。core / refactor / wbi / slice 全过；SQLite 冒烟 45 项通过 0 失败（新增「设置：旧明文可读，保存后敏感字段加密且无临时文件残留」）；桥接 38 项通过 0 失败。
-- 生产构建：`npm run build` 通过。
-- GUI 冒烟：用临时 `--user-data-dir` 启动真实 Electron 源码应用，首页正常渲染；「导入字幕文件」弹窗的防重、忙碌禁用和部分失败文案可见，未选文件时「导入字幕」保持禁用。
+- 自动化测试：`npm test` 通过。core 181、refactor 6、wbi 20、slice 14 全过；SQLite 冒烟 45 项通过 0 失败（新增「设置：旧明文可读，保存后敏感字段加密且无临时文件残留」）；桥接 38 项通过 0 失败。
+- 生产构建与打包：`npm run build`、`npm run dist:dir` 通过；`dist/win-unpacked/SubClip.exe` 显示 ProductVersion 3.16.1.0（未签名）。
+- GUI 冒烟：用临时 `--user-data-dir` 分别启动真实 Electron 源码应用和打包版，首页正常渲染；「导入字幕文件」弹窗的防重、忙碌禁用和部分失败文案可见，未选文件时「导入字幕」保持禁用。
 - safeStorage 端到端：通过真实 IPC 保存 Cookie / 桥接令牌 / AI Key 后，磁盘 `settings.json` 中三个字段均为 `safeStorage:v1:` 密文且无明文；再次读取可正确解密；没有 `.tmp` 残留。
 - 已知未覆盖：真实 B 站账号登录与拉取、FFmpeg 网络下载/安装、视频剪辑导出全流程、Windows 安装包签名、macOS/Linux 实机。加密在系统密钥环不可用时仍会回退明文。
 - 数据与回滚：升级前已备份源码与旧整合包；密文与当前系统用户绑定，换机或回滚到 3.16.0 前需要重新填写 Cookie / 令牌 / AI Key。

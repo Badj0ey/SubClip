@@ -83,7 +83,7 @@ B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优�
 
 ## 测试状态与限制
 
-代码提供 TypeScript 检查、纯逻辑回归、SQLite 冒烟、用户脚本协议测试和 Electron 桥接测试。**完整 GUI 与 Windows 安装包仍需在具备 Electron/依赖的 Windows 环境实际验证**；不要将静态检查视为已完成发布验收。
+3.16.1 已在本机完成 TypeScript 检查、全量测试、生产构建、打包目录 GUI 冒烟和 safeStorage 端到端验证；正式代码签名、NSIS 安装包发布流程、真实 B 站登录、FFmpeg 下载和完整剪辑导出仍未覆盖。结果见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
 
 - [重构与验证报告](docs/REFACTOR_REPORT.md)
 - [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)

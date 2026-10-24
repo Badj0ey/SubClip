@@ -48,6 +48,6 @@ See [Feature inventory](docs/FEATURES.md), [Architecture](docs/ARCHITECTURE.md),
 
 Project data is stored locally in SQLite under Electron `userData`. Bilibili cookies, optional bridge tokens and AI keys are encrypted with Electron `safeStorage` (Windows DPAPI / macOS Keychain / Linux keyring) when available and migrated automatically the next time settings are saved; without OS encryption they fall back to plaintext. Encrypted values are bound to the current OS user, so re-enter them after moving to another machine or account. Back up your data before upgrading, and avoid sharing your settings file. The browser bridge validates origins and supports a pairing token.
 
-A full Windows GUI smoke test and installer validation require an environment with Electron dependencies and a desktop session. Source-level tests alone are not release certification.
+Release 3.16.1 was verified on this machine with type checking, the full test suite, a production build, a packaged-app GUI smoke test and an end-to-end `safeStorage` check. Code signing, the NSIS installer flow, real Bilibili login, FFmpeg download and the complete clip-export flow remain unverified; see the [quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md).
 
 MIT license — see [LICENSE](LICENSE). Third-party notices: [THIRD-PARTY.md](THIRD-PARTY.md).
