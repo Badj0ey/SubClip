@@ -82,6 +82,8 @@ git push origin v3.18.0
 
 在 **Releases** 页打开该草稿，检查安装包、ZIP 和校验文件是否都在，补充发布说明，确认无误后点 **Publish release**。草稿在发布前对普通访客不可见。
 
+从 3.18.1 起安装包内置 FFmpeg（约 80 MB），安装包体积会到 180 MB 左右，属预期；CI 打包时会自动下载并校验 ffmpeg，runner 访问 `registry.npmmirror.com` 失败时可用 `FFMPEG_DOWNLOAD_BASE` 指向其它镜像。发布说明里请一并注明 FFmpeg 的 GPLv3 许可与源码链接（见 `THIRD-PARTY.md`）。
+
 也可以手动触发 `CI`（Actions → CI → Run workflow）：它只构建并上传 Actions artifact，不创建 Release，适合先在仓库里验收打包结果。
 
 ## 4. 本地打包与手工发布
@@ -128,7 +130,7 @@ gh release create v3.18.0 --draft --title "SubClip 3.18.0" --generate-notes \
 ## 已知限制
 
 - 安装包未做代码签名，Windows SmartScreen 可能提示“未知发布者”；请先核对哈希，再决定是否运行。
-- 首次使用某些功能需要联网或自行安装 FFmpeg。
+- 安装包已内置 FFmpeg，切片无需另装；B 站拉取、预览、模型下载和云端 AI 仍需要联网。
 - 升级前建议在「设置」中备份数据库。
 ```
 

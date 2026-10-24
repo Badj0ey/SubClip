@@ -5,7 +5,7 @@
 - Node.js **22+**（SQLite 回归测试使用 `node:sqlite`）；npm。
 - Windows 是当前配置的正式打包目标；Linux/macOS 可以用于部分源码测试，但不是本仓库的发布承诺。
 - 开发/冒烟测试需要 Electron 运行时。Windows 发行包使用 `electron-builder`。
-- 真正输出视频时需要 FFmpeg；B 站接口、预览和模型下载需要网络。
+- 真正输出视频时需要 FFmpeg：源码开发态用本机 PATH 里的 `ffmpeg` 或在设置里指定；`npm run dist` 会自动下载并内置到安装包。B 站接口、预览和模型下载需要网络。
 
 ```bash
 npm ci

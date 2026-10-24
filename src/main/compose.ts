@@ -65,7 +65,7 @@ export async function composeMovie(
     return {
       ok: false,
       outputs: [],
-      message: '未找到 ffmpeg：请在「设置 → 本地切片」里指定路径，或点「自动下载」'
+      message: '未找到 ffmpeg：安装包已内置，若被替换或删除，请在「设置 → 本地切片」里重新指定'
     }
   }
 

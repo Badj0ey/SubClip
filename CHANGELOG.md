@@ -2,7 +2,7 @@
 
 本文件保留对外有用的**版本级变化**，不再把每次开发过程、提示词和逐行修改记录放进发布日志。
 
-## 3.18.1 — 直播回放弹幕说明（2026-10-24）
+## 3.18.1 — 直播回放弹幕说明与内置 FFmpeg（2026-10-24）
 
 ### 修正
 
@@ -10,17 +10,27 @@
 - 弹幕总数为 0 时不再发分段请求。以 14,098 秒的直播回放为例，原来要发约 40 个 `seg.so` 请求才能确认没有弹幕，现在只发 1 个视频信息请求。
 - `BiliVideoInfo` 增加可选的 `danmakuCount`（`stat.danmaku`）与 `desc`，`DanmakuResult` 增加可选的 `emptyReason`；不涉及 SQLite 表结构、桥接协议（仍 v4）和既有 IPC。
 
+### 新增
+
+- 安装包内置 FFmpeg 6.1.1（gyan.dev essentials 静态构建，GPLv3）。`npm run dist` 会先运行 `npm run vendor:ffmpeg`，从镜像下载并校验 SHA-256 后放进 `vendor/ffmpeg`，再由 electron-builder 复制到 `resources/ffmpeg/`；主进程按「设置指定 → 用户自备副本（userData/bin）→ 安装包内置 → PATH」查找。装完即可切片，不再要求用户单独安装 FFmpeg。
+- 源码开发态仍然不内置：`npm run dev` 需要本机 PATH 里有 `ffmpeg`，或在「设置 → 本地切片」里指定；`npm run dist`（含 CI）才会下载并打包。
+- `vendor/` 加入 `.gitignore`，80 MB 的二进制不进 Git；下载脚本 `scripts/fetch-ffmpeg.mjs` 支持 `FFMPEG_DOWNLOAD_BASE` 换镜像、`FFMPEG_SKIP=1` 跳过。
+
 ### 兼容性
 
 - `package.json`、`package-lock.json` 与用户脚本 `@version` 同步为 3.18.1；`tests/wbi.test.ts` 的版本一致性检查仍通过。
 - 不新增 npm 依赖；弹幕仍然不落库、不参与检索、切片或导出。
+- 安装包体积增加约 21 MB（NSIS setup 从 139,314,109 B 到 161,041,436 B；ZIP 从 189,337,411 B 到 217,934,446 B）；Windows Defender 可能延长首次扫描时间。
+- FFmpeg 以独立可执行文件分发（命令行调用，不与自有代码链接），安装目录附 `ffmpeg.LICENSE`（GPLv3）与 `ffmpeg.README`；`THIRD-PARTY.md`、`docs/FEATURES.md`、`docs/RELEASE.md` 已同步。
 
 ### 验证
 
 - 2026-10-24：`npm run typecheck`、`npm test`（7 套件：core 181、refactor 6、wbi 20、slice 14、danmaku、smoke 45、bridge 38，均 0 失败）、`npm run build` 通过；`tests/danmaku.test.ts` 新增直播回放分类断言。
+- `npm run dist` 构建通过：`dist/SubClip-3.18.1-setup.exe` 161,041,436 B、`dist/SubClip-3.18.1-x64.zip` 217,934,446 B；`win-unpacked/resources/ffmpeg/` 含 `ffmpeg.exe`（82,797,568 B，SHA-256 与下载脚本锁定值一致）、`ffmpeg.LICENSE`、`ffmpeg.README`。
+- 打包版 GUI 实测（临时 `userData`）：`window.api.sliceCheck()` 返回 `{available:true, ffmpeg:"<安装目录>/resources/ffmpeg/ffmpeg.exe"}`；桥接注入 BV1o9J96eESU 字幕后展开「弹幕参考」，仍显示直播回放说明与「显示 0 条」。
 - 真实接口（复用本机配置与 Cookie）：BV1o9J96eESU（直播回放，14,098 秒）返回 `items=0`、`emptyReason=live-replay`，只发 1 个请求；BV1GJ411x7h7（普通视频）仍读到 1,402 条弹幕。
 - 渲染进程实测：临时 `userData` 启动构建产物，桥接注入 BV1o9J96eESU 字幕，展开「弹幕参考」后显示上述直播回放说明；`window.api.getDanmaku('BV1o9J96eESU', true)` 返回 `{ok:true, data:{items:[], emptyReason:'live-replay'}}`。
-- 未覆盖：安装包构建与打包版 GUI 冒烟；本次只验证了源码构建产物。
+- 未覆盖：真实安装向导流程（安装/卸载/SmartScreen）、真实切片导出；安装包本体只做了 `win-unpacked` 直接启动验证。
 
 ## 3.18.0 — 界面文案整理与安装体验（2026-10-24）
 

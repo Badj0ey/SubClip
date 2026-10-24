@@ -27,3 +27,9 @@ tests/large-*.srt
 scripts/*.png
 *.log
 .DS_Store
+
+# 打包时下载的 FFmpeg（体积大，不进 Git；npm run dist 会自动拉取并校验）
+vendor/
+
+# 本地排查用的临时脚本与截图
+.probe/

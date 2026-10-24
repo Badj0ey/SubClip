@@ -32,9 +32,10 @@
     "test:danmaku": "esbuild tests/danmaku.test.ts --bundle --platform=node --format=cjs --outfile=tests/danmaku.test.cjs --log-level=warning && node tests/danmaku.test.cjs",
     "test:smoke": "esbuild tests/smoke.ts --bundle --platform=node --format=cjs --outfile=tests/smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --log-level=warning && electron tests/smoke.cjs",
     "test:bridge": "esbuild tests/bridge.smoke.ts --bundle --platform=node --format=cjs --outfile=tests/bridge.smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --external:ws --log-level=warning && electron tests/bridge.smoke.cjs",
-    "dist": "npm run build && electron-builder --win",
-    "dist:dir": "npm run build && electron-builder --win --dir",
-    "dist:checksums": "node scripts/checksums.mjs"
+    "dist": "npm run vendor:ffmpeg && npm run build && electron-builder --win",
+    "dist:dir": "npm run vendor:ffmpeg && npm run build && electron-builder --win --dir",
+    "dist:checksums": "node scripts/checksums.mjs",
+    "vendor:ffmpeg": "node scripts/fetch-ffmpeg.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",

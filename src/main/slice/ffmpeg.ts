@@ -26,13 +26,24 @@ function findInPath(exe: string): string | null {
   return null
 }
 
-/** 内置副本的存放位置（用户点「自动下载」后放这里） */
-export function bundledFfmpegPath(): string {
+/** 用户自备副本的位置：设置里指定路径之外，也可以手动放到这里 */
+export function userFfmpegPath(): string {
   return join(app.getPath('userData'), 'bin', EXE)
 }
 
 /**
- * 定位 ffmpeg：设置里指定 → 应用数据目录内置 → PATH。
+ * 安装包内置的 ffmpeg。
+ *
+ * `electron-builder.yml` 把 `vendor/ffmpeg` 复制到 `resources/ffmpeg`，
+ * 所以正式安装后无需联网、无需配置即可切片；开发态没有这个目录，返回空串。
+ */
+export function packagedFfmpegPath(): string {
+  if (!app.isPackaged) return ''
+  return join(process.resourcesPath, 'ffmpeg', EXE)
+}
+
+/**
+ * 定位 ffmpeg：设置里指定 → 用户自备副本 → 安装包内置 → PATH。
  * 返回 null 表示没找到，切片功能会提示先安装。
  */
 export function resolveFfmpeg(): string | null {
@@ -41,8 +52,11 @@ export function resolveFfmpeg(): string | null {
   const custom = settings.ffmpegPath?.trim()
   if (custom && existsSync(custom)) return custom
 
-  const bundled = bundledFfmpegPath()
-  if (existsSync(bundled)) return bundled
+  const userCopy = userFfmpegPath()
+  if (existsSync(userCopy)) return userCopy
+
+  const packaged = packagedFfmpegPath()
+  if (packaged && existsSync(packaged)) return packaged
 
   return findInPath(EXE)
 }

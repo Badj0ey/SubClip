@@ -7,11 +7,13 @@
 
 SubClip 是基于 Electron、Vue 3、TypeScript 和 SQLite 的本地桌面工作台。它将 B 站字幕拉取、字幕阅读编辑、弹幕辅助定位、全文/语义检索、片段收藏、FFmpeg 切片和发布素材整理连接成一条工作流。基础功能无需云端 AI 服务。
 
-> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.0**，保留现有数据库结构、迁移流程、浏览器用户脚本协议和核心功能。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
+> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.1**，保留现有数据库结构、迁移流程、浏览器用户脚本协议和核心功能。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
 
 ## 快速开始
 
-开发环境：**Node.js 22+**、npm。Windows 发行版由 Electron Builder 构建；本地视频切片需要安装 FFmpeg。
+**使用安装包**：下载 Windows 安装包或免安装 ZIP 即可。Node.js、npm、FFmpeg 都不需要单独安装——打包版自带 Electron 运行时，安装包里也内置了 FFmpeg；语义检索模型在应用内按需下载。
+
+**从源码开发**：需要 **Node.js 22+** 与 npm。源码开发态不内置 FFmpeg，本机 PATH 里需要有 `ffmpeg`（或在「设置 → 本地切片」里指定），只有 `npm run dist` 打包时才会自动下载并放进安装包。
 
 ```bash
 npm ci
@@ -49,7 +51,7 @@ Windows 已安装依赖并完成构建后，可运行 `SubClip.bat`。中国大�
 | 字幕检索 | FTS5 全文检索、范围/标签/时间筛选、分页、批量选段 | 本地 SQLite |
 | 语义检索 | 本地向量模型下载、索引、按语义搜索 | 可选模型下载 |
 | 片段库 | 片段命名、标签、收藏、来源定位、发现、图谱、模板、素材包 | 本地 SQLite |
-| 剪辑任务 | 排队、调整顺序、FFmpeg 输出、取消/重试、历史 | FFmpeg；B 站流需网络 |
+| 剪辑任务 | 排队、调整顺序、FFmpeg 输出、取消/重试、历史 | 安装包已内置 FFmpeg；B 站流需网络 |
 | AI 辅助 | 摘要、标签建议、字幕解释、标题等 | 可选 Ollama 或 OpenAI 兼容接口 |
 | 浏览器联动 | B 站页面用户脚本推送字幕与页面信息 | 可选 Tampermonkey 脚本 |
 
@@ -87,7 +89,7 @@ B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优�
 
 ## 测试状态与限制
 
-3.18.0 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建以及 NSIS 安装包 / ZIP 构建；正式代码签名、真实 B 站登录、FFmpeg 下载和完整剪辑导出仍未覆盖。3.16.1 的打包版 GUI 与 safeStorage 验收记录见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
+3.18.1 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建以及 NSIS 安装包 / ZIP 构建，并验证打包版能识别内置 FFmpeg；正式代码签名、真实 B 站登录和完整剪辑导出仍未覆盖。3.16.1 的打包版 GUI 与 safeStorage 验收记录见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
 
 - [弹幕参考说明](docs/DANMAKU_GUIDE.md)
 - [重构与验证报告](docs/REFACTOR_REPORT.md)

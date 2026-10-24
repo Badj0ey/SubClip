@@ -11,9 +11,14 @@
 | [ws](https://github.com/websockets/ws) | MIT | 本地 WebSocket 通信 |
 | [SheetJS Community Edition / xlsx](https://git.sheetjs.com/sheetjs/sheetjs) | Apache-2.0（本项目锁定版本） | XLSX 导出 |
 | [Transformers.js](https://github.com/huggingface/transformers.js) | Apache-2.0 | 本地语义嵌入模型运行 |
+| [FFmpeg](https://ffmpeg.org/) 6.1.1（gyan.dev essentials 静态构建） | GPL-3.0 | 本地视频切片；随安装包分发，位于 `resources/ffmpeg/ffmpeg.exe` |
 | TypeScript、Vite、electron-vite、esbuild、electron-builder | 各自开源许可 | 开发与打包工具 |
 
-**注意：** 本项目不随源码包提供 FFmpeg 可执行文件或模型权重。用户自行安装 FFmpeg、下载模型时，还需遵守相应第三方许可和使用条款。Electron 安装包应保留 Electron/Chromium 自带的许可证文件。
+**注意：**
+
+- FFmpeg 以独立可执行文件形式随安装包分发（应用通过命令行调用，不与自有代码链接），安装目录的 `resources/ffmpeg/` 下附有 `ffmpeg.LICENSE`（GPLv3）与 `ffmpeg.README`（构建信息）。对应源码为 [FFmpeg commit e38092ef93](https://github.com/FFmpeg/FFmpeg/tree/e38092ef93)，构建来源见 [ffmpeg-static](https://github.com/eugeneware/ffmpeg-static)。
+- 本项目不随源码包提供模型权重；语义检索模型由应用按需下载，使用时需遵守相应第三方许可和使用条款。
+- Electron 安装包保留 Electron/Chromium 自带的许可证文件。
 
 ## 参考/移植来源
 

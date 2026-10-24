@@ -621,8 +621,9 @@ async function openOutputDir(): Promise<void> {
         </div>
       </div>
       <div class="hint">
-        本地切片需要 ffmpeg。若系统未安装，可点右上角「获取 ffmpeg」下载，解压后把
-        <code>bin\ffmpeg.exe</code> 的路径填到上面。
+        本地切片使用安装包内置的 ffmpeg，装好即可用，不需要单独安装。只有想换用别的版本时，
+        才需要点「选择…」指定，或把 <code>ffmpeg.exe</code> 放到用户数据目录的
+        <code>bin\</code> 下；「获取 ffmpeg」会打开官方下载页。
       </div>
 
       <!-- ------------------------------ 语义检索 ------------------------------ -->

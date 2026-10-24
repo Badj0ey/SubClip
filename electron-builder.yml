@@ -23,6 +23,12 @@ extraResources:
     to: userscript
     filter:
       - '**/*'
+  # 内置 ffmpeg（本地切片开箱可用）。构建前由 npm run vendor:ffmpeg 下载并校验，
+  # 放在 asar 外，主进程按 resources/ffmpeg/ffmpeg.exe 查找。
+  - from: vendor/ffmpeg
+    to: ffmpeg
+    filter:
+      - '**/*'
 
 win:
   icon: build/icon.ico
