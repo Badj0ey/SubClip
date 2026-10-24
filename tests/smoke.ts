@@ -3,7 +3,7 @@
  *   导入 SRT → 资源树 → 读取字幕 → 生成时间坐标 → 切片任务 → 导出 CSV/XLSX
  * 运行：npm run test:smoke
  */
-import { app } from 'electron'
+import { app, safeStorage } from 'electron'
 import assert from 'node:assert'
 import {
   copyFileSync,
@@ -20,6 +20,7 @@ import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import * as db from '../src/main/db'
 import { exportSlice, hasSubtitles, importLocalSrt, loadMergedDoc } from '../src/main/services'
+import { loadSettings, saveSettings } from '../src/main/settings'
 import { recommendHighlights, recommendTwins } from '../src/main/recommend'
 import type { Cue, TreeNode } from '../src/shared/types'
 import { buildRanges } from '../src/shared/ranges'
@@ -1345,6 +1346,40 @@ async function run(): Promise<void> {
     db.closeDb()
     rmSync(isoDir, { recursive: true, force: true })
     db.initDb(workDir)
+  })
+
+  /* ------------------- 17. 设置：明文兼容 / 敏感字段加密 ------------------- */
+  await checkAsync('设置：旧明文可读，保存后敏感字段加密且无临时文件残留', async () => {
+    const settingsFile = join(workDir, 'settings.json')
+    const cookie = 'SESSDATA=smoke-secret-value'
+    writeFileSync(settingsFile, JSON.stringify({ biliCookie: cookie, bridgeToken: 'token-1' }), 'utf8')
+
+    // 升级后第一次读取：旧版明文必须仍然可用
+    assert.strictEqual(loadSettings().biliCookie, cookie, '旧版明文 Cookie 应保持可读')
+
+    const saved = saveSettings({ aiOpenaiKey: 'sk-smoke-secret' })
+    assert.strictEqual(saved.biliCookie, cookie, '返回值应是明文，供主进程继续使用')
+    assert.strictEqual(saved.aiOpenaiKey, 'sk-smoke-secret')
+
+    const raw = readFileSync(settingsFile, 'utf8')
+    if (safeStorage.isEncryptionAvailable()) {
+      assert.ok(!raw.includes(cookie), '磁盘文件不应包含明文 Cookie')
+      assert.ok(!raw.includes('sk-smoke-secret'), '磁盘文件不应包含明文 AI Key')
+      assert.ok(raw.includes('safeStorage:v1:'), '应写入 safeStorage 版本前缀')
+    }
+
+    const reloaded = loadSettings()
+    assert.strictEqual(reloaded.biliCookie, cookie, '加密后的 Cookie 应可还原')
+    assert.strictEqual(reloaded.aiOpenaiKey, 'sk-smoke-secret', '加密后的 AI Key 应可还原')
+    assert.deepStrictEqual(
+      readdirSync(workDir).filter((name) => name.startsWith('settings.json.') && name.endsWith('.tmp')),
+      [],
+      '原子写入不应留下临时文件'
+    )
+
+    // 损坏的密文回退为空值，而不是让整个设置文件读取失败
+    writeFileSync(settingsFile, JSON.stringify({ biliCookie: 'safeStorage:v1:not-valid' }), 'utf8')
+    assert.strictEqual(loadSettings().biliCookie, '', '损坏密文应回退为空')
   })
 
   console.log(`\n通过 ${passed}，失败 ${failed}\n`)

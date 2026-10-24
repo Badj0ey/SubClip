@@ -1,9 +1,10 @@
 /**
  * 应用设置持久化（userData/settings.json）。
  */
-import { app } from 'electron'
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { app, safeStorage } from 'electron'
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { randomUUID } from 'node:crypto'
 import type { AppSettings } from '@shared/types'
 import {
   APP_DATA_DIR,
@@ -75,12 +76,42 @@ export function sanitizeCacheDir(dir: string | undefined): string {
   return value
 }
 
+const SECRET_KEYS = ['bridgeToken', 'biliCookie', 'aiOpenaiKey'] as const
+const SECRET_PREFIX = 'safeStorage:v1:'
+
+function decodeSecrets(raw: Partial<AppSettings>): Partial<AppSettings> {
+  const result = { ...raw }
+  for (const key of SECRET_KEYS) {
+    const value = result[key]
+    if (typeof value !== 'string' || !value.startsWith(SECRET_PREFIX)) continue
+    try {
+      result[key] = safeStorage.isEncryptionAvailable()
+        ? safeStorage.decryptString(Buffer.from(value.slice(SECRET_PREFIX.length), 'base64'))
+        : ''
+    } catch {
+      result[key] = ''
+    }
+  }
+  return result
+}
+
+function encodeSecrets(settings: AppSettings): AppSettings {
+  const result = { ...settings }
+  if (!safeStorage.isEncryptionAvailable()) return result
+  for (const key of SECRET_KEYS) {
+    const value = result[key]
+    if (typeof value === 'string' && value)
+      result[key] = SECRET_PREFIX + safeStorage.encryptString(value).toString('base64')
+  }
+  return result
+}
+
 export function loadSettings(): AppSettings {
   const base = defaultSettings()
   const p = settingsPath()
   if (!existsSync(p)) return base
   try {
-    const raw = JSON.parse(readFileSync(p, 'utf8')) as Partial<AppSettings>
+    const raw = decodeSecrets(JSON.parse(readFileSync(p, 'utf8')) as Partial<AppSettings>)
     return {
       ...base,
       ...raw,
@@ -97,6 +128,13 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
   const merged = { ...loadSettings(), ...patch }
   const p = settingsPath()
   mkdirSync(dirname(p), { recursive: true })
-  writeFileSync(p, JSON.stringify(merged, null, 2), 'utf8')
+  const temp = `${p}.${randomUUID()}.tmp`
+  try {
+    writeFileSync(temp, JSON.stringify(encodeSecrets(merged), null, 2), { encoding: 'utf8', mode: 0o600 })
+    renameSync(temp, p)
+  } catch (err) {
+    try { if (existsSync(temp)) unlinkSync(temp) } catch { /* 原设置文件保持不变 */ }
+    throw err
+  }
   return merged
 }
