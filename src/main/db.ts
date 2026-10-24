@@ -23,6 +23,7 @@ import { dirname, join } from 'node:path'
 import type {
   AnalysisRecord,
   ClipTask,
+  ClipDetailSummary,
   Cue,
   CueSearchFilters,
   CueSearchHit,
@@ -2507,6 +2508,62 @@ export function listClips(): ClipTask[] {
   return rows.map(toClip)
 }
 
+/** Fetch visible clip metadata in three bounded queries instead of N IPC calls
+ * that each scan the entire clips table (formerly O(N²)). */
+export function listClipDetails(clipIds: number[]): ClipDetailSummary[] {
+  const ids = [...new Set(clipIds.filter((id) => Number.isSafeInteger(id) && id > 0))].slice(0, 200)
+  if (!ids.length) return []
+  const db = requireDb()
+  const marks = ids.map(() => '?').join(',')
+  const rows = db.prepare(
+    `select c.id as clipId, d.label as docLabel, v.title as videoTitle, v.id as videoId
+     from clips c
+     left join docs d on d.id = c.doc_id
+     left join videos v on v.id = d.video_id
+     where c.id in (${marks})`
+  ).all(...ids) as unknown as Array<{
+    clipId: number; docLabel: string | null; videoTitle: string | null; videoId: number | null
+  }>
+  const videoIds = [...new Set(rows.map((r) => r.videoId).filter((id): id is number => id != null))]
+  const creatorsByVideo = new Map<number, string[]>()
+  if (videoIds.length) {
+    const videoMarks = videoIds.map(() => '?').join(',')
+    const authors = db.prepare(
+      `select vc.video_id as videoId, cr.name as name
+       from video_creators vc join creators cr on cr.id = vc.creator_id
+       where vc.video_id in (${videoMarks}) order by cr.name asc`
+    ).all(...videoIds) as unknown as Array<{ videoId: number; name: string }>
+    for (const author of authors) {
+      const names = creatorsByVideo.get(author.videoId) ?? []
+      names.push(author.name)
+      creatorsByVideo.set(author.videoId, names)
+    }
+  }
+  const tagsByClip = new Map<number, number[]>()
+  const tags = db.prepare(
+    `select clip_id as clipId, tag_id as tagId from clip_tags where clip_id in (${marks})`
+  ).all(...ids) as unknown as Array<{ clipId: number; tagId: number }>
+  for (const tag of tags) {
+    const tagIds = tagsByClip.get(tag.clipId) ?? []
+    tagIds.push(tag.tagId)
+    tagsByClip.set(tag.clipId, tagIds)
+  }
+  return rows.map((r) => ({
+    clipId: r.clipId,
+    docLabel: r.docLabel ?? '',
+    videoTitle: r.videoTitle ?? '',
+    creators: r.videoId == null ? [] : (creatorsByVideo.get(r.videoId) ?? []),
+    tagIds: tagsByClip.get(r.clipId) ?? []
+  }))
+}
+
+/** Single-row lookup for the legacy detail IPC. */
+export function getClip(id: number): ClipTask | null {
+  if (!Number.isSafeInteger(id) || id <= 0) return null
+  const row = requireDb().prepare('select * from clips where id = ?').get(id) as ClipRow | undefined
+  return row ? toClip(row) : null
+}
+
 export function deleteClip(id: number): void {
   requireDb().prepare('delete from clips where id = ?').run(id)
 }
@@ -2907,9 +2964,9 @@ export function dashboardOverview(limit = 12): DashboardOverview {
         const docs = (video.children ?? []).filter((n) => n.type === 'doc')
         const docCount = docs.length
         // 视频节点自身没有时间字段，用子文档的时间兜底；都没有则算 0（沉到列表底部）
-        const created = docs.reduce((min, d) => {
+        const created = docs.reduce((latest, d) => {
           const at = (d.payload as { createdAt?: number } | undefined)?.createdAt ?? 0
-          return at && (!min || at < min) ? at : min
+          return Math.max(latest, at)
         }, 0)
         if (created > latest) latest = created
 
@@ -2957,6 +3014,16 @@ export function dashboardOverview(limit = 12): DashboardOverview {
           videoCount,
           updatedAt: latest
         })
+        if (collection.favorite) {
+          favorites.push({
+            key: collection.key,
+            type: 'collection',
+            label: collection.label,
+            bvid: null,
+            docId: null,
+            videoId: null
+          })
+        }
       }
     }
 
@@ -2978,6 +3045,8 @@ export function dashboardOverview(limit = 12): DashboardOverview {
   const s = stats()
 
   return {
+    totalVideos: s.videos,
+    totalDocs: s.docs,
     recentVideos: videos.filter((v) => v.createdAt > 0).sort(byTimeDesc).slice(0, limit),
     recentCollections: collections.sort(byTimeDesc).slice(0, limit),
     favorites: favorites.slice(0, limit),

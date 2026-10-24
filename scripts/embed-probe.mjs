@@ -11,7 +11,7 @@
  * 而同样的地址用 Node 原生 fetch 访问 hf-mirror 是正常的。
  * 所以我们自己下载文件、自己摆成 HF 的目录结构，再让 transformers **从本地加载**。
  *
- * 用法：node tests/embed-probe.mjs [缓存根目录]
+ * 用法：node scripts/embed-probe.mjs [缓存根目录]
  *   缓存根目录默认为 ./.embed-probe-cache（正式实现里是 userData/embed-models）
  */
 import { mkdirSync, existsSync, writeFileSync } from 'node:fs'

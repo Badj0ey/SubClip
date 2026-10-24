@@ -1,9 +1,9 @@
 /**
  * 开发辅助脚本：通过 Chrome DevTools Protocol 操作运行中的应用（评估 JS / 截图）。
  * 用法：
- *   node tests/shot.mjs eval "window.api.getStats()"
- *   node tests/shot.mjs shot out.png
- *   node tests/shot.mjs click "导入 SRT"
+ *   node scripts/shot.mjs eval "window.api.getStats()"
+ *   node scripts/shot.mjs shot out.png
+ *   node scripts/shot.mjs click "导入 SRT"
  */
 import { writeFileSync } from 'node:fs'
 
@@ -100,7 +100,7 @@ if (cmd === 'eval') {
     console.log(`已保存截图：${file}`)
   }
 } else {
-  console.error('用法：node tests/shot.mjs <eval|click|shot|errors> [参数]')
+  console.error('用法：node scripts/shot.mjs <eval|click|shot|errors> [参数]')
   process.exitCode = 1
 }
 

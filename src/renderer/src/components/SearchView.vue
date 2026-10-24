@@ -440,7 +440,7 @@ function weightLabel(hit: CueSearchHit): string {
 }
 
 /*
- * 页头（`.view-head` / `.view-title` / `.view-sub`）见 styles.css ——
+ * 页头（`.view-head` / `.view-title` / `.view-sub`）见 styles/foundation.css ——
  * 3.10.0 起它属于**页面骨架**、多页面共享，组件里不再各写一份
  *（各写一份的下场就是两个页面的标题字号/间距慢慢长歪）。
  */

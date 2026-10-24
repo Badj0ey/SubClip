@@ -6,7 +6,6 @@
  * 这里生成的表格完全对齐它的格式（含表头、HH:MM:SS 时间、UTF-8 BOM）。
  */
 import { writeFileSync } from 'node:fs'
-import * as XLSX from 'xlsx'
 import { formatTime } from '@shared/time'
 import type { SliceRowLike } from '@shared/types'
 
@@ -42,6 +41,8 @@ export function writeCsv(path: string, rows: SliceRow[]): void {
 
 /** 生成 xlsx（列名与 CSV 一致） */
 export function writeXlsx(path: string, rows: SliceRow[]): void {
+  // CSV and startup must not eagerly load the relatively heavy SheetJS package.
+  const XLSX = require('xlsx') as typeof import('xlsx')
   const aoa: (string | number)[][] = [SLICE_HEADER]
   for (const r of rows) {
     aoa.push([r.bvid, r.page, formatTime(r.start), formatTime(r.end), r.note ?? ''])

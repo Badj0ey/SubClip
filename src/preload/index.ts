@@ -8,6 +8,7 @@ import type {
   AppSettings,
   BiliTarget,
   ClipTask,
+  ClipDetailSummary,
   Cue,
   CueSearchPage,
   DashboardOverview,
@@ -529,6 +530,8 @@ const api = {
   toggleClipFavorite: (clipId: number): Promise<{ favorite: boolean; tasks: ClipTask[] }> =>
     ipcRenderer.invoke('clips:favorite', clipId),
   /** 片段详情：所属视频 / 字幕 / 作者 / 标签 */
+  getClipDetails: (clipIds: number[]): Promise<ClipDetailSummary[]> =>
+    ipcRenderer.invoke('clips:details', clipIds),
   getClipDetail: (clipId: number): Promise<{
     clip: ClipTask
     docLabel: string

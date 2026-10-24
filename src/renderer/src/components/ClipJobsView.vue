@@ -353,7 +353,7 @@ function goLibrary(): void {
   flex: 1;
 }
 
-/* 页头与页签样式见 styles.css 的 .view-head / .stage-tabs（多页面共享） */
+/* 页头与页签样式见 styles/foundation.css 的 .view-head / .stage-tabs（多页面共享） */
 
 .jobs-count {
   font-size: var(--fs-xs);

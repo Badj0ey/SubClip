@@ -2,6 +2,7 @@ import { app, BrowserWindow, session, shell } from 'electron'
 import { cpSync, existsSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { APP_DATA_DIR } from '@shared/constants'
+import { safeExternalUrl } from '@shared/externalUrl'
 import { bridge } from './bridge'
 import { closeDb, initDb, stats } from './db'
 import { registerIpc } from './ipc'
@@ -20,7 +21,7 @@ function createWindow(): void {
     minHeight: 700,
     show: false,
     autoHideMenuBar: true,
-    backgroundColor: '#f5f6f8',
+    backgroundColor: '#f4f6fb',
     title: '字幕剪 SubClip',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
@@ -49,9 +50,22 @@ function createWindow(): void {
     mainWindow = null
   })
 
+  // Never forward file:, javascript:, or custom protocols to the OS handler.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    void shell.openExternal(url)
+    const safe = safeExternalUrl(url)
+    if (safe) void shell.openExternal(safe)
     return { action: 'deny' }
+  })
+
+  // Renderer links must not replace our privileged application document.
+  mainWindow.webContents.on('will-navigate', (event, legacyUrl) => {
+    // Electron 36 exposes details.url; older signatures passed the URL separately.
+    const target = (event as typeof event & { url?: string }).url ||
+      (typeof legacyUrl === 'string' ? legacyUrl : '')
+    if (target === mainWindow?.webContents.getURL()) return
+    event.preventDefault()
+    const safe = safeExternalUrl(target)
+    if (safe) void shell.openExternal(safe)
   })
 
   const devUrl = process.env['ELECTRON_RENDERER_URL']

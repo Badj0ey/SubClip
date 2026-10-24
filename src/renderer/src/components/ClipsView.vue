@@ -13,7 +13,7 @@
  * 拆开就必须双向同步，只会制造「一边改了另一边还是旧的」这类 bug。
  * 「执行」是另一个动作（队列在右栏），不是另一种数据。
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { ClipTask } from '@shared/types'
 import { formatTime } from '@shared/time'
 import { rangeDuration } from '@shared/ranges'
@@ -69,33 +69,60 @@ const sourceFilter = ref<'all' | ClipTask['source']>('all')
 const tagFilter = ref<number | null>(null)
 const favoriteOnly = ref(false)
 
-onMounted(async () => {
-  await Promise.all([clip.loadClips(), tags.load()])
+onMounted(() => {
+  void Promise.all([clip.loadClips(), tags.load()]).catch((error: unknown) => {
+    ui.showToast(`片段库加载失败：${String(error)}`, 'error')
+  })
 })
 
-/** 片段 → 所属视频 / 字幕（用于展示与跳转，按 docId 分组查一次） */
+/**
+ * Load details after the clip store is ready, in bounded batches. The previous
+ * setup-time loop ran before loadClips() and could silently hydrate zero rows.
+ * Batch IPC also avoids scanning all clips for every individual card.
+ */
 const detailCache = ref<Record<number, { videoTitle: string; docLabel: string; creators: string[]; tagIds: number[] }>>({})
+let detailRequest = 0
+watch(
+  () => clip.clips.map((c) => c.id).join(','),
+  async () => {
+    const request = ++detailRequest
+    const ids = clip.clips.map((c) => c.id)
+    if (!ids.length) { detailCache.value = {}; return }
+    const next: typeof detailCache.value = {}
+    for (const id of ids) if (detailCache.value[id]) next[id] = detailCache.value[id]
+    const missing = ids.filter((id) => !next[id])
+    if (!missing.length) { detailCache.value = next; return }
+    try {
+      for (let i = 0; i < missing.length; i += 200) {
+        const batch = await window.api.getClipDetails(missing.slice(i, i + 200))
+        if (request !== detailRequest) return
+        for (const d of batch) {
+          next[d.clipId] = {
+            videoTitle: d.videoTitle,
+            docLabel: d.docLabel,
+            creators: d.creators,
+            tagIds: d.tagIds
+          }
+        }
+        // Large libraries become progressively usable instead of waiting for all pages.
+        detailCache.value = { ...next }
+      }
+    } catch (error) {
+      if (request === detailRequest) ui.showToast(`片段详情加载失败：${String(error)}`, 'error')
+    }
+  },
+  { immediate: true }
+)
+onBeforeUnmount(() => { detailRequest++ })
 
 async function ensureDetail(c: ClipTask): Promise<void> {
   if (detailCache.value[c.id]) return
-  const d = await window.api.getClipDetail(c.id)
-  if (d) {
-    detailCache.value = {
-      ...detailCache.value,
-      [c.id]: {
-        videoTitle: d.videoTitle,
-        docLabel: d.docLabel,
-        creators: d.creators,
-        tagIds: d.tagIds
-      }
-    }
+  const [d] = await window.api.getClipDetails([c.id])
+  if (d) detailCache.value = {
+    ...detailCache.value,
+    [c.id]: { videoTitle: d.videoTitle, docLabel: d.docLabel, creators: d.creators, tagIds: d.tagIds }
   }
 }
-
-/* 进入视图时把当前页片段的详情补齐（按需，不一次性拉全库） */
-void (async () => {
-  for (const c of clip.clips.slice(0, 200)) await ensureDetail(c)
-})()
 
 const visible = computed(() => {
   const kw = keyword.value.trim().toLowerCase()
@@ -406,7 +433,7 @@ const sourceLabel: Record<ClipTask['source'], string> = {
  * 于是「切换页面」和「执行动作」长得一样，而这一页里两种按钮都有。
  * 样式与全局导航、剪辑任务页保持一致。
  */
-/* 页签样式见 styles.css 的 .stage-tabs / .stage-tab（全局共享） */
+/* 页签样式见 styles/foundation.css 的 .stage-tabs / .stage-tab（全局共享） */
 
 .clips-count {
   font-size: var(--fs-sm);

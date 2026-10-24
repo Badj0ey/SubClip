@@ -491,6 +491,9 @@ export interface DashboardFavorite {
 
 /** 首页一次性拉回的全部数据 */
 export interface DashboardOverview {
+  /** 全库真实数量（不受最近列表的 limit 影响） */
+  totalVideos: number
+  totalDocs: number
   recentVideos: DashboardVideo[]
   recentCollections: DashboardCollection[]
   favorites: DashboardFavorite[]
@@ -498,8 +501,17 @@ export interface DashboardOverview {
   favoriteClips: ClipTask[]
   /** 库里有多少视频还没有任何字幕（「待处理」里的漏拉项） */
   videosWithoutDocs: number
-  /** 切片任务条数（与设置页统计口径一致） */
+  /** 已保存片段数（clips 表，非 export_jobs 任务数） */
   clipCount: number
+}
+
+/** 片段库列表所需的轻量详情；批量获取以避免 N 次 IPC。 */
+export interface ClipDetailSummary {
+  clipId: number
+  docLabel: string
+  videoTitle: string
+  creators: string[]
+  tagIds: number[]
 }
 
 /** 解析 SRT 的结果 */

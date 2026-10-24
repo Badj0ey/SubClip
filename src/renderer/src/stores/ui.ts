@@ -40,7 +40,7 @@ interface ToastState {
 export const useUiStore = defineStore('ui', {
   state: () => ({
     /** 当前主视图 */
-    view: 'library' as AppView,
+    view: 'home' as AppView,
     /** 加载态（打开文档等耗时操作） */
     loading: false,
     /** 需要聚焦的片段 id（首页点收藏片段 → 片段库高亮） */

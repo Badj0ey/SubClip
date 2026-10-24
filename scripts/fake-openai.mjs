@@ -6,7 +6,7 @@
  * 请求体构造、超时、响应解析、JSON 容错、错误处理这些都会真的被执行到。
  *
  * 用法：
- *   node tests/fake-openai.mjs 8877
+ *   node scripts/fake-openai.mjs 8877
  *   然后把「设置 → AI 能力层」的后端设成 OpenAI 兼容、Base URL 填 http://127.0.0.1:8877/v1、Key 随便填。
  *   > 别用 8765：那是本应用自己的插件 WebSocket 端口，会撞上（对方回 426 Upgrade Required）。
  *

@@ -1,7 +1,10 @@
 import { createApp } from 'vue'
 import { createPinia } from 'pinia'
 import App from './App.vue'
-import './styles.css'
+import './styles/tokens.css'
+import './styles/foundation.css'
+import './styles/workspace.css'
+import './styles/polish.css'
 import { resetStoreCache } from './store'
 
 /**

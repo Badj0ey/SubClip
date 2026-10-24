@@ -27,6 +27,7 @@ import type {
   SliceRowLike
 } from '@shared/types'
 import { APP_DATA_DIR } from '@shared/constants'
+import { safeExternalUrl } from '@shared/externalUrl'
 import * as bili from './bilibili'
 import { bridge } from './bridge'
 import { buildDiagnostics } from './diagnostics'
@@ -738,9 +739,14 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     return { favorite, tasks: db.listClips() }
   })
 
-  /** 片段的完整信息（片段视图用：含标签与所属视频标题） */
+  /** 批量获取片段详情：固定最多 200 个 id，避免逐条扫描整库。 */
+  ipcMain.handle('clips:details', (_e, clipIds: number[]) =>
+    db.listClipDetails(Array.isArray(clipIds) ? clipIds : [])
+  )
+
+  /** 保留旧接口，供第三方调用兼容；单条查询不再扫描整个片段库。 */
   ipcMain.handle('clips:detail', (_e, clipId: number) => {
-    const clip = db.listClips().find((c) => c.id === clipId)
+    const clip = db.getClip(clipId)
     if (!clip) return null
     const doc = db.getDoc(clip.docId)
     const video = doc ? db.getVideo(doc.videoId) : null
@@ -1702,13 +1708,15 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   })
 
   ipcMain.handle('shell:openExternal', async (_e, url: string) => {
-    if (!/^https?:\/\//i.test(url)) return '仅支持 http(s) 链接'
-    await shell.openExternal(url)
+    const safe = safeExternalUrl(url)
+    if (!safe) return '仅支持有效且不含账号凭据的 http(s) 链接'
+    await shell.openExternal(safe)
     return ''
   })
 
   ipcMain.handle('shell:showItem', (_e, target: string) => {
-    if (target && existsSync(target)) shell.showItemInFolder(target)
+    if (!target || (!isSafeToOpen(target) && !isApproved(target)) || !existsSync(target)) return false
+    shell.showItemInFolder(target)
     return true
   })
 }

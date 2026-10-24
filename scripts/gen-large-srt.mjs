@@ -1,6 +1,6 @@
 /**
  * 生成超大字幕文件，用于验证虚拟滚动与性能。
- * 用法：node tests/gen-large-srt.mjs [条数] [输出路径]
+ * 用法：node scripts/gen-large-srt.mjs [条数] [输出路径]
  */
 import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'

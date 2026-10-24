@@ -1,6 +1,6 @@
 /**
  * 开发调试用：模拟用户脚本连接桌面端，发送页面信息与字幕。
- * 用法：node tests/fake-plugin.mjs [port]
+ * 用法：node scripts/fake-plugin.mjs [port]
  *
  * 第七阶段（协议 v5）后，模拟插件按**统一信封**发消息：带 `v` 与 `caps`，
  * 否则桌面端会把它当成 v4 老客户端（走宽限期放行，但设置页会显示「未声明能力」）。

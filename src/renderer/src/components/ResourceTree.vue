@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import type { TreeNode } from '@shared/types'
 import {
   deleteTreeNode,
@@ -64,29 +64,38 @@ const bodyHitDocIds = ref<Set<number>>(new Set())
 const bodySearching = ref(false)
 
 let searchTimer: number | null = null
+let searchVersion = 0
+watch(keyword, (k, _old, onCleanup) => {
+  const version = ++searchVersion
+  if (searchTimer !== null) window.clearTimeout(searchTimer)
+  searchTimer = null
+  bodyHitVideoIds.value = new Set()
+  bodyHitDocIds.value = new Set()
+  bodySearching.value = k.length >= 2
+  if (k.length < 2) return
 
-watch(keyword, (k) => {
-  if (searchTimer) window.clearTimeout(searchTimer)
-  // 字数太少就不查正文：单字命中太多，既慢又等于没过滤
-  if (k.length < 2) {
-    bodyHitVideoIds.value = new Set()
-    bodyHitDocIds.value = new Set()
-    return
-  }
-  // 防抖：每敲一个字都查库会把输入卡住
   searchTimer = window.setTimeout(async () => {
-    bodySearching.value = true
+    searchTimer = null
     try {
       const page = await window.api.searchLibrary({ keyword: k, limit: 300 })
+      // A slower old response must never replace the newest keyword's results.
+      if (version !== searchVersion) return
       const hits = page.hits ?? []
       bodyHitVideoIds.value = new Set(hits.map((h) => h.videoId))
       bodyHitDocIds.value = new Set(hits.map((h) => h.docId))
     } catch {
-      /* 检索失败不影响标题过滤 */
+      // A title-only search remains available if the database search fails.
     } finally {
-      bodySearching.value = false
+      if (version === searchVersion) bodySearching.value = false
     }
   }, 260)
+  onCleanup(() => {
+    if (searchTimer !== null) window.clearTimeout(searchTimer)
+  })
+})
+onBeforeUnmount(() => {
+  searchVersion++
+  if (searchTimer !== null) window.clearTimeout(searchTimer)
 })
 
 /** 该节点是否命中**正文** */

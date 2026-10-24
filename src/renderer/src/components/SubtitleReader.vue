@@ -1058,7 +1058,7 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
 </style>
 
 <style scoped>
-/* AI 逐句解释弹窗（第六阶段）。遮罩与 .dialog 的外观来自全局 styles.css */
+/* AI 逐句解释弹窗（第六阶段）。遮罩与 .dialog 的外观来自全局 styles/workspace.css */
 .ai-explain-title {
   margin: 0 0 10px;
   font-size: 15px;

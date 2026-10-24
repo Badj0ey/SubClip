@@ -1,0 +1,118 @@
+/* Theme tokens: change palettes here, not in individual views. */
+:root {
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  --panel-2: #eef2f9;
+
+  --border: #e2e8f2;
+  --border-strong: #cbd5e6;
+  --hairline: #ebeff6;
+
+  --text: #1d2941;
+  --text-dim: #62718b;
+
+  --accent: #4e5cd3;
+  --accent-hover: #3f4bc3;
+  --accent-soft: #edf0ff;
+  
+  --accent-solid: #4e5cd3;
+
+  --danger: #cf4a5a;
+  --danger-soft: #fff0f2;
+  --success: #1b9474;
+  --warn: #b57c24;
+  --warn-soft: #fff4e4;
+  --warn-border: #f3dfbd;
+  --mark: #fff1a8;
+  --mark-text: #7a4b00;
+
+  --row-hover: #f3f6fc;
+  --row-active: #eaf0ff;
+
+  --radius: 16px;
+  --radius-sm: 10px;
+  --radius-xs: 8px;
+
+  --shadow-sm: 0 2px 6px rgba(25, 43, 76, 0.06);
+  --shadow: 0 9px 28px rgba(22, 39, 73, 0.10);
+  --shadow-lg: 0 22px 60px rgba(12, 28, 59, 0.20);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+
+  --sp-1: 4px;
+  --sp-2: 6px;
+  --sp-3: 8px;
+  --sp-4: 12px;
+  --sp-5: 16px;
+  --sp-6: 20px;
+  --sp-7: 24px;
+  --sp-8: 32px;
+
+  --line-height: 1.6;
+
+  --font-ui: 'Segoe UI Variable Text', 'Segoe UI', -apple-system, BlinkMacSystemFont,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei UI', 'Microsoft YaHei', system-ui,
+    sans-serif;
+
+  --fs-xs: 11px;
+  --fs-sm: 12px;
+  --fs-base: 13px;
+  --fs-md: 14px;
+  --fs-lg: 17px;
+  --fs-xl: 20px;
+  --fs-title: 23px;
+
+  --fw-normal: 400;
+  --fw-medium: 500;
+  --fw-bold: 600;
+
+  --h-sm: 29px;
+  --h-base: 34px;
+  --h-lg: 38px;
+
+  --ico-sm: 14px;
+  --ico-base: 16px;
+  --ico-lg: 20px;
+
+  --z-sticky: 10;
+  --z-dropdown: 40;
+  --z-dialog: 60;
+  --z-toast: 80;
+
+  --disabled-opacity: 0.45;
+  --disabled-bg: var(--panel-2);
+}
+
+html[data-theme='dark'] {
+  --bg: #0e1625;
+  --panel: #152034;
+  --panel-2: #1e2b42;
+
+  --border: #293951;
+  --border-strong: #3c4e68;
+  --hairline: #223148;
+
+  --text: #edf3ff;
+  --text-dim: #a1afc5;
+
+  --accent: #a4aeff;
+  --accent-hover: #7788ef;
+  --accent-soft: #263252;
+  
+  --accent-solid: #5266d3;
+
+  --danger: #ff8290;
+  --danger-soft: #39232f;
+  --success: #66d2b2;
+  --warn: #e4b55d;
+  --warn-soft: #3c3023;
+  --warn-border: #624b31;
+  --mark: #6b5b12;
+  --mark-text: #ffe9a8;
+
+  --row-hover: #21304a;
+  --row-active: #28395a;
+
+  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.25);
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 22px 64px rgba(0, 0, 0, 0.5);
+}

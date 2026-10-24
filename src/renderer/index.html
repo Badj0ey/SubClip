@@ -3,16 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <!--
-      CSP 说明（第二阶段补 media-src）：
-      `media-src` 不写就会回落到 `default-src 'self'`，于是 <video> 加载任何
-      外部地址都会被拦掉，而 Electron 报出来的却是
-      「Media load rejected by URL safety check」—— 排查时极容易被带偏。
-      这里放开 B站 CDN（以及通用 https），预览直连 CDN 才能工作。
-    -->
+    <!-- No script eval/inline execution. Video previews use HTTPS CDN streams. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: data: https: https://*.bilivideo.com https://*.bilivideo.cn https://*.hdslb.com; connect-src 'self' ws: wss: http: https:;"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; media-src 'self' blob: data: https:; connect-src 'self' ws: wss: http: https:; object-src 'none'; base-uri 'self'; form-action 'self';"
     />
     <title>字幕剪 SubClip</title>
   </head>
