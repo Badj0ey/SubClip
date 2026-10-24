@@ -5,11 +5,11 @@ import UiIcon from './UiIcon.vue'
 
 const ui = useUiStore()
 const items = [
-  { key: 'home', label: '工作台', icon: 'home', hint: '最近素材、收藏和任务概览' },
-  { key: 'library', label: '素材库', icon: 'library', hint: '浏览、编辑视频与字幕' },
-  { key: 'search', label: '字幕检索', icon: 'search', hint: '关键词 / 本地语义检索' },
-  { key: 'clips', label: '片段库', icon: 'scissors', hint: '片段、推荐、图谱与发布素材包' },
-  { key: 'clipjobs', label: '剪辑任务', icon: 'queue', hint: '切片队列、执行进度与历史' }
+  { key: 'home', label: '工作台', icon: 'home', hint: '查看最近素材、收藏和任务' },
+  { key: 'library', label: '素材库', icon: 'library', hint: '查看和编辑视频字幕' },
+  { key: 'search', label: '字幕检索', icon: 'search', hint: '按关键词或语义查找字幕' },
+  { key: 'clips', label: '片段库', icon: 'scissors', hint: '管理片段和发布素材' },
+  { key: 'clipjobs', label: '剪辑任务', icon: 'queue', hint: '查看导出进度和历史记录' }
 ] as const satisfies ReadonlyArray<{
   key: AppNavKey; label: string; icon: 'home' | 'library' | 'search' | 'scissors' | 'queue'; hint: string
 }>
