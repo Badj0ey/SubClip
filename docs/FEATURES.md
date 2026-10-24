@@ -52,4 +52,4 @@
 - **不内置**可商用授权的 FFmpeg 可执行文件；需用户安装并遵守其许可。
 - **不保证**所有 B 站视频都能拉到字幕或播放地址，受接口与账号权限影响。
 - **不承诺**在离线状态下使用 B 站拉取、在线播放、模型下载或云端 AI。
-- **不提供**对 Cookie/API Key 的系统级加密存储（见 [SECURITY.md](../SECURITY.md)）。
+- **可选**使用操作系统凭证加密保存 Cookie/API Key（Electron `safeStorage`；系统不支持时回退明文，见 [SECURITY.md](../SECURITY.md)）。
