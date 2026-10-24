@@ -79,13 +79,14 @@ build/                 打包图标
 
 字幕、片段、标签和任务数据保存在应用的 Electron `userData` 目录内（`subclip-data/srt-tool.db`）。旧版 JSON/SQLite 数据由原有迁移逻辑处理，**升级前仍建议先在「设置」中备份数据库**。
 
-B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 目前由设置文件保存，**尚未采用操作系统凭证加密**。共享电脑上请注意本机账号权限，不要上传包含这些数据的设置文件。浏览器桥接仅监听本机并进行来源/协议校验，建议启用配对令牌。更多内容见 [SECURITY.md](SECURITY.md)。
+B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优先使用 Electron `safeStorage`（Windows DPAPI / macOS Keychain / Linux 密钥环）加密后写入设置文件，旧版明文配置会在下次保存时自动迁移；系统加密不可用时回退为明文。密文与当前系统用户绑定，换机或换系统账号后需要重新填写。共享电脑上仍请注意本机账号权限，不要上传包含这些数据的设置文件。浏览器桥接仅监听本机并进行来源/协议校验，建议启用配对令牌。更多内容见 [SECURITY.md](SECURITY.md)。
 
 ## 测试状态与限制
 
 代码提供 TypeScript 检查、纯逻辑回归、SQLite 冒烟、用户脚本协议测试和 Electron 桥接测试。**完整 GUI 与 Windows 安装包仍需在具备 Electron/依赖的 Windows 环境实际验证**；不要将静态检查视为已完成发布验收。
 
 - [重构与验证报告](docs/REFACTOR_REPORT.md)
+- [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)
 - [开发与验证](docs/DEVELOPMENT.md)
 - [版本变更](CHANGELOG.md)
 - [贡献说明](CONTRIBUTING.md)

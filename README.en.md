@@ -42,11 +42,11 @@ The app opens on a redesigned dashboard. Press **Ctrl+K** for quick navigation a
 - `tests/`: regression tests and fixtures; `scripts/`: development helpers.
 - `userscript/`: optional browser integration.
 
-See [Feature inventory](docs/FEATURES.md), [Architecture](docs/ARCHITECTURE.md), [Development & testing](docs/DEVELOPMENT.md), [Release guide](docs/RELEASE.md), [Refactor report](docs/REFACTOR_REPORT.md), and [Security](SECURITY.md).
+See [Feature inventory](docs/FEATURES.md), [Architecture](docs/ARCHITECTURE.md), [Development & testing](docs/DEVELOPMENT.md), [Release guide](docs/RELEASE.md), [Refactor report](docs/REFACTOR_REPORT.md), [Quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md), and [Security](SECURITY.md).
 
 ## Privacy and limitations
 
-Project data is stored locally in SQLite under Electron `userData`. Bilibili cookies, optional bridge tokens and AI keys are currently stored in settings **without OS credential encryption**. Back up your data before upgrading, and avoid sharing your settings file. The browser bridge validates origins and supports a pairing token.
+Project data is stored locally in SQLite under Electron `userData`. Bilibili cookies, optional bridge tokens and AI keys are encrypted with Electron `safeStorage` (Windows DPAPI / macOS Keychain / Linux keyring) when available and migrated automatically the next time settings are saved; without OS encryption they fall back to plaintext. Encrypted values are bound to the current OS user, so re-enter them after moving to another machine or account. Back up your data before upgrading, and avoid sharing your settings file. The browser bridge validates origins and supports a pairing token.
 
 A full Windows GUI smoke test and installer validation require an environment with Electron dependencies and a desktop session. Source-level tests alone are not release certification.
 
