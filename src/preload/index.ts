@@ -11,6 +11,7 @@ import type {
   ClipDetailSummary,
   Cue,
   CueSearchPage,
+  DanmakuResult,
   DashboardOverview,
   MediaSession,
   OpResult,
@@ -148,6 +149,9 @@ const api = {
   /* B站 */
   loginStatus: (): Promise<{ loggedIn: boolean; name?: string; avatar?: string }> =>
     ipcRenderer.invoke('bili:loginStatus'),
+  /** 读取弹幕作为字幕定位辅助；force=true 跳过 10 分钟缓存 */
+  getDanmaku: (bvid: string, force = false): Promise<OpResult<DanmakuResult>> =>
+    ipcRenderer.invoke('bili:danmaku', bvid, force),
   fetchVideo: (input: string): Promise<OpResult<{ videoId: number; info: any }>> =>
     ipcRenderer.invoke('bili:fetchVideo', input),
   listTracks: (

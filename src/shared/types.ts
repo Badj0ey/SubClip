@@ -747,3 +747,37 @@ export interface MediaSession {
   /** DASH 音频轨；个别视频没有则为 null */
   audio: MediaTrack | null
 }
+
+/* --------------------------------- 弹幕参考（3.17.0） -------------------------------- */
+
+/**
+ * 一条弹幕。
+ *
+ * 弹幕只作为字幕定位的辅助信息，**不入库、不参与全文检索、不进入导出**；
+ * `time` 是该分P 内的相对秒数，与字幕的 `start` / `end` 同一时间基准。
+ */
+export interface DanmakuItem {
+  /** B站弹幕 id（新版接口取 idStr；缺失时由解析器生成兜底值） */
+  id: string
+  /** 分P 序号 */
+  page: number
+  /** 相对该分P 开头的秒数 */
+  time: number
+  text: string
+  /** 弹幕模式（1 滚动、4 底部、5 顶部等） */
+  mode: number
+  /** RGB 颜色值，默认白色 0xffffff */
+  color: number
+}
+
+/** 一次弹幕读取的结果 */
+export interface DanmakuResult {
+  bvid: string
+  /** 该视频的分P 数（不一定都已读到弹幕） */
+  pages: number
+  items: DanmakuItem[]
+  /** 因分段 / 条数 / 时间预算限制而只读到部分弹幕 */
+  truncated: boolean
+  /** 部分分P 或分段失败时的可读提示；不影响字幕功能 */
+  warnings: string[]
+}

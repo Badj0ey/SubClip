@@ -9,6 +9,7 @@ import { useSubtitleStore } from '../stores/subtitle'
 import { useUiStore } from '../stores/ui'
 import { enqueueCurrentRanges, exportSlice, openSliceOutput, ranges, state } from '../store'
 import AiPanel from './AiPanel.vue'
+import DanmakuPanel from './DanmakuPanel.vue'
 import UiIcon from './UiIcon.vue'
 
 const ai = useAiStore()
@@ -80,6 +81,9 @@ async function onEnqueue(): Promise<void> {
         </div>
         <div v-else class="assistant-empty">从左侧素材库打开字幕，开始选择精彩片段。</div>
       </section>
+
+      <!-- 弹幕参考：放在剪辑助手里，展开时只占右栏，不再挤压中间的字幕列表 -->
+      <DanmakuPanel v-if="subtitle.doc && currentBvid" />
 
       <section class="seg">
         <div class="seg-title">

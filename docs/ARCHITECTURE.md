@@ -31,6 +31,7 @@ Browser userscript ── WebSocket (origin + protocol + optional token) ── 
 | `src/main/ipc.ts` | IPC 通道与输入校验 | 新增接口须同步 preload 类型与测试 |
 | `src/main/db.ts` | SQLite 表、迁移、查询、事务 | 旧用户数据库兼容性优先；迁移必须幂等 |
 | `src/main/services.ts` / `bilibili.ts` | 字幕拉取/导入编排、B 站 API | 网络失败应有明确错误，不破坏已入库数据 |
+| `src/main/danmaku.ts` | 按分 P 抓取弹幕、XML 回退、并发/超时/预算、内存缓存 | 只做辅助读取，不写数据库；失败不影响字幕 |
 | `src/main/slice/` | DASH/SIDX 下载、范围拆分、FFmpeg 裁剪和合成 | 保持分 P/时间单位一致，支持取消 |
 | `src/main/ai/` / `semantic.ts` | AI 供应商适配、本地语义模型和索引 | 基础功能不能依赖 AI 可用性 |
 | `src/main/bridge.ts` | 本机 WebSocket 与用户脚本通信 | 与 `src/shared/bridge.ts`、`userscript/` 协议同步 |
@@ -39,7 +40,7 @@ Browser userscript ── WebSocket (origin + protocol + optional token) ── 
 | `src/renderer/src/components/` | 页面、列表、弹窗、图标、快捷操作面板 | 业务 IO 走 store/API，避免组件直接依赖主进程实现 |
 | `src/renderer/src/composables/` | 虚拟列表、分隔线等可复用交互 | 指针事件必须清理，兼顾键盘/触屏 |
 | `src/renderer/src/styles/` | 主题变量、全局布局、共享控件、外观细节 | 色值优先使用 `tokens.css` 中变量 |
-| `src/shared/` | 类型、时间/字幕/范围纯函数、命令、布局与外链校验 | 纯逻辑写回归测试，避免 Electron 依赖 |
+| `src/shared/` | 类型、时间/字幕/范围/弹幕纯函数、命令、布局与外链校验 | 纯逻辑写回归测试，避免 Electron 依赖；弹幕解析不得引入网络或主进程模块 |
 
 ## 核心数据关系
 
@@ -62,8 +63,9 @@ clips ── export_jobs (任务可引用片段，但独立持久化)
 1. UI 触发「拉取字幕」→ `window.api` → IPC → `services.ts` / `bilibili.ts` 获取字幕轨。
 2. `db.ts` 根据视频、分 P、语言去重写入 `docs/cues` 并维护全文索引。
 3. 资源 store 更新树，字幕 store 加载文档，阅读区用虚拟列表渲染字幕。
-4. 用户选择时间范围→共享 `ranges` 逻辑合并时间段→片段 store 保存到 `clips`。
-5. 用户排入队列→`export_jobs`→`slice/engine.ts` 下载媒体流并调用 FFmpeg→更新任务/历史。
+4. 在剪辑助手展开「弹幕参考」→ `window.api.getDanmaku` → IPC `bili:danmaku` → `main/danmaku.ts` 分 P/分段抓取 → `shared/danmaku.ts` 解析 → 渲染端筛选与定位。结果只在主进程内存缓存，不写 SQLite。
+5. 用户选择时间范围→共享 `ranges` 逻辑合并时间段→片段 store 保存到 `clips`。
+6. 用户排入队列→`export_jobs`→`slice/engine.ts` 下载媒体流并调用 FFmpeg→更新任务/历史。
 
 ## 本次重构的边界与改进
 
@@ -76,3 +78,13 @@ clips ── export_jobs (任务可引用片段，但独立持久化)
 - CSS 拆为 `tokens`、`foundation`、`workspace`、`polish`，统一明暗主题与组件层级。
 
 为了降低对旧数据和 IPC 的风险，本次**没有机械拆分**已有大型 `db.ts` / `ipc.ts`；后续如按领域拆文件，应先覆盖数据库迁移和桥接协议测试，再逐步迁移。
+
+## 3.17.0 弹幕参考的边界
+
+- **解析与 IO 分离**：protobuf/XML 解析在 `src/shared/danmaku.ts`，只依赖类型与字符串/字节；抓取、缓存、超时在 `src/main/danmaku.ts`。因此 `tests/danmaku.test.ts` 可用普通 Node 运行。
+- **不进入数据模型**：弹幕不建表、不写 `docs/cues`、不进入全文索引或导出；主进程只保留 10 分钟内存缓存（最多 8 个视频），进程退出即丢失。
+- **IPC 是唯一入口**：新增 `bili:danmaku`，preload 暴露 `getDanmaku(bvid, force?)` 并返回 `OpResult<DanmakuResult>`；渲染进程不能指定任意 URL。
+- **失败隔离**：分段失败写 `warnings`，整页失败才回退 XML；超时或达到上限时返回已获取部分并标记 `truncated`，字幕功能不受影响。
+- **定位语义**：点击弹幕只移动阅读光标与滚动位置，不修改 `selected`；只有同分 P 的视频预览已经打开时才调用 `video.seek`，避免为了定位而发起视频请求。
+
+更完整的用户说明、限制与验证记录见 [DANMAKU_GUIDE.md](DANMAKU_GUIDE.md)。

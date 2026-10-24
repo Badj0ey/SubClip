@@ -29,6 +29,7 @@ import type {
 import { APP_DATA_DIR } from '@shared/constants'
 import { safeExternalUrl } from '@shared/externalUrl'
 import * as bili from './bilibili'
+import { fetchDanmaku } from './danmaku'
 import { bridge } from './bridge'
 import { buildDiagnostics } from './diagnostics'
 import { renderNameTemplate } from '@shared/naming'
@@ -409,6 +410,19 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const cookie = loadSettings().biliCookie
     if (!cookie.trim()) return { loggedIn: false }
     return bili.checkLogin(cookie)
+  })
+
+  /**
+   * 读取弹幕（3.17.0）：只作为字幕定位的辅助信息。
+   * `force` 为 true 时跳过主进程缓存，供面板的「重新获取」使用。
+   */
+  ipcMain.handle('bili:danmaku', async (_e, bvid: unknown, force?: unknown) => {
+    try {
+      if (typeof bvid !== 'string') return { ok: false, message: 'BV号格式不正确' }
+      return { ok: true, data: await fetchDanmaku(bvid, force === true) }
+    } catch (err) {
+      return { ok: false, message: (err as Error).message }
+    }
   })
 
   ipcMain.handle('bili:fetchVideo', async (_e, input: string) => {
