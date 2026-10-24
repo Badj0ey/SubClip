@@ -14,13 +14,15 @@ npm run typecheck
 npm test
 npm run build
 npm run dist
+npm run dist:checksums
 ```
 
-`electron-builder.yml` 目前生成 Windows x64 NSIS 安装包和 ZIP 免安装包，产物在 `dist/`。未配置代码签名时不要宣称已签名；Windows SmartScreen 可能提示未知发布者。
+`electron-builder.yml` 生成 Windows x64 NSIS 安装包和 ZIP 免安装包，产物在 `dist/`；`npm run dist:checksums` 额外生成 `dist/SHA256SUMS.txt`。安装向导包含 MIT 许可证页、产品图标和侧边图，控制面板卸载项显示「字幕剪 SubClip」；卸载默认保留用户数据。未配置代码签名时不要宣称已签名，Windows SmartScreen 可能提示未知发布者。
 
 ## 安装包手工验收
 
-- 安装/卸载、首次启动、启动时数据迁移、重启后数据保持。
+- 安装向导的许可证页、安装目录选择、桌面/开始菜单快捷方式；控制面板卸载项名称。
+- 安装/卸载、首次启动、启动时数据迁移、重启后数据保持；卸载后确认 `userData` 数据仍在。
 - 素材库/字幕阅读、Ctrl+K、深浅主题、三栏布局、最近统计。
 - FFmpeg 路径与输出目录、字幕拉取/导入、CSV/XLSX 导出。
 - 用户脚本在打包后的 `resources/userscript/` 可读取，WebSocket 连接状态正常。
@@ -30,3 +32,5 @@ npm run dist
 ## 发布内容
 
 发布说明至少包含：版本、变化、已验证的平台、已知限制、数据迁移提醒、第三方依赖许可和安装包哈希。不要将 `node_modules/`、`.npmrc`、用户 Cookie、API Key、调试数据库或测试中间产物放入源码 ZIP。
+
+GitHub 首次推送、打标签自动创建草稿 Release、手工上传附件和发布后检查的完整步骤见 [开源与发布](GITHUB.md)。

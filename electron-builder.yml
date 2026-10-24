@@ -35,8 +35,18 @@ win:
 nsis:
   oneClick: false
   perMachine: false
+  allowElevation: true
   allowToChangeInstallationDirectory: true
   createDesktopShortcut: true
   createStartMenuShortcut: true
   shortcutName: 字幕剪
+  # 控制面板里的卸载项名称，保留中文产品名，版本号由构建时展开。
+  uninstallDisplayName: 字幕剪 SubClip ${version}
+  # 安装向导显示 MIT 许可证；升级/卸载默认保留用户数据库与设置。
+  license: LICENSE
+  installerIcon: build/icon.ico
+  uninstallerIcon: build/icon.ico
+  installerSidebar: build/installerSidebar.bmp
+  deleteAppDataOnUninstall: false
+  runAfterFinish: true
   artifactName: ${productName}-${version}-setup.${ext}

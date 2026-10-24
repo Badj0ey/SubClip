@@ -1,6 +1,6 @@
 {
   "name": "subclip",
-  "version": "3.17.0",
+  "version": "3.18.0",
   "private": true,
   "description": "字幕剪 SubClip：基于字幕检索的 B站视频智能切片工作台。搜字幕，选片段，一键剪视频。",
   "license": "MIT",
@@ -33,7 +33,8 @@
     "test:smoke": "esbuild tests/smoke.ts --bundle --platform=node --format=cjs --outfile=tests/smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --log-level=warning && electron tests/smoke.cjs",
     "test:bridge": "esbuild tests/bridge.smoke.ts --bundle --platform=node --format=cjs --outfile=tests/bridge.smoke.cjs --alias:@shared=./src/shared --external:electron --external:xlsx --external:ws --log-level=warning && electron tests/bridge.smoke.cjs",
     "dist": "npm run build && electron-builder --win",
-    "dist:dir": "npm run build && electron-builder --win --dir"
+    "dist:dir": "npm run build && electron-builder --win --dir",
+    "dist:checksums": "node scripts/checksums.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.3.1",
@@ -53,5 +54,13 @@
     "vite": "^5.4.11",
     "vue": "^3.5.13",
     "vue-tsc": "^2.1.10"
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Badj0ey/SubClip.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Badj0ey/SubClip/issues"
+  },
+  "homepage": "https://github.com/Badj0ey/SubClip#readme"
 }

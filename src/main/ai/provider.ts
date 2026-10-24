@@ -48,7 +48,7 @@ export function currentProviderName(): string {
 function ensureEnabled(): 'ollama' | 'openai' {
   const s = loadSettings()
   if (s.aiProvider === 'off') {
-    throw new Error('AI 功能未启用（设置 → AI 能力层）。基础功能不受影响。')
+    throw new Error('AI 功能未启用（设置 → AI 助手）。基础功能不受影响。')
   }
   return s.aiProvider
 }

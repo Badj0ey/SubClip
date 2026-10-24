@@ -185,7 +185,7 @@ watch(kind, () => {
       ></span>
     </p>
 
-    <p v-if="!hasDoc" class="muted rec-empty">请先在「工作区」打开一个字幕文档，再回来生成推荐。</p>
+    <p v-if="!hasDoc" class="muted rec-empty">请先在工作区打开字幕文件，然后再生成推荐。</p>
     <template v-else>
       <p class="muted rec-ref">
         <span v-if="kind === 'twins'">参照段落：</span>

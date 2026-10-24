@@ -14,7 +14,7 @@ import { useUiStore } from './ui'
 const UNKNOWN: AiStatus = {
   provider: 'off',
   available: false,
-  message: '还没探测过',
+  message: '尚未检查连接',
   models: [],
   latencyMs: 0
 }
@@ -46,11 +46,11 @@ export const useAiStore = defineStore('ai', {
     /** 给界面的一行状态说明 */
     statusText(state): string {
       const s = state.status
-      if (s.provider === 'off') return '未启用（设置 → AI 能力层）'
+      if (s.provider === 'off') return '尚未开启'
       if (!s.available) return s.message || '不可用'
       const model =
         s.provider === 'ollama' ? s.models[0] ?? '' : s.models[0] ?? ''
-      return `已连接${model ? ` · ${model}` : ''}（${s.latencyMs}ms）`
+      return `已连接${model ? ` · ${model}` : ''}（${s.latencyMs} 毫秒）`
     }
   },
 

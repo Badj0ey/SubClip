@@ -81,7 +81,10 @@ async function resolve(): Promise<void> {
     toast('请输入 BV 号或链接', 'error')
     return
   }
+  if (resolving.value || pulling.value) return
   resolving.value = true
+  target.value = null
+  chosen.value = new Set()
   summary.value = null
   progress.value = null
   try {
@@ -106,6 +109,8 @@ async function resolve(): Promise<void> {
         4600
       )
     }
+  } catch (err) {
+    toast(`解析链接时出错：${err instanceof Error ? err.message : '请检查网络后重试'}`, 'error', 5200)
   } finally {
     resolving.value = false
   }
@@ -117,7 +122,9 @@ function toggle(bvid: string): void {
 }
 
 function selectAll(): void {
-  chosen.value = new Set(filteredVideos.value.map((v) => v.bvid))
+  const next = new Set(chosen.value)
+  for (const video of filteredVideos.value) next.add(video.bvid)
+  chosen.value = next
 }
 
 function invert(): void {
@@ -134,7 +141,7 @@ function clearAll(): void {
 }
 
 async function pull(): Promise<void> {
-  if (!target.value) return
+  if (!target.value || pulling.value || resolving.value) return
   const videos = target.value.videos.filter((v) => chosen.value.has(v.bvid))
   if (!videos.length) {
     toast('请至少选择一个视频', 'error')
@@ -173,6 +180,8 @@ async function pull(): Promise<void> {
     } else {
       toast('没有拉到任何字幕，请检查登录状态', 'error', 4600)
     }
+  } catch (err) {
+    toast(`获取字幕时出错：${err instanceof Error ? err.message : '请检查网络后重试'}`, 'error', 5200)
   } finally {
     pulling.value = false
     progress.value = null
@@ -187,8 +196,8 @@ async function openSettings(): Promise<void> {
 
 <template>
   <div class="mask" @click.self="!pulling && emit('close')">
-    <div class="modal modal-lg">
-      <h3>拉取字幕</h3>
+    <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="pull-dialog-title">
+      <h3 id="pull-dialog-title">获取 B 站字幕</h3>
 
       <div v-if="prefillNote" class="hint" style="margin-left: 0; color: var(--accent)">
         {{ prefillNote }}：已自动解析出下面这些视频。<strong>逐条确认要拉哪些</strong>，
@@ -202,7 +211,7 @@ async function openSettings(): Promise<void> {
             v-model="input"
             class="input grow"
             placeholder="粘贴视频、合集、系列、收藏夹、UP主主页或 b23.tv 短链"
-            :disabled="pulling"
+            :disabled="pulling || resolving"
             @keyup.enter="resolve"
           />
           <button class="btn primary" :disabled="resolving || pulling" @click="resolve">
@@ -218,10 +227,10 @@ async function openSettings(): Promise<void> {
 
       <div v-if="!hasCookie" class="notice">
         <span>
-          尚未配置 B 站登录状态，拉取字幕会失败。
+          还没有同步 B 站登录信息，请先完成登录设置，再获取字幕。
           <template v-if="pluginOnline">用户脚本已连接，可到 B 站左下角浮框点「同步登录状态」。</template>
         </span>
-        <button class="btn sm" @click="openSettings">前往设置</button>
+        <button class="btn sm" @click="openSettings">设置登录信息</button>
       </div>
 
       <template v-if="target">
@@ -236,11 +245,11 @@ async function openSettings(): Promise<void> {
           </div>
 
           <div class="row" style="margin-top: 8px">
-            <input v-model="keyword" class="input grow" placeholder="筛选视频标题 / BV号" />
-            <button class="btn sm" @click="selectAll">全选</button>
-            <button class="btn sm" @click="invert">反选</button>
-            <button class="btn sm" @click="clearAll">清空</button>
-            <span class="muted">已选 {{ chosen.size }}</span>
+            <input v-model="keyword" class="input grow" placeholder="按标题或 BV 号筛选" :disabled="pulling" />
+            <button class="btn sm" :disabled="pulling" @click="selectAll">{{ keyword.trim() ? "选中筛选结果" : "全选" }}</button>
+            <button class="btn sm" :disabled="pulling" @click="invert">反选当前结果</button>
+            <button class="btn sm" :disabled="pulling" @click="clearAll">清空选择</button>
+            <span class="muted">已选 {{ chosen.size }} / {{ target.videos.length }}<template v-if="keyword.trim()"> · 当前显示 {{ filteredVideos.length }}</template></span>
           </div>
         </div>
 
@@ -261,7 +270,7 @@ async function openSettings(): Promise<void> {
             <span v-if="v.duration" class="muted video-meta">{{ formatTime(v.duration) }}</span>
           </label>
           <div v-if="!filteredVideos.length" class="empty" style="padding: 22px">
-            没有匹配的视频
+            没有符合筛选条件的视频，可以换个关键词
           </div>
         </div>
       </template>
@@ -280,7 +289,7 @@ async function openSettings(): Promise<void> {
         <div class="muted" style="line-height: 1.9">
           成功 {{ summary.videos }} 个视频 · 新增 {{ summary.docs }} 条字幕 ·
           <template v-if="summary.updated">更新 {{ summary.updated }} 条 · </template>
-          失败/无字幕 {{ summary.failed }} 个
+          未获取成功 {{ summary.failed }} 个
           <template v-if="summary.skipped"> · 已存在跳过 {{ summary.skipped }} 个</template>
         </div>
         <div v-if="summary.messages.length" class="hint" style="margin-left: 0; max-height: 96px; overflow: auto">
@@ -292,10 +301,10 @@ async function openSettings(): Promise<void> {
         <button class="btn" :disabled="pulling" @click="emit('close')">关闭</button>
         <button
           class="btn primary"
-          :disabled="pulling || !target || !chosen.size"
+          :disabled="pulling || resolving || !target || !chosen.size"
           @click="pull"
         >
-          {{ pulling ? '拉取中…' : `拉取选中字幕（${chosen.size}）· 每个视频含全部分P` }}
+          {{ pulling ? '正在获取字幕…' : `获取所选视频字幕（${chosen.size}）` }}
         </button>
       </div>
     </div>

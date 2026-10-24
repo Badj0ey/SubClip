@@ -88,8 +88,8 @@ async function doImport(): Promise<void> {
 
 <template>
   <div class="mask" @click.self="emit('close')">
-    <div class="modal">
-      <h3>导入字幕文件</h3>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="import-dialog-title">
+      <h3 id="import-dialog-title">导入字幕文件</h3>
 
       <div class="field">
         <label>字幕文件</label>

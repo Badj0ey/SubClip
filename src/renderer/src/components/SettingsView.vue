@@ -251,7 +251,7 @@ async function copyUserscript(): Promise<void> {
     return
   }
   const ok = await window.api.copyText(content)
-  toast(ok ? '脚本已复制，去篡改猴「添加新脚本」粘贴保存' : '复制失败', ok ? 'success' : 'error', 4200)
+  toast(ok ? '脚本已复制，请在 Tampermonkey 中新建脚本并粘贴保存' : '复制失败', ok ? 'success' : 'error', 4200)
 }
 
 async function openTampermonkey(): Promise<void> {
@@ -697,36 +697,32 @@ async function openOutputDir(): Promise<void> {
               :checked="state.settings?.embedInsecureTls"
               @change="save({ embedInsecureTls: ($event.target as HTMLInputElement).checked })"
             />
-            放宽 TLS 校验
+            跳过模型下载的证书校验（不安全）
           </label>
         </div>
       </div>
       <div class="hint">
-        本机直连 <code>huggingface.co</code> 会因证书链不全会失败，所以默认走镜像。
-        镜像的大文件还会 302 到另一个域名，那个域名的证书同样校验不过 ——
-        <b>只有打开「放宽 TLS 校验」才下得下来</b>（只影响模型下载这一条连接，不影响其它网络请求）。
-        不想放宽的话，也可以手动把模型文件按目录结构放到下面这个路径：
+        如果模型下载时提示证书错误，建议先检查网络环境，或切换下载地址。<b>跳过证书校验会降低连接安全性，仅在了解风险时使用。</b>你也可以手动下载模型文件，放到以下目录：
         <br />
         <code>{{ semantic.modelPath }}</code>
         <br />
-        需要放：<code>config.json</code>、<code>tokenizer.json</code>、<code>tokenizer_config.json</code>、
+        需要以下文件：<code>config.json</code>、<code>tokenizer.json</code>、<code>tokenizer_config.json</code>、
         <code>special_tokens_map.json</code>、<code>vocab.txt</code>、<code>onnx/model_quantized.onnx</code>
       </div>
 
-      <!-- ------------------------------- AI 能力层 ------------------------------- -->
-      <h2 class="sec">AI 能力层</h2>
+      <!-- ------------------------------- AI 助手 ------------------------------- -->
+      <h2 class="sec">AI 助手</h2>
       <div class="hint" style="margin-top: -4px">
-        AI 是<b>增强功能</b>：默认关闭，关掉时字幕、检索、切片全部照常工作。
-        结果只存在本地数据库（<code>analysis</code> 表），不会自动上传；用云端接口时字幕内容会发给你配置的服务。
+        AI 默认关闭，不影响字幕检索和视频剪辑。生成结果保存在本机；如果使用云端服务，相关字幕会发送给你配置的服务商。
       </div>
 
       <div class="field">
-        <label>后端</label>
+        <label>AI 服务</label>
         <div class="row">
           <select :value="state.settings?.aiProvider" class="select" @change="onAiProvider">
-            <option value="off">不用 AI（默认）</option>
-            <option value="ollama">本地 Ollama（隐私好、免费）</option>
-            <option value="openai">OpenAI 兼容接口（云端）</option>
+            <option value="off">关闭 AI（默认）</option>
+            <option value="ollama">Ollama（在本机运行）</option>
+            <option value="openai">OpenAI 兼容接口</option>
           </select>
           <button class="btn" :disabled="ai.probing" @click="probeAiNow">
             {{ ai.probing ? '检测中…' : '测试连接' }}
@@ -766,8 +762,8 @@ async function openOutputDir(): Promise<void> {
           </div>
         </div>
         <div class="hint">
-          没装 Ollama？到 <code>ollama.com</code> 下载后执行 <code>ollama pull qwen2.5:7b</code>
-          （中文场景推荐 qwen 系列；7B 在 16GB 内存的机器上可跑）。
+          未安装 Ollama？可从 <code>ollama.com</code> 下载，然后运行 <code>ollama pull qwen2.5:7b</code>
+          （可先尝试 qwen 系列模型，实际运行速度取决于电脑配置）。
         </div>
       </template>
 
@@ -814,7 +810,7 @@ async function openOutputDir(): Promise<void> {
           </div>
         </div>
         <div class="hint">
-          兼容任何 OpenAI 协议的服务：OpenAI、DeepSeek、智谱、通义、vLLM、LM Studio…
+          支持 OpenAI 兼容接口，例如 DeepSeek、智谱、通义、vLLM 和 LM Studio。
           填它们的 base URL（一般以 <code>/v1</code> 结尾）与 Key 即可。API Key 只存在本机设置文件里，
           <b>不会</b>出现在导出的诊断信息中。
         </div>
@@ -1092,7 +1088,7 @@ async function openOutputDir(): Promise<void> {
       </div>
       <div class="hint">
         备份会把整库导出成**单个** `.db` 文件（用 SQLite 的 VACUUM INTO，连未落盘的内容一起带上），
-        换台机器拷过去就能用。恢复前会自动把当前库另存一份，恢复失败会自动回滚。
+        备份文件可以复制到其他电脑恢复。恢复前会自动备份当前数据；如果恢复失败，会尝试还原。
         诊断信息只含版本、路径、统计与配置项（**Cookie 与配对令牌只记录是否配置，不写内容**），
         报 bug 时附上它最有用。
       </div>

@@ -1,10 +1,13 @@
 # 字幕剪 · SubClip Studio
 
+[![CI](https://github.com/Badj0ey/SubClip/actions/workflows/ci.yml/badge.svg)](https://github.com/Badj0ey/SubClip/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4e5cd3.svg)](LICENSE)
+
 **从字幕找到片段，把视频素材变成作品。**
 
 SubClip 是基于 Electron、Vue 3、TypeScript 和 SQLite 的本地桌面工作台。它将 B 站字幕拉取、字幕阅读编辑、弹幕辅助定位、全文/语义检索、片段收藏、FFmpeg 切片和发布素材整理连接成一条工作流。基础功能无需云端 AI 服务。
 
-> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.17.0**，保留现有数据库结构、迁移流程、浏览器用户脚本协议和核心功能。它是**源码工程**，不是已打包的安装程序。
+> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.0**，保留现有数据库结构、迁移流程、浏览器用户脚本协议和核心功能。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
 
 ## 快速开始
 
@@ -84,11 +87,13 @@ B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优�
 
 ## 测试状态与限制
 
-3.17.0 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建、真实弹幕接口抽样与源码构建的 GUI 冒烟；正式代码签名、NSIS 安装包发布流程、真实 B 站登录、FFmpeg 下载和完整剪辑导出仍未覆盖。3.16.1 的打包版 GUI 与 safeStorage 验收记录见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
+3.18.0 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建以及 NSIS 安装包 / ZIP 构建；正式代码签名、真实 B 站登录、FFmpeg 下载和完整剪辑导出仍未覆盖。3.16.1 的打包版 GUI 与 safeStorage 验收记录见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
 
 - [弹幕参考说明](docs/DANMAKU_GUIDE.md)
 - [重构与验证报告](docs/REFACTOR_REPORT.md)
 - [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)
+- [界面优化整合记录](docs/UI_OPTIMIZATION_NOTES.md)
+- [开源与发布](docs/GITHUB.md)
 - [开发与验证](docs/DEVELOPMENT.md)
 - [版本变更](CHANGELOG.md)
 - [贡献说明](CONTRIBUTING.md)

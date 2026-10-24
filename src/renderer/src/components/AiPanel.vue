@@ -95,17 +95,19 @@ const busyText = computed(() => {
       </span>
     </div>
 
-    <div v-if="!ai.enabled" class="ai-hint">
-      AI 是增强功能，默认关闭（不影响字幕、检索与切片）。
-      到「设置 → AI 能力层」选一个后端即可启用：本地 Ollama，或任何 OpenAI 兼容接口。
-      <button class="btn sm" style="margin-left: 6px" @click="ui.setView('settings')">去设置</button>
+    <div v-if="!ai.enabled" class="ai-hint ai-setup-hint">
+      AI 可以生成字幕摘要、推荐标签和解释单句字幕。不开启也能正常搜索字幕、保存片段和剪辑视频。
+      如需使用，请在设置中选择本地 Ollama 或 OpenAI 兼容服务。
+      <button class="btn sm" @click="ui.setView('settings')">配置 AI 助手</button>
     </div>
 
     <template v-else>
+      <div v-if="!hasDoc" class="ai-hint">先打开一份字幕，再生成摘要或标签。</div>
+      <div v-else-if="!ai.ready" class="ai-hint">AI 服务尚未连接，请到设置中检查连接。</div>
       <div class="ai-actions">
         <button
           class="btn sm"
-          :disabled="!hasDoc || ai.busyKind === 'summary'"
+          :disabled="!hasDoc || Boolean(ai.busyKind) || !ai.ready"
           title="为该视频的全部字幕生成摘要（结果存在本地）"
           @click="emit('summary')"
         >
@@ -113,7 +115,7 @@ const busyText = computed(() => {
         </button>
         <button
           class="btn sm"
-          :disabled="!hasDoc || ai.busyKind === 'tags'"
+          :disabled="!hasDoc || Boolean(ai.busyKind) || !ai.ready"
           title="让 AI 建议几个分类标签，勾选后再写入"
           @click="emit('tags')"
         >
@@ -127,7 +129,7 @@ const busyText = computed(() => {
         <div class="ai-suggest-head">
           <span>标签建议（勾选后保存）</span>
           <span class="grow"></span>
-          <button class="btn sm" @click="apply">保存 {{ picked.size }} 个</button>
+          <button class="btn sm" :disabled="!picked.size || Boolean(ai.busyKind)" @click="apply">保存 {{ picked.size }} 个</button>
           <button class="btn sm" @click="ai.clearTagSuggestions()">忽略</button>
         </div>
         <label v-for="s in ai.tagSuggestions" :key="s.name" class="ai-tag-row">

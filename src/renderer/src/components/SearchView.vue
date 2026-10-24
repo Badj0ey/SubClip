@@ -196,9 +196,9 @@ function weightLabel(hit: CueSearchHit): string {
     <!-- 语义模式的索引状态提示 -->
     <div v-if="mode === 'semantic'" class="semantic-bar">
       <template v-if="!semantic.status.modelReady">
-        <span class="muted">语义检索需要先下载模型（约 95MB，只需一次）。</span>
+        <span class="muted">首次使用语义搜索，需要下载约 95 MB 的模型。下载完成后可在本机搜索。</span>
         <button class="btn sm primary" @click="semantic.downloadModel()">下载模型</button>
-        <button class="btn sm" @click="ui.setView('settings')">去设置</button>
+        <button class="btn sm" @click="ui.setView('settings')">查看设置</button>
       </template>
       <template v-else>
         <span class="muted">

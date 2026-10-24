@@ -1,10 +1,13 @@
 # SubClip Studio
 
+[![CI](https://github.com/Badj0ey/SubClip/actions/workflows/ci.yml/badge.svg)](https://github.com/Badj0ey/SubClip/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-4e5cd3.svg)](LICENSE)
+
 **Find the moment in a subtitle. Turn it into a clip.**
 
 SubClip is a local-first Electron + Vue 3 + TypeScript + SQLite desktop workspace for Bilibili subtitle acquisition, transcript editing, danmaku-assisted navigation, cross-video search, clip organization, FFmpeg exports, and publishing materials. Core editing and search do not require a cloud AI account.
 
-This source tree started from the original **3.16.0** codebase and is currently **3.17.0**. It preserves the existing database schema/migrations, browser userscript protocol, and core workflows. It is **source code**, not a prebuilt installer.
+This source tree started from the original **3.16.0** codebase and is currently **3.18.0**. It preserves the existing database schema/migrations, browser userscript protocol, and core workflows. It is **source code**; installers, portable archives and SHA-256 checksums are published on [GitHub Releases](https://github.com/Badj0ey/SubClip/releases).
 
 ## Get started
 
@@ -42,12 +45,12 @@ The app opens on a redesigned dashboard. Press **Ctrl+K** for quick navigation a
 - `tests/`: regression tests and fixtures; `scripts/`: development helpers.
 - `userscript/`: optional browser integration.
 
-See [Feature inventory](docs/FEATURES.md), [Danmaku reference guide](docs/DANMAKU_GUIDE.md), [Architecture](docs/ARCHITECTURE.md), [Development & testing](docs/DEVELOPMENT.md), [Release guide](docs/RELEASE.md), [Refactor report](docs/REFACTOR_REPORT.md), [Quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md), and [Security](SECURITY.md).
+See [Feature inventory](docs/FEATURES.md), [Danmaku reference guide](docs/DANMAKU_GUIDE.md), [Architecture](docs/ARCHITECTURE.md), [Development & testing](docs/DEVELOPMENT.md), [Release guide](docs/RELEASE.md), [GitHub publishing guide](docs/GITHUB.md), [Refactor report](docs/REFACTOR_REPORT.md), [Quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md), [UI optimization notes](docs/UI_OPTIMIZATION_NOTES.md), and [Security](SECURITY.md).
 
 ## Privacy and limitations
 
 Project data is stored locally in SQLite under Electron `userData`. Bilibili cookies, optional bridge tokens and AI keys are encrypted with Electron `safeStorage` (Windows DPAPI / macOS Keychain / Linux keyring) when available and migrated automatically the next time settings are saved; without OS encryption they fall back to plaintext. Encrypted values are bound to the current OS user, so re-enter them after moving to another machine or account. Back up your data before upgrading, and avoid sharing your settings file. The browser bridge validates origins and supports a pairing token.
 
-Release 3.17.0 was verified on this machine with type checking, the full test suite (7 suites), a production build, a real danmaku-endpoint sample and a GUI smoke test of the source build. Code signing, the NSIS installer flow, real Bilibili login, FFmpeg download and the complete clip-export flow remain unverified; the packaged-app GUI and `safeStorage` checks from 3.16.1 are recorded in the [quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md). Danmaku are fetched from Bilibili on demand and are never written to the database or used in clip selection.
+Release 3.18.0 was verified on this machine with type checking, the full test suite (7 suites), a production build, and both Windows package targets. Code signing, real Bilibili login, FFmpeg download and the complete clip-export flow remain unverified; the packaged-app GUI and `safeStorage` checks from 3.16.1 are recorded in the [quality-optimization merge record](docs/OPTIMIZATION_REVIEW.md). Danmaku are fetched from Bilibili on demand and are never written to the database or used in clip selection.
 
 MIT license — see [LICENSE](LICENSE). Third-party notices: [THIRD-PARTY.md](THIRD-PARTY.md).

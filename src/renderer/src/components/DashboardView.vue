@@ -18,8 +18,8 @@ const loading = ref(true)
 const metrics = computed(() => [
   { label: '视频素材', value: data.value?.totalVideos ?? 0, icon: 'video' as const, hint: '已收录视频', view: 'library' as const },
   { label: '字幕文档', value: data.value?.totalDocs ?? 0, icon: 'file-text' as const, hint: '可检索字幕', view: 'search' as const },
-  { label: '保存片段', value: data.value?.clipCount ?? 0, icon: 'scissors' as const, hint: '创作素材', view: 'clips' as const },
-  { label: '待输出任务', value: jobs.pending.length, icon: 'queue' as const, hint: '等待剪辑', view: 'clipjobs' as const }
+  { label: '保存片段', value: data.value?.clipCount ?? 0, icon: 'scissors' as const, hint: '已保存的片段', view: 'clips' as const },
+  { label: '待输出任务', value: jobs.pending.length, icon: 'queue' as const, hint: '等待导出的任务', view: 'clipjobs' as const }
 ])
 
 async function refresh(): Promise<void> {
@@ -28,7 +28,7 @@ async function refresh(): Promise<void> {
     const [overview] = await Promise.all([window.api.dashboardOverview(), jobs.load()])
     data.value = overview
   } catch (error) {
-    ui.showToast(`工作台加载失败：${error instanceof Error ? error.message : String(error)}`, 'error', 6000)
+    ui.showToast(`首页数据加载失败：${error instanceof Error ? error.message : String(error)}`, 'error', 6000)
   } finally {
     loading.value = false
   }
@@ -70,9 +70,9 @@ function fmt(ts: number): string {
     <div class="dashboard-inner">
       <header class="dash-hero">
         <div class="hero-copy">
-          <div class="hero-eyebrow"><span class="eyebrow-dot"></span> YOUR CREATIVE WORKSPACE <span class="eyebrow-sep"></span> 字幕剪 SubClip</div>
-          <h1>每一句字幕，<br /><span>都是下一段灵感。</span></h1>
-          <p>从发现精彩对白，到整理片段、批量剪辑与发布。<br />让视频创作，从这里流畅开始。</p>
+          <div class="hero-eyebrow"><span class="eyebrow-dot"></span> SUBCLIP WORKSPACE <span class="eyebrow-sep"></span> 字幕剪 SubClip</div>
+          <h1>从字幕找到片段，<br /><span>把精彩剪出来。</span></h1>
+          <p>搜索字幕，快速定位视频中的精彩时刻。<br />保存需要的片段，再统一剪辑导出。</p>
           <div class="hero-actions">
             <button class="hero-primary" type="button" @click="emit('pull')">
               <UiIcon name="download" :size="17" /> 拉取 B 站字幕 <UiIcon name="arrow-right" :size="16" />
@@ -92,7 +92,7 @@ function fmt(ts: number): string {
             <div class="art-timeline"><span></span><span></span><span></span><span></span><span></span></div>
             <div class="art-caption"><b>00:42</b><span>把喜欢的瞬间，变成自己的作品</span></div>
           </div>
-          <div class="art-floating"><UiIcon name="sparkles" :size="17" /><span>灵感已捕捉</span><UiIcon name="check" :size="15" /></div>
+          <div class="art-floating"><UiIcon name="sparkles" :size="17" /><span>片段已保存</span><UiIcon name="check" :size="15" /></div>
           <span class="art-spark spark-one">✦</span><span class="art-spark spark-two">✧</span>
         </div>
       </header>
@@ -151,7 +151,7 @@ function fmt(ts: number): string {
 
         <section class="dash-card">
           <header class="dash-card-head"><div><span class="section-kicker">COLLECTIONS</span><h3>最近项目</h3></div><UiIcon name="folder" :size="19" /></header>
-          <div v-if="!data?.recentCollections.length" class="dash-empty compact"><UiIcon name="folder" :size="23" /><span>暂无合集，拉取合集字幕后会显示在这里。</span></div>
+          <div v-if="!data?.recentCollections.length" class="dash-empty compact"><UiIcon name="folder" :size="23" /><span>还没有合集。获取合集字幕后，会显示在这里。</span></div>
           <ul v-else class="mini-list">
             <li v-for="collection in data.recentCollections" :key="collection.collectionId">
               <button class="mini-main" type="button" @click="openCollection(collection.collectionId)"><span class="mini-icon"><UiIcon name="folder" :size="16" /></span><span class="mini-copy"><strong>{{ collection.title }}</strong><small>{{ collection.uploaderName }} · {{ collection.videoCount }} 个视频</small></span><UiIcon name="chevron-right" :size="16" /></button>
@@ -168,7 +168,7 @@ function fmt(ts: number): string {
           </ul>
         </section>
       </div>
-      <footer class="dashboard-footer"><span>SUBCLIP · MAKE EVERY MOMENT COUNT</span><span>本地素材库 · AI 服务按需启用</span></footer>
+      <footer class="dashboard-footer"><span>SUBCLIP · MAKE EVERY MOMENT COUNT</span><span>素材保存在本机 · AI 可选</span></footer>
     </div>
   </section>
 </template>
