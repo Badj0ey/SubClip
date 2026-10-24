@@ -1,46 +1,27 @@
-# 第三方组件与代码归属
+# 第三方组件与许可声明
 
-本项目的**自有代码**以根目录 [`LICENSE`](LICENSE)（MIT）授权。
-下面列出随程序分发或在本项目中移植/参考的第三方内容及其授权要求。
+本项目自有源码按根目录 [LICENSE](LICENSE) 的 MIT 许可证分发。下表是主要依赖的用途概览；实际发行前应以 `package-lock.json` 的锁定版本及分发产物附带的许可证文件为准。
 
----
+| 组件 | 许可 | 用途 |
+| --- | --- | --- |
+| [Electron](https://github.com/electron/electron) | MIT | 桌面运行时 |
+| [Vue 3](https://github.com/vuejs/core) | MIT | UI 框架 |
+| [Pinia](https://github.com/vuejs/pinia) | MIT | 前端状态管理 |
+| [mitt](https://github.com/developit/mitt) | MIT | 事件总线 |
+| [ws](https://github.com/websockets/ws) | MIT | 本地 WebSocket 通信 |
+| [SheetJS Community Edition / xlsx](https://git.sheetjs.com/sheetjs/sheetjs) | Apache-2.0（本项目锁定版本） | XLSX 导出 |
+| [Transformers.js](https://github.com/huggingface/transformers.js) | Apache-2.0 | 本地语义嵌入模型运行 |
+| TypeScript、Vite、electron-vite、esbuild、electron-builder | 各自开源许可 | 开发与打包工具 |
 
-## 一、随程序分发的依赖
+**注意：** 本项目不随源码包提供 FFmpeg 可执行文件或模型权重。用户自行安装 FFmpeg、下载模型时，还需遵守相应第三方许可和使用条款。Electron 安装包应保留 Electron/Chromium 自带的许可证文件。
 
-这些依赖会被打包进安装包，因此必须在本文档中保留其授权声明。
+## 参考/移植来源
 
-| 组件 | 版本 | 许可证 | 用途 |
-| --- | --- | --- | --- |
-| [Electron](https://github.com/electron/electron) | 36.x | MIT | 桌面应用运行时 |
-| [Vue](https://github.com/vuejs/core) | 3.x | MIT | 渲染进程 UI 框架 |
-| [ws](https://github.com/websockets/ws) | 8.x | MIT | 本地 WebSocket 服务端（插件通信） |
-| [SheetJS Community Edition (xlsx)](https://git.sheetjs.com/sheetjs/sheetjs) | 0.18.5 | Apache-2.0 | 导出 XLSX 切片表 |
+### bili_subtitle_extension_native（MIT）
 
-> Electron 打包产物中会另外附带 `LICENSE.electron.txt` 与 `LICENSES.chromium.html`
-> （由 electron-builder 自动放入），涵盖 Electron 与 Chromium 本体。
+`src/main/bilibili.ts` 中部分 B 站接口和 WBI 签名处理参考了 `bili_subtitle_extension_native` 的实现。为保留原始 MIT 许可义务，附上其随原项目记录的版权与许可文本：
 
-### 关于 xlsx 的提醒
-
-`xlsx@0.18.5` 是发布到 npm 的最后一版 SheetJS 社区版，其 Apache-2.0 许可证正文之外，
-README 还附有「未明确授予的权利由原作者保留」的说明，且该版本存在已公开的安全问题。
-**后续计划**：替换为自研的最小 XLSX 写出器或改用其他维护中的库，彻底去掉这个依赖。
-在替换之前，普通用户建议优先使用 CSV（本工具导出的 CSV 带 UTF-8 BOM，Excel 直接打开不乱码）。
-
-## 二、仅在开发/构建期使用（不随程序分发）
-
-`typescript`、`vite`、`electron-vite`、`electron-builder`、`esbuild`、`vue-tsc`、
-`@vitejs/plugin-vue`、`@types/*`。均为 MIT 或 Apache-2.0，且不出现在发布产物中。
-
----
-
-## 三、移植 / 参考的第三方代码
-
-### 3.1 bili_subtitle_extension_native（MIT）
-
-`src/main/bilibili.ts` 中的 B 站接口逻辑（WBI 签名、`player/wbi/v2` 字幕轨获取等）
-参考并移植自该项目。按 MIT 要求，其版权声明与许可证全文如下：
-
-```
+```text
 MIT License
 
 Copyright (c) 2026
@@ -58,24 +39,10 @@ copies or substantial portions of the Software.
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND.
 ```
 
-### 3.2 bilibili-slice-downloader（本项目作者委托产出，按 MIT 授权）
+### bilibili-slice-downloader（项目来源说明）
 
-`src/main/slice/`（`playurl.ts`、`sidx.ts`、`downloader.ts`、`ffmpeg.ts`、`engine.ts`）与
-`src/main/exporter.ts` 中的表格列定义，是本项目对**本项目作者委托产出的 Edge 扩展
-`bilibili-slice-downloader`** 的 TypeScript 重写。
+`src/main/slice/` 和 `src/main/exporter.ts` 的部分工作流来自项目作者原有的 `bilibili-slice-downloader` 需求与实现，当前已重写为 TypeScript。若后续引入独立第三方代码，应在本文件中补充实际权利人、许可和必要的版权声明。
 
-**权属说明**：该上游项目由本项目作者提出需求、交由 AI 编码工具产出，**不存在第三方权利人**。
-它不是一个由他人独立创作、作者无权处分的作品。因此本项目作者将其一并按 MIT 授权，
-本节即为此项声明。
+### SIDX / ISO BMFF
 
-> 说明：AI 生成内容的著作权归属在不同法域仍有不确定性，这是所有 AI 辅助项目共同面对的问题。
-> 但就本项目的合规风险而言，关键点在于「没有人被侵权」—— 该上游项目没有、也不会有
-> 一个主张权利的第三方作者。
->
-> 仓库中早先的文件里若留有「待确认授权」之类的措辞，均以此节为准。
-
-### 3.3 其他
-
-`src/main/slice/sidx.ts` 的注释提到分片索引思路「仿 A-SOUL 切片插件」。此处仅指接口/格式层面的
-行为参考（SIDX box 解析是公开的 ISO BMFF 规范），未复制其代码，因此不构成衍生作品。
-若后续确有计划直接复用其代码，请在此登记。
+`src/main/slice/sidx.ts` 按公开媒体容器格式解析索引数据。参考公开格式本身不等于复制第三方源代码。

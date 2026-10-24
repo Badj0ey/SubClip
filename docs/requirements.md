@@ -268,7 +268,7 @@ Bilibili 视频
 | 6 UI：三栏布局 | 已实现 | `src/renderer/src/App.vue` |
 | 6 资源管理：搜索 / 收藏 / 删除 | 已实现 | `components/ResourceTree.vue` |
 | 6 资源管理：**分类** | **已实现**：除自动的 UP主 → 合集 层级外，加了**用户自定义标签**（资源树顶部「标签」分组，一个视频可打多个标签，可筛选） | `db.listTags()` / `db.setVideoTags()`、`components/TagDialog.vue` |
-| 6 字幕区域：字体 / 行距 / 深色模式 | 已实现 | `SettingsView.vue`、`styles.css` |
+| 6 字幕区域：字体 / 行距 / 深色模式 | 已实现 | `SettingsView.vue`、`styles/tokens.css` |
 | 6 任务区域：查看时间范围 / 导出 / 发送任务 | 已实现 | `components/ClipPanel.vue` |
 | 7 设置：字幕显示 / 快捷键 / 路径 / 通信 | 已实现 | `SettingsView.vue` |
 | 7 路径设置中的「字幕获取工具目录」 | **已移除**：该设置原本只做目录存在性探测、不参与任何功能，留着会误导用户 | — |
