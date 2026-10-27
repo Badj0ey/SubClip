@@ -239,9 +239,12 @@ async function openFfmpegDownload(): Promise<void> {
 }
 
 async function openUserscriptFolder(): Promise<void> {
-  const file = userscript.value?.path
-  if (!file) return
-  await window.api.showItem(file)
+  try {
+    const ok = await window.api.revealUserscript()
+    if (!ok) toast('未找到随应用提供的用户脚本文件', 'error', 4200)
+  } catch (err) {
+    toast(`打开脚本文件夹失败：${err instanceof Error ? err.message : '请检查文件管理器'}`, 'error', 4200)
+  }
 }
 
 async function copyUserscript(): Promise<void> {
@@ -276,6 +279,7 @@ const pluginOnline = computed(() => connectedClients.value.length > 0)
 const CAP_LABELS: Record<string, string> = {
   pageInfo: '页面识别',
   subtitle: '字幕推送',
+  subtitleChunk: '大字幕分块',
   cookies: '登录同步',
   pullRequest: '请求拉取',
   requestSubtitles: '抓取分P'
@@ -965,7 +969,7 @@ async function openOutputDir(): Promise<void> {
                 :class="{ warn: c.outdated }"
                 :title="
                   c.legacy
-                    ? 'v4 及更早的用户脚本不带能力表，桌面端按「老客户端」放行（功能不受影响）'
+                    ? 'v4 及更早的用户脚本不带能力表，桌面端保留基础兼容，但补抓与分块功能需要新版脚本'
                     : `协议 v${c.protocol}（桌面端 v${BRIDGE_PROTOCOL_VERSION}）`
                 "
               >

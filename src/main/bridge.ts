@@ -20,8 +20,10 @@ import type {
   BridgeClientInfo,
   BridgeCookies,
   BridgePageInfo,
+  BridgePullRequest,
   BridgeStatus,
   BridgeSubtitle,
+  BridgeSubtitleChunk,
   ClientMessage,
   ServerMessage
 } from '@shared/bridge'
@@ -43,15 +45,30 @@ interface Client {
   socket: WebSocket
   info: BridgeClientInfo
   alive: boolean
+  upload: SubtitleUpload | null
   /** 速率限制窗口 */
   windowStart: number
   windowCount: number
+}
+
+interface SubtitleUpload {
+  id: string
+  bvid: string
+  page: number
+  lang: string
+  label: string
+  total: number
+  next: number
+  bytes: number
+  startedAt: number
+  cues: BridgeSubtitle['cues']
 }
 
 export interface BridgeEvents {
   status: (status: BridgeStatus) => void
   'page-info': (payload: BridgePageInfo, clientId: number) => void
   subtitle: (payload: BridgeSubtitle, clientId: number) => void
+  'pull-request': (payload: BridgePullRequest, clientId: number) => void
   cookies: (payload: BridgeCookies, clientId: number) => void
   log: (level: 'info' | 'warn' | 'error', message: string) => void
   /**
@@ -109,6 +126,16 @@ export class BridgeServer extends EventEmitter {
   }
 
   start(port: number): void {
+    // 只修改令牌或手动重连时无需重绑同一端口；close() 异步释放监听套接字，
+    // 立即重新 listen 同一端口会产生 EADDRINUSE。保留监听并让旧客户端重新握手即可。
+    if (this.wss && this.running && this.port === port) {
+      for (const client of this.clients.values()) {
+        try { client.socket.close(1000, 'bridge settings changed') } catch { /* ignore */ }
+      }
+      this.clients.clear()
+      this.emit('status', this.status())
+      return
+    }
     this.stop()
     this.port = port
     this.error = null
@@ -124,6 +151,7 @@ export class BridgeServer extends EventEmitter {
       this.wss = wss
 
       wss.on('listening', () => {
+        if (this.wss !== wss) return
         this.running = true
         this.error = null
         this.emit('status', this.status())
@@ -132,6 +160,7 @@ export class BridgeServer extends EventEmitter {
       wss.on('connection', (socket, req) => this.handleConnection(socket, req))
 
       wss.on('error', (err: NodeJS.ErrnoException) => {
+        if (this.wss !== wss) return
         this.running = false
         this.error =
           err.code === 'EADDRINUSE'
@@ -200,16 +229,54 @@ export class BridgeServer extends EventEmitter {
     return n
   }
 
-  /** 请求插件去抓取某个分P 的字幕 */
-  requestSubtitles(bvid: string, page: number, cid?: number | null): boolean {
-    return (
-      this.broadcast({
-        type: 'request-subtitles',
-        bvid,
-        page,
-        cid: cid ?? null
-      }) > 0
-    )
+  /** 桌面端主动请求时只选一个已认证的插件，避免打开多个 B站标签导致重复抓取。 */
+  requestSubtitles(
+    bvid: string, page: number, cid?: number | null,
+    options?: { pages?: Array<{ page: number; cid: number | null }>; allPages?: boolean }
+  ): boolean {
+    for (const client of this.clients.values()) {
+      if (!client.info.authenticated || client.socket.readyState !== 1) continue
+      const caps = client.info.caps
+      if (Object.keys(caps).length && !supportsCap(caps, 'requestSubtitles')) continue
+      return this.requestSubtitlesTo(client.id, bvid, page, cid, options)
+    }
+    return false
+  }
+
+  /** 插件发起拉取时，补抓请求必须回到发起请求的浏览器标签。 */
+  requestSubtitlesTo(
+    clientId: number,
+    bvid: string,
+    page: number,
+    cid?: number | null,
+    options?: { pages?: Array<{ page: number; cid: number | null }>; allPages?: boolean }
+  ): boolean {
+    const client = this.clients.get(clientId)
+    if (!client) return false
+    const caps = client.info.caps
+    if (Object.keys(caps).length && !supportsCap(caps, 'requestSubtitles')) return false
+    return this.sendToClient(clientId, {
+      type: 'request-subtitles', bvid, page, cid: cid ?? null,
+      pages: options?.pages, allPages: options?.allPages
+    })
+  }
+
+  sendToClient(clientId: number, message: ServerMessage): boolean {
+    const client = this.clients.get(clientId)
+    if (!client?.info.authenticated || client.socket.readyState !== 1) return false
+    try {
+      client.socket.send(serialize(message))
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  markCookieSynced(clientId: number, ok: boolean): void {
+    const client = this.clients.get(clientId)
+    if (!client) return
+    client.info.cookieSynced = ok
+    this.emit('status', this.status())
   }
 
   private touch(text: string): void {
@@ -258,7 +325,9 @@ export class BridgeServer extends EventEmitter {
       return
     }
 
-    const client: Client = { id, socket, info, alive: true, windowStart: Date.now(), windowCount: 0 }
+    const client: Client = {
+      id, socket, info, alive: true, upload: null, windowStart: Date.now(), windowCount: 0
+    }
     this.clients.set(id, client)
     this.touch(`插件 #${id} 已连接`)
     this.emit('status', this.status())
@@ -326,7 +395,8 @@ export class BridgeServer extends EventEmitter {
       version: this.version,
       protocol: BRIDGE_PROTOCOL_VERSION,
       caps: serverCapabilities(),
-      autoFetchSubtitles: true,
+      // 自动识别页面不等于自动下载：只有用户主动点击或桌面端请求时才抓取。
+      autoFetchSubtitles: false,
       tokenRequired: Boolean(this.token)
     }
   }
@@ -388,6 +458,7 @@ export class BridgeServer extends EventEmitter {
 
       case 'page-info':
       case 'subtitle':
+      case 'subtitle-chunk':
       case 'cookies':
       case 'pull-request': {
         if (!this.requireAuth(client)) break
@@ -406,6 +477,11 @@ export class BridgeServer extends EventEmitter {
           break
         }
 
+        if (msg.type === 'subtitle-chunk') {
+          this.receiveSubtitleChunk(client, msg.payload)
+          break
+        }
+
         if (msg.type === 'pull-request') {
           // 先回 ack 再干活：拉取是异步的、可能几十秒，不能让插件一直挂在握手超时上
           this.touch(`插件请求拉取字幕：${msg.payload.bvid}（将拉取该视频全部分P）`)
@@ -418,14 +494,12 @@ export class BridgeServer extends EventEmitter {
           break
         }
 
-        client.info.cookieSynced = true
         // 注意：不要把 cookie 内容写进事件文本，避免泄漏到日志
         this.touch(
           `插件 #${client.id} 同步了 B 站登录凭证${msg.payload.userName ? `（${msg.payload.userName}）` : ''}`
         )
         this.emit('cookies', msg.payload, client.id)
         this.sendTo(client, { type: 'ack', ok: true, message: '登录凭证已接收' })
-        this.emit('status', this.status())
         break
       }
 
@@ -442,6 +516,45 @@ export class BridgeServer extends EventEmitter {
       default:
         break
     }
+  }
+
+  /** 单连接同一时刻只允许一条有序上传；超额或乱序即丢弃整条，绝不入库半份字幕。 */
+  private receiveSubtitleChunk(client: Client, part: BridgeSubtitleChunk): void {
+    if (part.index === 0) {
+      client.upload = {
+        id: part.uploadId, bvid: part.bvid, page: part.page,
+        lang: part.lang, label: part.label, total: part.total,
+        next: 0, bytes: 0, startedAt: Date.now(), cues: []
+      }
+    }
+    const upload = client.upload
+    if (!upload || upload.id !== part.uploadId || upload.next !== part.index ||
+        upload.total !== part.total || upload.bvid !== part.bvid ||
+        upload.page !== part.page || upload.lang !== part.lang || upload.label !== part.label ||
+        Date.now() - upload.startedAt > 120_000) {
+      client.upload = null
+      this.sendTo(client, { type: 'ack', ok: false, message: '字幕分块乱序或超时，请重新抓取' })
+      return
+    }
+
+    upload.bytes += Buffer.byteLength(JSON.stringify(part.cues), 'utf8')
+    if (upload.bytes > BRIDGE_LIMITS.maxUploadBytes ||
+        upload.cues.length + part.cues.length > BRIDGE_LIMITS.maxCues) {
+      client.upload = null
+      this.sendTo(client, { type: 'ack', ok: false, message: '字幕超出单次上传上限' })
+      return
+    }
+
+    upload.cues.push(...part.cues)
+    upload.next++
+    if (upload.next !== upload.total) return
+    client.upload = null
+    this.touch(`收到完整分块字幕：${upload.bvid} P${upload.page} ${upload.label}`)
+    this.emit('subtitle', {
+      bvid: upload.bvid, page: upload.page,
+      lang: upload.lang, label: upload.label, cues: upload.cues
+    } satisfies BridgeSubtitle, client.id)
+    this.sendTo(client, { type: 'ack', ok: true, message: '完整字幕已接收' })
   }
 
   /** 业务消息一律要求已通过令牌校验 */

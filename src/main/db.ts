@@ -1841,6 +1841,11 @@ export function listDocsByVideo(videoId: number): SubtitleDoc[] {
   return rows.map(toDoc)
 }
 
+/** 旧版本可能留下只有元数据、正文为零行的文档；这种轨道必须允许重新拉取。 */
+export function docHasCues(docId: number): boolean {
+  return Boolean(requireDb().prepare('select 1 from cues where doc_id = ? limit 1').get(docId))
+}
+
 /** 按 BV 号查找视频（插件推送字幕时用） */
 export function findVideoByBvid(bvid: string): VideoItem | null {
   const row = requireDb().prepare('select * from videos where bvid = ?').get(bvid) as

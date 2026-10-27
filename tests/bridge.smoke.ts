@@ -622,29 +622,40 @@ async function run(): Promise<void> {
 
   /* ------------------------ pull-request：拉取全部分P ------------------------ */
 
-  pushes.length = 0
-  pullWs.send(
-    JSON.stringify({
-      type: 'pull-request',
-      payload: { bvid: 'BV1GJ411x7h7', page: 3, title: '测试视频标题' }
+  // 这段故意让网络层失败：验证「没有登录态也不再硬拦」和「失败分P 交给浏览器补抓」，
+  // 同时避免测试依赖真实 B站 接口（无网环境下行为必须一致）。
+  const realFetch = globalThis.fetch
+  globalThis.fetch = (() => Promise.reject(new Error('测试环境离线'))) as typeof fetch
+  try {
+    pushes.length = 0
+    pullWs.send(
+      JSON.stringify({
+        type: 'pull-request',
+        payload: { bvid: 'BV1GJ411x7h7', page: 3, title: '测试视频标题' }
+      })
+    )
+    await waitFor(() => pushes.some((p) => p.channel === 'bridge:pull'))
+    await wait(250)
+
+    check('拉取请求会立刻回 ack，不让插件挂在握手超时上', () => {
+      const ack = pullInbox.find((m) => m.type === 'ack' && /全部分P/.test(m.message ?? ''))
+      assert.ok(ack, `应收到「正在拉取全部分P」的 ack，实际：${JSON.stringify(pullInbox)}`)
     })
-  )
-  await waitFor(() => pushes.some((p) => p.channel === 'bridge:pull'))
-  await wait(250)
 
-  check('拉取请求会立刻回 ack，不让插件挂在握手超时上', () => {
-    const ack = pullInbox.find((m) => m.type === 'ack' && /全部分P/.test(m.message ?? ''))
-    assert.ok(ack, `应收到「正在拉取全部分P」的 ack，实际：${JSON.stringify(pullInbox)}`)
-  })
-
-  check('桌面端没有登录态时明确告知需要同步，而不是静默失败', () => {
-    const ev = pushes.find((p) => p.channel === 'bridge:pull')
-    assert.ok(ev, '应推送 bridge:pull')
-    const res = ev!.payload as { ok: boolean; needCookie?: boolean; message?: string }
-    assert.strictEqual(res.ok, false)
-    assert.strictEqual(res.needCookie, true, '应标记为缺登录态，界面据此引导去同步')
-    assert.ok(/同步登录状态|登录/.test(res.message ?? ''), `提示应可操作，实际：${res.message}`)
-  })
+    check('没有登录态也先尝试拉取，失败分P 交给浏览器补抓而不是直接拒绝', () => {
+      const ev = pushes.find((p) => p.channel === 'bridge:pull')
+      assert.ok(ev, '应推送 bridge:pull')
+      const res = ev!.payload as { ok: boolean; needCookie?: boolean; browserFallback?: boolean }
+      assert.ok(!res.needCookie, '不应再以「缺登录态」为由拒绝')
+      assert.strictEqual(res.ok, true, '应给出可继续的结果')
+      assert.strictEqual(res.browserFallback, true, '分P 级失败应交由浏览器补抓')
+      const req = pullInbox.find((m) => m.type === 'request-subtitles')
+      assert.ok(req, `插件应收到补抓请求，实际：${JSON.stringify(pullInbox)}`)
+      assert.strictEqual(req!.allPages, true, '补抓应覆盖全部分P')
+    })
+  } finally {
+    globalThis.fetch = realFetch
+  }
 
   check('非法 BV 号的拉取请求被丢弃，不会发起无意义的抓取', () => {
     const before = pushes.filter((p) => p.channel === 'bridge:pull').length

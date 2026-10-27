@@ -133,26 +133,28 @@ export function hasSubtitles(bvid: string): boolean {
 function importedTracks(bvid: string): Set<string> {
   const video = db.findVideoByBvid(bvid)
   if (!video) return new Set()
-  return new Set(db.listDocsByVideo(video.id).map((d) => `${d.page}:${d.lang}`))
+  return new Set(db.listDocsByVideo(video.id)
+    .filter((d) => db.docHasCues(d.id))
+    .map((d) => `${d.page}:${d.lang}`))
 }
 
 export interface PullResult {
-  /** 新增的字幕文档数 */
   docs: number
-  /** 覆盖更新（同一分P 同一语言重新拉取）的文档数 */
   updated: number
-  /** 成功拿到字幕的视频数 */
   videos: number
-  /** 失败或没有字幕的视频数 */
   failed: number
-  /** 因已存在而跳过的视频数 */
   skipped: number
   messages: string[]
+  /** 桌面端没拿到字幕的分P，由浏览器脚本利用页面登录态补抓。 */
+  retryPages: Array<{ bvid: string; page: number; cid: number | null }>
+  /** 连分P信息也拿不到的 BV 号，浏览器侧需要重新枚举全部分P。 */
+  retryAll: string[]
 }
 
 /**
- * 批量拉取字幕：遍历视频 → 每个分P → 每条字幕轨 → 入库。
- * 进度通过 onProgress 回调上报。
+ * 批量拉取字幕：视频信息 → 全部分P → 字幕轨 → 下载 → 入库。
+ * 网络请求不能包在 SQLite 的异步事务中，否则插件同时推送时会插入同一事务，
+ * 还可能导致长时间写锁。每条字幕入库使用 upsertDoc 自身的短事务。
  */
 export async function pullSubtitles(
   videos: Array<{ bvid: string; title: string }>,
@@ -165,89 +167,97 @@ export async function pullSubtitles(
   let failed = 0
   let skipped = 0
   const messages: string[] = []
+  const retryPages: PullResult['retryPages'] = []
+  const retryAll: string[] = []
 
   for (let i = 0; i < videos.length; i++) {
     const item = videos[i]
     const label = item.title || item.bvid
-
     onProgress({ current: i + 1, total: videos.length, title: label, status: 'running' })
 
-    // 每个视频的写库合并成一次落盘：批量拉取时落盘次数从「每条字幕一次」降到「每视频一次」
-    await db.transactionAsync(async () => {
-      try {
-        const info = await bili.getVideoInfo(item.bvid, cookie)
-        const videoId = persistVideoInfo(info)
-        const pages = info.pages.length ? info.pages : [{ page: 1, cid: 0, title: '', duration: 0 }]
-        const done = importedTracks(item.bvid)
+    try {
+      const info = await bili.getVideoInfo(item.bvid, cookie)
+      const videoId = persistVideoInfo(info)
+      const done = importedTracks(item.bvid)
+      let got = 0
+      let hadMissing = false
 
-        let got = 0
-        let newTracks = 0
-
-        for (const p of pages) {
-          if (!p.cid) continue
-
-          let tracks: Array<{ lang: string; label: string; url: string }> = []
-          try {
-            tracks = await bili.getSubtitleTracks(item.bvid, p.cid, cookie)
-          } catch {
-            continue
-          }
-
-          // 只拉本地还没有的「分P + 语言」：已有的语言跳过，缺失的语言照常补齐
-          const fresh = tracks.filter((t) => !done.has(`${p.page}:${t.lang}`))
-          if (!fresh.length) continue
-          newTracks++
-
-          for (const t of fresh) {
-            try {
-              const json = await bili.fetchSubtitleJson(t.url, item.bvid, cookie)
-              const cues = biliSubtitleToCues(json)
-              if (!cues.length) continue
-              const res = db.upsertDoc(
-                videoId,
-                p.page,
-                t.lang,
-                t.label || t.lang,
-                `${item.bvid}_P${p.page}_${t.lang}.srt`,
-                'bilibili',
-                cues
-              )
-              if (res.created) docs++
-              else updated++
-              done.add(`${p.page}:${t.lang}`)
-              got++
-            } catch {
-              /* 单条字幕轨失败不影响其它 */
-            }
-          }
-        }
-
-        if (got > 0) {
-          okVideos++
-        } else if (newTracks === 0 && done.size > 0) {
-          // 该视频本地已有的字幕轨已经覆盖了接口返回的全部字幕
-          skipped++
-          messages.push(`${label}：已存在，已跳过`)
-          onProgress({
-            current: i + 1,
-            total: videos.length,
-            title: label,
-            status: 'skipped',
-            message: '已存在'
-          })
-        } else {
-          failed++
-          messages.push(`${label}：没有可用字幕`)
-        }
-      } catch (err) {
-        failed++
-        messages.push(`${item.title || item.bvid}：${(err as Error).message}`)
+      if (!info.pages.length) {
+        retryAll.push(item.bvid)
+        hadMissing = true
       }
-    })
+
+      for (const p of info.pages) {
+        if (!p.cid) {
+          retryPages.push({ bvid: item.bvid, page: p.page, cid: null })
+          hadMissing = true
+          continue
+        }
+
+        let tracks: Array<{ lang: string; label: string; url: string }>
+        try {
+          tracks = await bili.getSubtitleTracks(item.bvid, p.cid, cookie, info.aid)
+        } catch (err) {
+          retryPages.push({ bvid: item.bvid, page: p.page, cid: p.cid })
+          hadMissing = true
+          messages.push(`${label} P${p.page}：${(err as Error).message}`)
+          continue
+        }
+
+        if (!tracks.length) {
+          // 可能真没有字幕，也可能桌面端未携带页面登录态，交给浏览器确认。
+          retryPages.push({ bvid: item.bvid, page: p.page, cid: p.cid })
+          hadMissing = true
+          continue
+        }
+
+        let pageFailed = false
+        for (const track of tracks) {
+          const lang = track.lang || 'unknown'
+          if (done.has(`${p.page}:${lang}`)) continue
+          try {
+            const json = await bili.fetchSubtitleJson(track.url, item.bvid, cookie)
+            const cues = biliSubtitleToCues(json)
+            if (!cues.length) throw new Error('字幕文件没有有效正文')
+            const res = db.upsertDoc(
+              videoId, p.page, lang, track.label || lang,
+              `${item.bvid}_P${p.page}_${lang}.srt`, 'bilibili', cues
+            )
+            if (res.created) docs++
+            else updated++
+            done.add(`${p.page}:${lang}`)
+            got++
+          } catch (err) {
+            pageFailed = true
+            messages.push(`${label} P${p.page} ${track.label || lang}：${(err as Error).message}`)
+          }
+        }
+        if (pageFailed) {
+          retryPages.push({ bvid: item.bvid, page: p.page, cid: p.cid })
+          hadMissing = true
+        }
+      }
+
+      if (got) {
+        okVideos++
+      } else if (!hadMissing && done.size) {
+        skipped++
+        messages.push(`${label}：本地已有全部可用字幕轨`)
+        onProgress({ current: i + 1, total: videos.length, title: label,
+          status: 'skipped', message: '已存在' })
+      } else {
+        failed++
+        messages.push(`${label}：桌面端未取得新字幕${hadMissing ? '，可由浏览器补抓' : ''}`)
+      }
+    } catch (err) {
+      failed++
+      retryAll.push(item.bvid)
+      messages.push(`${label}：${(err as Error).message}`)
+    }
   }
 
   onProgress({ current: videos.length, total: videos.length, title: '', status: 'done' })
-  return { docs, updated, videos: okVideos, failed, skipped, messages }
+  return { docs, updated, videos: okVideos, failed, skipped, messages, retryPages, retryAll }
 }
 
 export interface ImportSrtResult {
@@ -292,60 +302,54 @@ export async function importLocalSrt(paths: string[], bvid?: string): Promise<Im
     }
   }
 
-  // 整批导入合并成一次落盘
-  await db.transactionAsync(async () => {
-    for (const path of paths) {
-      try {
-        const buf = await readFile(path)
-        const { text, encoding } = decodeBuffer(buf as Buffer)
-        const parsed = parseSrt(text)
-        if (!parsed.cues.length) {
-          failures.push(`${basename(path)}：没有解析出任何字幕`)
-          continue
-        }
-        warnings.push(...parsed.warnings.slice(0, 3).map((w) => `${basename(path)}：${w}`))
+  // 文件读取与 B站查询都在事务外进行，避免长时间占用 SQLite 写事务。
+  for (const path of paths) {
+    try {
+      const buf = await readFile(path)
+      const { text, encoding } = decodeBuffer(buf as Buffer)
+      const parsed = parseSrt(text)
+      if (!parsed.cues.length) {
+        failures.push(`${basename(path)}：没有解析出任何字幕`)
+        continue
+      }
+      warnings.push(...parsed.warnings.slice(0, 3).map((w) => `${basename(path)}：${w}`))
 
-        const fileTitle = basename(path, extname(path))
-        let videoId = targetVideoId
-        let page = guessPage(path)
+      const fileTitle = basename(path, extname(path))
+      let videoId = targetVideoId
+      let page = guessPage(path)
 
-        // 没填 BV 号时，看看文件名里有没有，让本地文件也能归到真实 UP主 下
-        if (!videoId && !explicit) {
-          const guessed = bili.extractBvid(fileTitle)
-          if (guessed) {
-            try {
-              videoId = (await persistVideo(guessed)).videoId
-              notes.push(`${basename(path)}：已从文件名识别到 ${guessed}，归入该视频`)
-            } catch {
-              /* 识别失败就仍然按本地文件处理 */
-            }
+      // 没填 BV 号时，看看文件名里有没有，让本地文件也能归到真实 UP主 下
+      if (!videoId && !explicit) {
+        const guessed = bili.extractBvid(fileTitle)
+        if (guessed) {
+          try {
+            videoId = (await persistVideo(guessed)).videoId
+            notes.push(`${basename(path)}：已从文件名识别到 ${guessed}，归入该视频`)
+          } catch {
+            /* 识别失败就仍然按本地文件处理 */
           }
         }
+      }
 
+      // 每个文件的分组与字幕写入保持原子性，但不在事务内等待网络/磁盘 IO。
+      const res = db.transaction(() => {
         if (!videoId) {
           const uploaderId = db.upsertUploader(null, db.LOCAL_UPLOADER_NAME)
           const collectionId = db.upsertCollection(uploaderId, null, LOCAL_COLLECTION_NAME)
-          // 同一个文件重复导入时复用已有的视频节点，不再堆出一个新的
           videoId = db.findLocalVideo(fileTitle)?.id ?? db.upsertVideo(collectionId, '', fileTitle, {})
           page = 1
         }
-
-        const res = db.upsertDoc(
-          videoId,
-          page,
-          'local',
-          `${encoding} · ${basename(path)}`,
-          basename(path),
-          'local',
-          parsed.cues
+        return db.upsertDoc(
+          videoId, page, 'local', `${encoding} · ${basename(path)}`,
+          basename(path), 'local', parsed.cues
         )
-        if (res.created) imported++
-        else updated++
-      } catch (err) {
-        failures.push(`${basename(path)}：${(err as Error).message}`)
-      }
+      })
+      if (res.created) imported++
+      else updated++
+    } catch (err) {
+      failures.push(`${basename(path)}：${(err as Error).message}`)
     }
-  })
+  }
 
   return { imported, updated, failures, warnings, notes }
 }
@@ -390,7 +394,7 @@ export async function listBiliTracks(
     const info = await bili.getVideoInfo(video.bvid, cookie)
     const target = info.pages.find((p) => p.page === page) ?? info.pages[0]
     if (!target) return { ok: false, message: '没有找到该分P' }
-    const tracks = await bili.getSubtitleTracks(video.bvid, target.cid, cookie)
+    const tracks = await bili.getSubtitleTracks(video.bvid, target.cid, cookie, info.aid)
     return { ok: true, data: { tracks, cid: target.cid } }
   } catch (err) {
     return { ok: false, message: (err as Error).message }

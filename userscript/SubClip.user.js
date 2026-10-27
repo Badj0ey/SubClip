@@ -2,7 +2,7 @@
 // @name         字幕剪 SubClip · B站桥接
 // @name:en      SubClip Bilibili Bridge
 // @namespace    https://github.com/Badj0ey/SubClip
-// @version      3.18.1
+// @version      3.18.2
 // @description  在 B 站页面左下角识别视频，把页面信息、登录态与字幕同步给「字幕剪」桌面端
 // @author       Badj0ey
 // @homepageURL  https://github.com/Badj0ey/SubClip
@@ -12,8 +12,11 @@
 // @grant        GM_setValue
 // @grant        GM_cookie
 // @grant        GM_xmlhttpRequest
+// @grant        unsafeWindow
 // @connect      hdslb.com
 // @connect      *.hdslb.com
+// @connect      *.bilivideo.cn
+// @connect      *.bilivideo.com
 // @connect      *.bilibili.com
 // @run-at       document-idle
 // @noframes
@@ -41,7 +44,11 @@
 
   /* =============================== 常量 =============================== */
 
-  const PROTOCOL_VERSION = 4
+  const PROTOCOL_VERSION = 5
+  const CLIENT_CAPS = {
+    pageInfo: true, subtitle: true, subtitleChunk: true,
+    cookies: true, pullRequest: true, requestSubtitles: true
+  }
   const DEFAULT_PORT = 8765
   const VERSION =
     (typeof GM_info === 'object' && GM_info?.script?.version) || '0.0.0'
@@ -97,6 +104,7 @@
     helloAcks: 0,
     serverVersion: '',
     serverProtocol: null,
+    serverCaps: {},
     compatible: false,
     blockReconnect: false,
     retry: 0,
@@ -112,7 +120,9 @@
     tracks: { key: '', at: 0, data: null, error: '', loading: false },
     login: { at: 0, data: null, loading: false },
     events: [],
-    fetching: new Set()
+    fetching: new Set(),
+    pulling: false,
+    pendingPullBvid: ''
   }
 
   const els = {}
@@ -497,17 +507,25 @@
   }
 
   async function apiGet(path, params) {
-    const res = await fetch(buildApiUrl(path, params), {
-      credentials: 'include',
-      signal: AbortSignal.timeout(API_TIMEOUT_MS),
-      headers: { Accept: 'application/json' }
-    })
-    if (!res.ok) throw new Error(`HTTP ${res.status}`)
+    const url = buildApiUrl(path, params)
     let data
     try {
+      // 首选页面同站请求：它能携带浏览器真实登录 Cookie。
+      const res = await fetch(url, {
+        credentials: 'include',
+        signal: AbortSignal.timeout(API_TIMEOUT_MS),
+        headers: { Accept: 'application/json' }
+      })
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
       data = await res.json()
-    } catch {
-      throw new Error('接口返回不是 JSON')
+    } catch (err) {
+      // 少数脚本沙箱会拦截跨子域 fetch；GM 请求只作网络层补救。
+      if (typeof GM_xmlhttpRequest !== 'function') throw err
+      try {
+        data = await gmRequest(url, true)
+      } catch (gmErr) {
+        throw new Error(`页面请求失败：${err?.message || err}；脚本请求失败：${gmErr?.message || gmErr}`)
+      }
     }
     if (data && typeof data === 'object' && Number(data.code) !== 0) {
       throw new Error(`接口返回 ${data.code}：${data.message || '未知错误'}`)
@@ -516,19 +534,59 @@
   }
 
   function pickTracks(playerData) {
-    const list = playerData?.subtitle?.subtitles
-    if (!Array.isArray(list)) return []
-    return list
-      .map((s) => ({
-        lang: String(s?.lan || ''),
-        label: String(s?.lan_doc || s?.lan || ''),
-        url: String(s?.subtitle_url || '')
-      }))
-      .filter((t) => t.url)
+    const lists = [
+      playerData?.subtitle?.subtitles,
+      playerData?.subtitle?.list,
+      playerData?.subtitles,
+      playerData?.data?.subtitle?.subtitles
+    ]
+    const found = new Map()
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue
+      for (const s of list) {
+        const url = String(s?.subtitle_url || s?.url || '').trim()
+        if (!url) continue
+        const lang = String(s?.lan || s?.lang || 'unknown')
+        found.set(`${lang}:${url}`, {
+          lang, label: String(s?.lan_doc || s?.label || lang), url
+        })
+      }
+    }
+    return [...found.values()]
   }
 
   async function getVideoInfo(bvid) {
-    return apiGet('/x/web-interface/view', { bvid })
+    try {
+      const data = await apiGet('/x/web-interface/view', { bvid })
+      if (!Array.isArray(data?.pages) || !data.pages.length) {
+        try {
+          const pages = await apiGet('/x/player/pagelist', { bvid })
+          if (Array.isArray(pages) && pages.length) return { ...data, pages }
+        } catch {
+          /* 保留已获取的视频信息，后续可使用当前页面的 cid */
+        }
+      }
+      return data
+    } catch (err) {
+      // B站页面已经加载的视频信息可在接口受限时使用，但只允许匹配当前 BV 号。
+      const page = typeof unsafeWindow === 'object' ? unsafeWindow : window
+      const data = page?.__INITIAL_STATE__?.videoData || page?.__INITIAL_STATE__?.videoInfo
+      if (state.page?.bvid === bvid && data?.bvid === bvid && Array.isArray(data.pages)) {
+        return data
+      }
+      throw err
+    }
+  }
+
+  function pagePlayerTracks(bvid, cid, pageNumber) {
+    if (state.page?.bvid !== bvid) return []
+    const page = typeof unsafeWindow === 'object' ? unsafeWindow : window
+    const player = page?.__playinfo__
+    const playerCid = Number(player?.data?.cid || player?.cid ||
+      page?.__INITIAL_STATE__?.cid || page?.__INITIAL_STATE__?.videoData?.cid || 0)
+    if (playerCid && playerCid !== Number(cid)) return []
+    if (!playerCid && Number(state.page.page) !== Number(pageNumber)) return []
+    return pickTracks(player?.data || player)
   }
 
   /**
@@ -538,9 +596,9 @@
    *   2. 失败回退免签名的 x/player/v2
    * 每次都会记录失败原因，便于在面板上看到到底是哪一步断了。
    */
-  async function getSubtitleTracks(bvid, cid, aid) {
+  async function getSubtitleTracks(bvid, cid, aid, pageNumber) {
     const errors = []
-
+    let empty = 0
     try {
       const key = await getWbiKey()
       const params = { bvid, cid }
@@ -548,34 +606,62 @@
       const data = await apiGet('/x/player/wbi/v2', signWbi(params, key))
       const tracks = pickTracks(data)
       if (tracks.length) return { tracks, via: 'wbi/v2' }
-      errors.push('wbi/v2: 无字幕轨')
+      empty++
+      if (aid) {
+        const byAid = await apiGet('/x/player/wbi/v2', signWbi({ aid, cid }, key))
+        const extra = pickTracks(byAid)
+        if (extra.length) return { tracks: extra, via: 'wbi/v2(aid)' }
+        empty++
+      }
     } catch (err) {
       errors.push(`wbi/v2: ${err.message}`)
     }
 
     try {
-      const data = await apiGet('/x/player/v2', { bvid, cid })
+      const data = await apiGet('/x/player/v2', { bvid, cid, ...(aid ? { aid } : {}) })
       const tracks = pickTracks(data)
       if (tracks.length) return { tracks, via: 'player/v2' }
-      errors.push('player/v2: 无字幕轨')
+      empty++
+      if (aid) {
+        const byAid = await apiGet('/x/player/v2', { aid, cid })
+        const extra = pickTracks(byAid)
+        if (extra.length) return { tracks: extra, via: 'player/v2(aid)' }
+        empty++
+      }
     } catch (err) {
       errors.push(`player/v2: ${err.message}`)
     }
 
-    const onlyEmpty = errors.every((e) => e.endsWith('无字幕轨'))
-    if (onlyEmpty) return { tracks: [], via: 'none' }
-    throw new Error(errors.join('；'))
+    const fromPage = pagePlayerTracks(bvid, cid, pageNumber)
+    if (fromPage.length) return { tracks: fromPage, via: '页面播放器' }
+    if (errors.length) throw new Error(`字幕接口未能完整读取：${errors.join('；')}`)
+    if (empty) return { tracks: [], via: 'none' }
+    throw new Error('字幕接口没有返回有效数据')
   }
 
-  async function collectTracks(bvid, page, cidHint) {
-    const info = await getVideoInfo(bvid)
+  async function collectTracks(bvid, page, cidHint, infoHint) {
+    let info = infoHint
+    if (!info) {
+      try {
+        info = await getVideoInfo(bvid)
+      } catch (err) {
+        if (!cidHint) throw err
+        info = {
+          bvid, title: state.page?.bvid === bvid ? state.page.title : bvid,
+          pages: [{ page, cid: cidHint }], owner: {}
+        }
+      }
+    }
     const pages = info?.pages || []
-    if (!pages.length) throw new Error('视频没有分P 信息')
+    if (!pages.length && !cidHint) throw new Error('视频没有分P 信息')
     const byCid = cidHint ? pages.find((p) => Number(p.cid) === Number(cidHint)) : null
     const target =
-      byCid || pages.find((p) => Number(p.page) === Number(page)) || pages[0]
+      byCid || pages.find((p) => Number(p.page) === Number(page)) || pages[0] ||
+      { cid: cidHint, page }
 
-    const { tracks, via } = await getSubtitleTracks(bvid, Number(target.cid), info?.aid)
+    const { tracks, via } = await getSubtitleTracks(
+      bvid, Number(target.cid), info?.aid, Number(target.page) || page
+    )
     return {
       bvid,
       page: Number(target.page) || 1,
@@ -657,7 +743,9 @@
         const cookies = await listCookies(details)
         usedGM = true
         for (const cookie of cookies) {
-          if (cookie?.name) map.set(String(cookie.name), String(cookie.value ?? ''))
+          if (cookie?.name && (!map.has(String(cookie.name)) || !map.get(String(cookie.name)))) {
+            map.set(String(cookie.name), String(cookie.value ?? ''))
+          }
         }
       } catch (err) {
         if (!apiError) apiError = err?.message || String(err)
@@ -665,7 +753,7 @@
     }
 
     for (const [name, value] of readDocumentCookies()) {
-      if (!map.has(name)) map.set(name, value)
+      if (!map.has(name) || !map.get(name)) map.set(name, value)
     }
 
     const keys = [...map.keys()]
@@ -680,14 +768,14 @@
       const onlyPrimary = ordered.filter((name) => COOKIE_PRIORITY.includes(name))
       cookie = onlyPrimary.map((name) => `${name}=${map.get(name)}`).join('; ')
       if (cookie.length > COOKIE_LIMIT) {
-        return { cookie: '', count: map.size, hasSession: map.has('SESSDATA'), tooLarge: true, usedGM, apiError }
+        return { cookie: '', count: map.size, hasSession: Boolean(map.get('SESSDATA')), tooLarge: true, usedGM, apiError }
       }
     }
 
     return {
       cookie,
       count: map.size,
-      hasSession: map.has('SESSDATA'),
+      hasSession: Boolean(map.get('SESSDATA')),
       tooLarge: false,
       usedGM,
       apiError
@@ -759,6 +847,12 @@
   async function fetchSubtitleJson(rawUrl) {
     const url = String(rawUrl || '').startsWith('//') ? `https:${rawUrl}` : String(rawUrl || '')
     if (!url) throw new Error('字幕地址为空')
+    const target = new URL(url)
+    const host = target.hostname.toLowerCase()
+    if (target.protocol !== 'https:' ||
+        !['bilibili.com', 'hdslb.com', 'bilivideo.cn', 'bilivideo.com'].some((root) => host === root || host.endsWith(`.${root}`))) {
+      throw new Error('字幕下载地址不是受信任的 B站 HTTPS 域名')
+    }
 
     let data
     if (typeof GM_xmlhttpRequest === 'function') {
@@ -788,10 +882,10 @@
       const from = Number(row?.from)
       const to = Number(row?.to)
       const content = String(row?.content ?? '').replace(/\r/g, '').trim()
-      if (!Number.isFinite(from) || !Number.isFinite(to) || !content) continue
+      if (!Number.isFinite(from) || !Number.isFinite(to) || from < 0 || !content) continue
       cues.push({
         from,
-        to,
+        to: Math.max(from, to),
         content: content.length > 2_000 ? content.slice(0, 2_000) : content
       })
     }
@@ -803,7 +897,7 @@
   function sendRaw(message) {
     if (!isSocketOpen()) return false
     try {
-      state.ws.send(JSON.stringify(message))
+      state.ws.send(JSON.stringify({ v: PROTOCOL_VERSION, caps: CLIENT_CAPS, ...message }))
       return true
     } catch {
       return false
@@ -846,6 +940,8 @@
     state.ws = ws
     state.helloAcks = 0
     state.auth = 'unknown'
+    state.compatible = false
+    state.serverCaps = {}
     state.cookieSynced = false
     setStatus('connecting', `127.0.0.1:${state.port}`)
 
@@ -867,6 +963,9 @@
       if (message.type === 'hello-ack') onHelloAck(message)
       else if (message.type === 'ack') onAck(message)
       else if (message.type === 'request-subtitles') onRequestSubtitles(message)
+      else if (message.type === 'pull-status') onPullStatus(message)
+      else if (message.type === 'subtitle-result') onSubtitleResult(message)
+      else if (message.type === 'cookies-result') onCookiesResult(message)
       else if (message.type === 'pong') {
         /* 浏览器 WebSocket 自带心跳，这里只做兼容 */
       }
@@ -883,6 +982,8 @@
       state.helloAcks = 0
       state.auth = 'unknown'
       state.cookieSynced = false
+      state.pulling = false
+      state.pendingPullBvid = ''
       if (state.blockReconnect) {
         if (state.status === 'online' || state.status === 'outdated') {
           setStatus('offline', '连接已断开')
@@ -969,10 +1070,11 @@
     state.helloAcks++
     state.serverVersion = String(message.version || '')
     state.serverProtocol = Number(message.protocol) || null
+    state.serverCaps = message.caps && typeof message.caps === 'object' ? message.caps : {}
 
     if (message.rejected) {
       state.blockReconnect = true
-      setStatus('rejected', '桌面端拒绝了该来源，请把桌面端更新到 3.15 或更高版本')
+      setStatus('rejected', '桌面端拒绝了该来源，请升级到与脚本匹配的桌面端版本')
       return
     }
 
@@ -995,9 +1097,9 @@
       return
     }
 
-    // 服务端连接建立时会先发一次 hello-ack；带令牌时以收到 hello 后的第二次为准
-    if (message.tokenRequired && state.helloAcks < 2) {
-      setStatus('auth', '正在校验配对令牌…')
+    // 服务端在收到 hello 前就会发一次 ack；第二次才代表能力与令牌已完成协商。
+    if (state.helloAcks < 2) {
+      setStatus('auth', '正在确认连接与配对令牌…')
       return
     }
 
@@ -1026,69 +1128,209 @@
     feedback(text, 'error')
   }
 
-  function onRequestSubtitles(message) {
+  function onPullStatus(message) {
     const bvid = String(message.bvid || '')
-    const page = Math.max(1, Number(message.page) || 1)
-    if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) return
-    addEvent(`桌面端请求抓取 ${bvid} P${page} 的字幕`)
-    void fetchAndSend(bvid, page, message.cid)
+    if (state.pendingPullBvid && state.pendingPullBvid !== bvid) return
+    const stage = String(message.stage || '')
+    const detail = String(message.message || '')
+    addEvent(detail || `拉取状态：${stage}`, stage === 'error' ? 'error' : stage === 'done' ? 'ok' : 'info')
+    feedback(detail, stage === 'error' ? 'error' : stage === 'done' ? 'ok' : 'warn')
+    if (stage === 'done' || stage === 'error') {
+      state.pulling = false
+      state.pendingPullBvid = ''
+      updateActionAvailability()
+    }
   }
 
-  async function fetchAndSend(bvid, page, cidHint) {
+  function onSubtitleResult(message) {
+    const label = `${message.bvid} P${message.page} ${message.lang || ''}`
+    const detail = String(message.message || (message.ok ? '已入库' : '入库失败'))
+    addEvent(`${label}：${detail}`, message.ok ? 'ok' : 'error')
+    if (!message.ok) feedback(detail, 'error')
+  }
+
+  function onCookiesResult(message) {
+    state.cookieSynced = Boolean(message.ok)
+    const detail = String(message.message || (message.ok ? '登录状态已保存' : '登录状态保存失败'))
+    addEvent(detail, message.ok ? 'ok' : 'error')
+    feedback(detail, message.ok ? 'ok' : 'error')
+    renderLogin()
+  }
+
+  /** 分P补抓串行执行，避免桌面端一次发多个请求时并发上传导致分块互相覆盖。 */
+  let subtitleQueue = Promise.resolve()
+
+  function onRequestSubtitles(message) {
+    const bvid = String(message.bvid || '')
+    if (!/^BV[0-9A-Za-z]{10}$/.test(bvid)) return
+    subtitleQueue = subtitleQueue.then(() => fetchRequestedSubtitles(message)).catch((err) => {
+      const detail = err?.message || String(err)
+      addEvent(`浏览器抓取失败：${detail}`, 'error')
+      feedback(`抓取失败：${truncate(detail, 100)}`, 'error')
+      sendRaw({ type: 'log', level: 'warn', message: `浏览器抓取 ${bvid} 失败：${truncate(detail, 200)}` })
+      if (!state.pendingPullBvid || state.pendingPullBvid === bvid) {
+        state.pulling = false
+        state.pendingPullBvid = ''
+        updateActionAvailability()
+      }
+    })
+  }
+
+  function currentPageFallback(bvid) {
+    if (state.page?.bvid !== bvid) return null
+    const page = typeof unsafeWindow === 'object' ? unsafeWindow : window
+    const current = Number(state.page.page) || 1
+    const initialPages = page?.__INITIAL_STATE__?.videoData?.pages || []
+    const currentPart = Array.isArray(initialPages)
+      ? initialPages.find((p) => Number(p.page) === current)
+      : null
+    const cid = Number(state.tracks.data?.cid || currentPart?.cid ||
+      page?.__INITIAL_STATE__?.cid ||
+      page?.__INITIAL_STATE__?.videoData?.cid || 0)
+    return cid ? { page: current, cid } : null
+  }
+
+  async function fetchRequestedSubtitles(message) {
+    const bvid = String(message.bvid)
+    let info = null
+    let currentOnly = null
+    try {
+      info = await getVideoInfo(bvid)
+    } catch (err) {
+      if (message.allPages) currentOnly = currentPageFallback(bvid)
+      if (message.allPages && !currentOnly) throw new Error(`无法取得分P列表：${err?.message || err}`)
+    }
+    if (message.allPages && !info?.pages?.length && !currentOnly && state.page?.bvid === bvid) {
+      currentOnly = currentPageFallback(bvid)
+    }
+    if (currentOnly) addEvent('无法枚举全部分P，先补抓当前页面的字幕', 'warn')
+
+    const requested = message.allPages
+      ? (info?.pages?.length ? info.pages : currentOnly ? [currentOnly] : [])
+          .map((p) => ({ page: Number(p.page) || 1, cid: Number(p.cid) || null }))
+      : Array.isArray(message.pages) && message.pages.length
+        ? message.pages.map((p) => ({ page: Math.max(1, Number(p.page) || 1), cid: Number(p.cid) || null }))
+        : [{ page: Math.max(1, Number(message.page) || 1), cid: Number(message.cid) || null }]
+
+    const pages = [...new Map(requested.map((p) => [p.page, p])).values()]
+    if (!pages.length) throw new Error('未取得任何有效分P')
+    addEvent(`浏览器开始补抓 ${bvid} 的 ${pages.length} 个分P`)
+    state.pulling = true
+    updateActionAvailability()
+
+    let sent = 0
+    let failed = 0
+    for (const p of pages) {
+      if (!ensureOnline()) throw new Error('桌面端连接中断，抓取已停止')
+      const result = await fetchAndSend(bvid, p.page, p.cid, info)
+      sent += result.sent
+      failed += result.failed
+    }
+
+    const summary = sent
+      ? `浏览器已提交 ${sent} 条字幕（${pages.length} 个分P），等待桌面端入库`
+      : failed
+        ? `字幕轨读取/下载失败 ${failed} 次，请查看最近事件`
+        : `已检查 ${pages.length} 个分P，未发现可获取的 CC 字幕轨`
+    addEvent(summary, sent ? 'ok' : 'warn')
+    feedback(summary, sent ? 'ok' : 'warn')
+    if (!sent) sendRaw({
+      type: 'log', level: failed ? 'warn' : 'info', message: `${bvid}：${truncate(summary, 180)}`
+    })
+    if (!state.pendingPullBvid || state.pendingPullBvid === bvid) {
+      state.pulling = false
+      state.pendingPullBvid = ''
+      updateActionAvailability()
+    }
+  }
+
+  /** 512KB 单帧上限下先试整份传输；大字幕拆成有序分块，桌面端完整组装后才入库。 */
+  async function sendSubtitle(payload) {
+    const encoder = new TextEncoder()
+    const bytes = (value) => encoder.encode(JSON.stringify(value)).length
+    const message = { type: 'subtitle', payload }
+    if (bytes({ v: PROTOCOL_VERSION, caps: CLIENT_CAPS, ...message }) <= 440_000) {
+      if (!sendRaw(message)) throw new Error('桌面端连接已断开')
+      return
+    }
+    if (state.serverCaps.subtitleChunk !== true) {
+      throw new Error('字幕过大，桌面端不支持分块上传，请升级桌面端')
+    }
+
+    const parts = []
+    let part = []
+    let size = 0
+    for (const cue of payload.cues) {
+      const n = bytes(cue) + 2
+      if (part.length && (size + n > 180_000 || part.length >= 1500)) {
+        parts.push(part)
+        part = []
+        size = 0
+      }
+      part.push(cue)
+      size += n
+    }
+    if (part.length) parts.push(part)
+    if (parts.length > 128) throw new Error('字幕超过 32MB 分块传输限制')
+
+    const uploadId = crypto.randomUUID().replace(/-/g, '')
+    for (let i = 0; i < parts.length; i++) {
+      const ok = sendRaw({
+        type: 'subtitle-chunk',
+        payload: {
+          bvid: payload.bvid, page: payload.page, lang: payload.lang,
+          label: payload.label, uploadId, index: i, total: parts.length, cues: parts[i]
+        }
+      })
+      if (!ok) throw new Error(`字幕分块 ${i + 1}/${parts.length} 发送失败`)
+      // 服务端有每秒 60 条的速率限制；主动控制发送节奏，避免自我断线。
+      await new Promise((resolve) => setTimeout(resolve, 40))
+    }
+  }
+
+  async function fetchAndSend(bvid, page, cidHint, infoHint) {
     const key = `${bvid}:${page}`
-    if (state.fetching.has(key)) return
+    if (state.fetching.has(key)) return { sent: 0, failed: 0 }
     state.fetching.add(key)
+    let sent = 0
+    let failed = 0
 
     try {
-      const data = await collectTracks(bvid, page, cidHint)
+      const data = await collectTracks(bvid, page, cidHint, infoHint)
       const tracks = data.tracks || []
       if (!tracks.length) {
-        addEvent(`${bvid} P${data.page} 没有可用字幕轨`, 'warn')
-        feedback('没有找到可用字幕轨', 'warn')
-        return
+        addEvent(`${bvid} P${data.page}：接口未提供 CC 字幕轨`, 'warn')
+        return { sent, failed }
       }
 
-      addEvent(`开始抓取 ${tracks.length} 条字幕轨（${data.via}）`)
-      let sent = 0
+      addEvent(`P${data.page}：发现 ${tracks.length} 条字幕轨（${data.via}）`)
       for (const track of tracks) {
-        if (!isSocketOpen()) {
-          addEvent('连接已断开，停止抓取', 'warn')
-          break
-        }
+        if (!isSocketOpen()) throw new Error('桌面端连接已断开')
         try {
           const json = await fetchSubtitleJson(track.url)
           const cues = toCues(json.body)
-          if (!cues.length) {
-            addEvent(`字幕「${track.label || track.lang}」没有有效行`, 'warn')
-            continue
+          if (!cues.length) throw new Error('字幕文件没有有效行')
+          if (json.body.length > cues.length && cues.length >= 20_000) {
+            addEvent(`P${data.page} 字幕「${track.label}」超过 20000 行，已按协议上限处理`, 'warn')
           }
-          const ok = sendRaw({
-            type: 'subtitle',
-            payload: {
-              bvid,
-              page: data.page,
-              lang: truncate(track.lang || 'unknown', 40),
-              label: truncate(track.label || track.lang || '字幕', 200),
-              cues
-            }
+          await sendSubtitle({
+            bvid, page: data.page,
+            lang: truncate(track.lang || 'unknown', 32),
+            label: truncate(track.label || track.lang || '字幕', 200), cues
           })
-          if (!ok) {
-            addEvent('连接已断开，停止抓取', 'warn')
-            break
-          }
           sent++
         } catch (err) {
-          addEvent(`字幕「${track.label || track.lang}」下载失败：${err.message}`, 'error')
+          failed++
+          addEvent(`P${data.page} 字幕「${track.label || track.lang}」失败：${err.message}`, 'error')
         }
       }
-      addEvent(`已发送 ${sent}/${tracks.length} 条字幕`, sent ? 'ok' : 'warn')
-      feedback(sent ? `已发送 ${sent} 条字幕` : '没有发送成功', sent ? 'ok' : 'warn')
     } catch (err) {
-      addEvent(`抓取失败：${err.message}`, 'error')
-      feedback(`抓取失败：${truncate(err.message, 100)}`, 'error')
+      failed++
+      addEvent(`P${page} 字幕轨读取失败：${err?.message || err}`, 'error')
     } finally {
       state.fetching.delete(key)
     }
+    return { sent, failed }
   }
 
   /* =============================== 动作 =============================== */
@@ -1115,58 +1357,46 @@
   }
 
   function ensureOnline() {
-    if (isSocketOpen() && state.status !== 'token' && state.status !== 'rejected') {
+    if (isSocketOpen() && state.auth === 'ok' && state.compatible) {
       return true
     }
     if (state.status === 'token') feedback('请先在「连接设置」里填写配对令牌', 'warn')
     else if (state.status === 'rejected') feedback('桌面端拒绝了该来源，请更新桌面端', 'error')
+    else if (state.status === 'outdated') feedback('桌面端协议过旧，请更新桌面端', 'error')
     else feedback('未连接桌面端', 'error')
     return false
   }
 
-  function syncPage() {
-    if (!ensureOnline()) return
+  /** 唯一主操作：同步视频元数据，并拉取全部分P字幕；桌面端缺权限时自动请求浏览器补抓。 */
+  function syncVideoAndSubtitles() {
+    if (!ensureOnline() || state.pulling) return
     const page = state.page
     if (!page?.bvid) {
-      feedback('当前页面没有可同步的视频', 'warn')
+      feedback('请打开具体的视频页面后再同步', 'warn')
       return
     }
     const payload = currentPageInfo()
     if (!payload) return
-    if (send({ type: 'page-info', payload })) {
-      addEvent(`已发送页面信息 ${page.bvid} P${page.page}`)
-      feedback('页面信息已发送', 'ok')
-    }
-  }
+    if (!send({ type: 'page-info', payload })) return
 
-  function pullVideo() {
-    if (!ensureOnline()) return
-    if (!state.compatible) {
-      feedback('桌面端协议过旧，请先更新桌面端', 'error')
+    state.pulling = true
+    state.pendingPullBvid = page.bvid
+    updateActionAvailability()
+    if (!send({
+      type: 'pull-request',
+      payload: {
+        bvid: page.bvid,
+        page: Math.max(1, Number(page.page) || 1),
+        title: truncate(page.title, 200)
+      }
+    })) {
+      state.pulling = false
+      state.pendingPullBvid = ''
+      updateActionAvailability()
       return
     }
-    const page = state.page
-    if (!page?.bvid) {
-      feedback('当前页面没有可拉取的视频', 'warn')
-      return
-    }
-    const payload = currentPageInfo()
-    if (!payload) return
-    // 先让桌面端知道页面信息，再请它拉全部分P
-    send({ type: 'page-info', payload })
-    if (
-      send({
-        type: 'pull-request',
-        payload: {
-          bvid: page.bvid,
-          page: Math.max(1, Number(page.page) || 1),
-          title: truncate(page.title, 200)
-        }
-      })
-    ) {
-      addEvent(`已请求桌面端拉取 ${page.bvid} 的全部分P`)
-      feedback('已请求桌面端拉取全部分P', 'ok')
-    }
+    addEvent(`已请求同步 ${page.bvid} 的视频信息及全部分P字幕`)
+    feedback('正在同步视频及字幕，失败分P将由浏览器补抓…', 'warn')
   }
 
   async function syncCookies() {
@@ -1196,10 +1426,8 @@
       userName: login?.verified ? login.name : ''
     }
     if (!send({ type: 'cookies', payload })) return
-    state.cookieSynced = true
-    addEvent(`已同步登录状态（${result.count} 项）`)
-    feedback('登录状态已同步到桌面端', 'ok')
-    renderLogin()
+    addEvent(`已提交登录状态（${result.count} 项），等待桌面端保存`)
+    feedback('已发送登录状态，等待桌面端确认…', 'warn')
   }
 
   /* =============================== UI 构建 =============================== */
@@ -1537,8 +1765,7 @@
               <div class="sc-tracks" data-ref="tracks"><span class="sc-empty">等待识别页面…</span></div>
             </section>
             <div class="sc-actions">
-              <button class="sc-btn primary" type="button" data-ref="syncPage">同步该视频</button>
-              <button class="sc-btn" type="button" data-ref="pullVideo">拉取全部分P</button>
+              <button class="sc-btn primary" type="button" data-ref="syncVideo">同步视频及字幕（全部分P）</button>
             </div>
             <div class="sc-feedback" data-ref="feedback" role="status" aria-live="polite"></div>
             <section class="sc-section">
@@ -1637,11 +1864,9 @@
   function updateActionAvailability() {
     const page = state.page
     const hasVideo = Boolean(page?.bvid)
-    const online = isSocketOpen() && state.status !== 'token' && state.status !== 'rejected'
-    if (els.syncPage) els.syncPage.disabled = !hasVideo || !online
-    if (els.pullVideo) {
-      els.pullVideo.disabled = !hasVideo || !online || !state.compatible
-    }
+    const online = isSocketOpen() && state.auth === 'ok' && state.compatible
+    if (els.syncVideo) els.syncVideo.disabled = !hasVideo || !online || state.pulling
+    if (els.syncVideo) els.syncVideo.textContent = state.pulling ? '正在同步视频与字幕…' : '同步视频及字幕（全部分P）'
     if (els.refreshTracks) {
       els.refreshTracks.disabled = !hasVideo || state.tracks.loading
     }
@@ -1703,7 +1928,7 @@
     } else if (!state.tracks.data) {
       add('等待读取字幕轨…')
     } else if (!state.tracks.data.tracks.length) {
-      add('没有可用字幕轨（可能未登录或视频没有 CC 字幕）')
+      add('接口未提供 CC 字幕轨（画面内嵌字幕不属于可下载字幕）')
     } else {
       for (const track of state.tracks.data.tracks) {
         const chip = document.createElement('span')
@@ -1974,8 +2199,7 @@
       void refreshTracks(true)
     })
 
-    els.syncPage.addEventListener('click', syncPage)
-    els.pullVideo.addEventListener('click', pullVideo)
+    els.syncVideo.addEventListener('click', syncVideoAndSubtitles)
     els.syncCookies.addEventListener('click', () => {
       void syncCookies()
     })

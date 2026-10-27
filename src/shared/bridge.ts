@@ -22,7 +22,7 @@
  * 注意：桌面端对**不认识的消息类型是静默丢弃**的，所以插件必须靠 hello-ack 里的
  * `protocol` / `caps` 做能力协商，不能只看「发送是否成功」。
  */
-export const BRIDGE_PROTOCOL_VERSION = 4
+export const BRIDGE_PROTOCOL_VERSION = 5
 export const BRIDGE_SERVER_NAME = 'subclip'
 
 /**
@@ -40,6 +40,8 @@ export const BRIDGE_CAPABILITIES = {
   pageInfo: 'pageInfo',
   /** 插件能抓取并推送字幕（subtitle） */
   subtitle: 'subtitle',
+  /** 大字幕按顺序分块上传，桌面端组装后一次入库 */
+  subtitleChunk: 'subtitleChunk',
   /** 插件能同步 B站登录凭证（cookies） */
   cookies: 'cookies',
   /** 插件能请求桌面端拉取某个视频的全部分P（pull-request） */
@@ -115,7 +117,11 @@ export const BRIDGE_LIMITS = {
   /** Cookie 头最大长度 */
   maxCookie: 8192,
   /** 每个连接每秒最多处理多少条消息（超出即断开） */
-  maxMessagesPerSecond: 60
+  maxMessagesPerSecond: 60,
+  /** 大字幕分块传输上限：避免单帧超限及无限制占用内存 */
+  maxChunkCues: 2000,
+  maxChunkCount: 128,
+  maxUploadBytes: 32 * 1024 * 1024
 }
 
 /** 页面类型 */
@@ -152,6 +158,13 @@ export interface BridgeSubtitle {
   lang: string
   label: string
   cues: Array<{ from: number; to: number; content: string }>
+}
+
+/** 一条字幕文档的一个分块；严格按 index 顺序接收，全部到齐后才入库。 */
+export interface BridgeSubtitleChunk extends BridgeSubtitle {
+  uploadId: string
+  index: number
+  total: number
 }
 
 /** 插件同步过来的 B站登录凭证（用于桌面端自己直连接口） */
@@ -199,6 +212,7 @@ export type ClientMessage =
   | ({ type: 'hello'; version: string; browser: string; token?: string } & BridgeEnvelope)
   | ({ type: 'page-info'; payload: BridgePageInfo } & BridgeEnvelope)
   | ({ type: 'subtitle'; payload: BridgeSubtitle } & BridgeEnvelope)
+  | ({ type: 'subtitle-chunk'; payload: BridgeSubtitleChunk } & BridgeEnvelope)
   | ({ type: 'cookies'; payload: BridgeCookies } & BridgeEnvelope)
   | ({ type: 'pull-request'; payload: BridgePullRequest } & BridgeEnvelope)
   | ({ type: 'log'; level: 'info' | 'warn' | 'error'; message: string } & BridgeEnvelope)
@@ -226,7 +240,14 @@ export type ServerMessage =
       bvid: string
       page: number
       cid?: number | null
+      /** 一次请求多个缺失分P，避免多个浏览器标签重复抓取 */
+      pages?: Array<{ page: number; cid: number | null }>
+      /** 桌面端无法取得分P列表时，由浏览器枚举全部分P */
+      allPages?: boolean
     } & BridgeEnvelope)
+  | ({ type: 'pull-status'; bvid: string; stage: 'running' | 'fallback' | 'done' | 'error'; message: string } & BridgeEnvelope)
+  | ({ type: 'subtitle-result'; bvid: string; page: number; lang: string; ok: boolean; message: string } & BridgeEnvelope)
+  | ({ type: 'cookies-result'; ok: boolean; message: string } & BridgeEnvelope)
   | ({ type: 'ack'; ok: boolean; message?: string } & BridgeEnvelope)
   | ({ type: 'pong' } & BridgeEnvelope)
 
@@ -265,6 +286,8 @@ export function requiredCapability(type: ClientMessage['type']): BridgeCapabilit
       return BRIDGE_CAPABILITIES.pageInfo
     case 'subtitle':
       return BRIDGE_CAPABILITIES.subtitle
+    case 'subtitle-chunk':
+      return BRIDGE_CAPABILITIES.subtitleChunk
     case 'cookies':
       return BRIDGE_CAPABILITIES.cookies
     case 'pull-request':
@@ -373,6 +396,20 @@ function parseSubtitle(v: unknown): BridgeSubtitle | null {
   }
 }
 
+function parseSubtitleChunk(v: unknown): BridgeSubtitleChunk | null {
+  if (!isObject(v)) return null
+  const uploadId = str(v.uploadId, 64)
+  const index = num(v.index, NaN)
+  const total = num(v.total, NaN)
+  if (!/^[a-zA-Z0-9_-]{1,64}$/.test(uploadId) ||
+      !Number.isInteger(index) || !Number.isInteger(total) ||
+      total < 2 || total > BRIDGE_LIMITS.maxChunkCount ||
+      index < 0 || index >= total ||
+      !Array.isArray(v.cues) || v.cues.length > BRIDGE_LIMITS.maxChunkCues) return null
+  const sub = parseSubtitle(v)
+  return sub ? { ...sub, uploadId, index, total } : null
+}
+
 function parseCookies(v: unknown): BridgeCookies | null {
   if (!isObject(v)) return null
   const cookie = typeof v.cookie === 'string' ? v.cookie.trim() : ''
@@ -446,6 +483,11 @@ export function parseClientMessage(raw: string): ClientMessage | null {
       return payload ? { type: 'subtitle', ...envelope, payload } : null
     }
 
+    case 'subtitle-chunk': {
+      const payload = parseSubtitleChunk(obj.payload)
+      return payload ? { type: 'subtitle-chunk', ...envelope, payload } : null
+    }
+
     case 'pull-request': {
       if (!isObject(obj.payload)) return null
       const bvid = str(obj.payload.bvid, 32)
@@ -484,7 +526,10 @@ export function serialize(msg: ServerMessage): string {
 /** 桌面端支持的能力表（hello-ack 里发给插件做逐项协商） */
 export function serverCapabilities(): BridgeCapabilities {
   return {
+    [BRIDGE_CAPABILITIES.pageInfo]: true,
+    [BRIDGE_CAPABILITIES.subtitle]: true,
     [BRIDGE_CAPABILITIES.cookies]: true,
+    [BRIDGE_CAPABILITIES.subtitleChunk]: true,
     [BRIDGE_CAPABILITIES.pullRequest]: true,
     [BRIDGE_CAPABILITIES.requestSubtitles]: true
   }

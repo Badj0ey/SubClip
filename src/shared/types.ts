@@ -290,6 +290,8 @@ export interface AppSettings {
 /** B站视频信息 */
 export interface BiliVideoInfo {
   bvid: string
+  /** 视频 avid；部分播放器字幕接口需要 aid + cid，单传 BV 号会得到空轨道。 */
+  aid?: number
   title: string
   cover: string
   duration: number

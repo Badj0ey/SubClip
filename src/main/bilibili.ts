@@ -132,6 +132,10 @@ export async function requestJson(
       return data
     } catch (err) {
       lastError = err
+      // 账号权限、稿件不存在等确定性错误重试不会改变结果；只重试网络和限流。
+      if (err instanceof BiliApiError &&
+          ((err.code !== null && ![-352, -412, -509].includes(err.code)) ||
+           /^HTTP 4\d\d/.test(err.message) && !/^HTTP (408|409|425|429)$/.test(err.message))) break
       if (attempt >= retries) break
       await sleep(Math.min(6000, 800 * 2 ** (attempt - 1)))
     }
@@ -186,18 +190,26 @@ export function signWbi(
 export async function getVideoInfo(bvid: string, cookie = ''): Promise<BiliVideoInfo> {
   const res = await requestJson(API_VIEW, { bvid }, cookie)
   const d = res?.data
-  if (!d) throw new BiliApiError('视频信息为空')
-  const pages: BiliPageInfo[] = (d.pages ?? []).map((p: any) => ({
+  if (!d || typeof d !== 'object') throw new BiliApiError('视频信息接口未返回有效数据')
+  let pages: BiliPageInfo[] = (Array.isArray(d.pages) ? d.pages : []).map((p: any) => ({
     page: Number(p.page) || 1,
     cid: Number(p.cid),
     title: String(p.part || ''),
     duration: Number(p.duration) || 0
   }))
+  if (!pages.length) {
+    try {
+      pages = await getPages(bvid, cookie)
+    } catch {
+      /* 某些视频限制了分P接口；交给浏览器侧按页面信息补抓 */
+    }
+  }
 
   const ugcSeason = d.ugc_season ?? null
 
   return {
     bvid,
+    aid: Number(d.aid) || undefined,
     title: String(d.title || bvid),
     cover: String(d.pic || ''),
     duration: Number(d.duration) || 0,
@@ -215,7 +227,7 @@ export async function getVideoInfo(bvid: string, cookie = ''): Promise<BiliVideo
 /** 获取分P列表（view 里没有时兜底） */
 export async function getPages(bvid: string, cookie = ''): Promise<BiliPageInfo[]> {
   const res = await requestJson(API_PAGELIST, { bvid }, cookie)
-  return ((res?.data ?? []) as any[]).map((p) => ({
+  return (Array.isArray(res?.data) ? res.data : []).map((p: any) => ({
     page: Number(p.page) || 1,
     cid: Number(p.cid),
     title: String(p.part || ''),
@@ -227,39 +239,78 @@ export async function getPages(bvid: string, cookie = ''): Promise<BiliPageInfo[
 export async function getSubtitleTracks(
   bvid: string,
   cid: number,
-  cookie = ''
+  cookie = '',
+  aid?: number
 ): Promise<BiliSubtitleTrack[]> {
-  const referer = `https://www.bilibili.com/video/${bvid}/`
-
-  const parseTracks = (data: any): BiliSubtitleTrack[] =>
-    ((data?.subtitle?.subtitles ?? []) as any[]).map((s) => ({
-      lang: String(s.lan || ''),
-      label: String(s.lan_doc || s.lan || ''),
-      url: String(s.subtitle_url || '')
-    }))
-
-  try {
-    const mixinKey = await getWbiKey(cookie)
-    const signed = signWbi({ bvid, cid }, mixinKey)
-    const res = await requestJson(API_PLAYER_WBI_V2, signed, cookie)
-    return parseTracks(res?.data)
-  } catch {
-    // 兼容老接口
-    const res = await requestJson(API_PLAYER_V2, { bvid, cid }, cookie)
-    return parseTracks(res?.data)
+  const parseTracks = (data: any): BiliSubtitleTrack[] => {
+    const lists = [data?.subtitle?.subtitles, data?.subtitle?.list, data?.subtitles]
+    const found = new Map<string, BiliSubtitleTrack>()
+    for (const list of lists) {
+      if (!Array.isArray(list)) continue
+      for (const s of list) {
+        const url = String(s?.subtitle_url || s?.url || '').trim()
+        if (!url) continue
+        const lang = String(s?.lan || s?.lang || 'unknown')
+        found.set(`${lang}:${url}`, {
+          lang, label: String(s?.lan_doc || s?.label || lang), url
+        })
+      }
+    }
+    return [...found.values()]
   }
+
+  const errors: string[] = []
+  const query = async (name: string, url: string, params: Record<string, string | number>): Promise<BiliSubtitleTrack[]> => {
+    try {
+      const res = await requestJson(url, params, cookie, 2)
+      return parseTracks(res?.data)
+    } catch (err) {
+      errors.push(`${name}：${(err as Error).message}`)
+      return []
+    }
+  }
+
+  // 首选 WBI，返回空列表也必须继续查 v2；空列表不代表接口调用失败。
+  try {
+    const key = await getWbiKey(cookie)
+    const signed = signWbi({ bvid, cid, ...(aid ? { aid } : {}) }, key)
+    const tracks = await query('wbi/v2', API_PLAYER_WBI_V2, signed)
+    if (tracks.length) return tracks
+    if (aid) {
+      const byAid = await query('wbi/v2(aid)', API_PLAYER_WBI_V2, signWbi({ aid, cid }, key))
+      if (byAid.length) return byAid
+    }
+  } catch (err) {
+    errors.push(`WBI 签名：${(err as Error).message}`)
+  }
+
+  const plain = await query('player/v2', API_PLAYER_V2, { bvid, cid, ...(aid ? { aid } : {}) })
+  if (plain.length) return plain
+  if (aid) {
+    const byAid = await query('player/v2(aid)', API_PLAYER_V2, { aid, cid })
+    if (byAid.length) return byAid
+  }
+  if (errors.length) throw new BiliApiError(`字幕接口读取不完整：${errors.join('；')}`)
+  return []
 }
 
 /** 下载字幕 json 原始内容 */
 export async function fetchSubtitleJson(url: string, bvid: string, cookie = ''): Promise<any> {
   const full = url.startsWith('//') ? `https:${url}` : url
+  const target = new URL(full)
+  const host = target.hostname.toLowerCase()
+  if (target.protocol !== 'https:' ||
+      !['bilibili.com', 'hdslb.com', 'bilivideo.cn', 'bilivideo.com'].some((root) => host === root || host.endsWith(`.${root}`))) {
+    throw new BiliApiError('字幕下载地址不是受信任的 B站 HTTPS 域名')
+  }
   const headers: Record<string, string> = {
     Accept: 'application/json, text/plain, */*',
     Referer: `https://www.bilibili.com/video/${bvid}/`,
     'User-Agent': UA
   }
-  if (cookie) headers.Cookie = cookie
-  const res = await fetch(full, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
+  // CDN 不需要 SESSDATA，禁止把登录 Cookie 发送给非 bilibili.com 域名。
+  if (cookie && (host === 'bilibili.com' || host.endsWith('.bilibili.com'))) headers.Cookie = cookie
+  const res = await fetch(target, { headers, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) })
   if (!res.ok) throw new BiliApiError(`字幕下载失败：HTTP ${res.status}`)
   const data = await res.json()
   if (!data || typeof data !== 'object' || !('body' in data)) {

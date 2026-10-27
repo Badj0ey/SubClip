@@ -29,6 +29,7 @@ const summary = ref<{
   failed: number
   skipped: number
   messages: string[]
+  browserFallback: number
 } | null>(null)
 const keyword = ref('')
 
@@ -147,11 +148,6 @@ async function pull(): Promise<void> {
     toast('请至少选择一个视频', 'error')
     return
   }
-  if (!hasCookie.value && !pluginOnline.value) {
-    toast('需要 B 站登录状态：请在设置里同步登录状态，或让浏览器用户脚本保持连接', 'error', 5200)
-    return
-  }
-
   pulling.value = true
   summary.value = null
   progress.value = { current: 0, total: videos.length, title: '', status: 'running' }
@@ -175,10 +171,12 @@ async function pull(): Promise<void> {
         'success',
         4600
       )
+    } else if (res.data.browserFallback > 0) {
+      toast(`桌面端未取到的字幕已交给浏览器补抓（${res.data.browserFallback} 个视频），请等待插件结果`, 'info', 5800)
     } else if (res.data.skipped > 0) {
       toast(`${res.data.skipped} 个视频的字幕本地已齐全，已跳过`, 'info', 4600)
     } else {
-      toast('没有拉到任何字幕，请检查登录状态', 'error', 4600)
+      toast('未获取到字幕，请检查视频是否提供 CC 字幕及登录权限', 'error', 4600)
     }
   } catch (err) {
     toast(`获取字幕时出错：${err instanceof Error ? err.message : '请检查网络后重试'}`, 'error', 5200)
@@ -227,8 +225,9 @@ async function openSettings(): Promise<void> {
 
       <div v-if="!hasCookie" class="notice">
         <span>
-          还没有同步 B 站登录信息，请先完成登录设置，再获取字幕。
-          <template v-if="pluginOnline">用户脚本已连接，可到 B 站左下角浮框点「同步登录状态」。</template>
+          未同步 B 站登录信息：仍可尝试获取公开视频字幕。
+          <template v-if="pluginOnline">用户脚本已连接，受限字幕会尝试由浏览器补抓。</template>
+          <template v-else>受限字幕可能需要先登录或连接浏览器用户脚本。</template>
         </span>
         <button class="btn sm" @click="openSettings">设置登录信息</button>
       </div>
@@ -291,6 +290,7 @@ async function openSettings(): Promise<void> {
           <template v-if="summary.updated">更新 {{ summary.updated }} 条 · </template>
           未获取成功 {{ summary.failed }} 个
           <template v-if="summary.skipped"> · 已存在跳过 {{ summary.skipped }} 个</template>
+          <template v-if="summary.browserFallback"> · 浏览器补抓 {{ summary.browserFallback }} 个（处理中）</template>
         </div>
         <div v-if="summary.messages.length" class="hint" style="margin-left: 0; max-height: 96px; overflow: auto">
           <div v-for="(m, i) in summary.messages.slice(0, 20)" :key="i">· {{ m }}</div>

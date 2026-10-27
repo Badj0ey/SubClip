@@ -107,7 +107,8 @@ let composeAbort: AbortController | null = null
 
 /** 用户脚本的可能位置（开发态在工程里，打包后在 resources 下） */
 function userscriptCandidates(): string[] {
-  const roots = [app.getAppPath(), process.resourcesPath].filter(
+  // 打包态优先使用真实的 resources/userscript，不能把 app.asar 内的虚拟文件交给文件管理器。
+  const roots = [process.resourcesPath, app.getAppPath()].filter(
     (root): root is string => Boolean(root)
   )
   return roots.map((root) => join(root, 'userscript', 'SubClip.user.js'))
@@ -466,7 +467,22 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
           }
         }
         const result = await pullSubtitles(payload.videos ?? [], push)
-        return { ok: true, data: result }
+        // 桌面端没有页面 Cookie 时，仍先尝试公开字幕；失败分P交给已连接的浏览器补抓。
+        const missing = new Set([
+          ...result.retryAll,
+          ...result.retryPages.map((p) => p.bvid)
+        ])
+        let browserFallback = 0
+        for (const bvid of missing) {
+          const allPages = result.retryAll.includes(bvid)
+          const pages = result.retryPages
+            .filter((p) => p.bvid === bvid)
+            .map(({ page, cid }) => ({ page, cid }))
+          if (bridge.requestSubtitles(bvid, pages[0]?.page ?? 1, pages[0]?.cid, {
+            allPages, pages: allPages ? undefined : pages
+          })) browserFallback++
+        }
+        return { ok: true, data: { ...result, browserFallback } }
       } catch (err) {
         return { ok: false, message: (err as Error).message }
       }
@@ -1007,6 +1023,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       }
     }
     return { path: candidates[0] ?? '', exists: false, content: '' }
+  })
+
+  /** 只定位随应用提供的脚本，不接收任意路径；避免 .js 执行禁令误拦截“在文件管理器中显示”。 */
+  ipcMain.handle('bridge:revealUserscript', async () => {
+    const file = userscriptCandidates().find((candidate) =>
+      !/[\\/]app\.asar[\\/]/i.test(candidate) && existsSync(candidate)
+    )
+    if (!file) return false
+    // 打开目录而非执行 JS；openPath 会返回系统错误，设置页可以准确提示失败。
+    return (await shell.openPath(dirname(file))) === ''
   })
 
   ipcMain.handle('env:check', () => {

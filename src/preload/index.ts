@@ -181,6 +181,7 @@ const api = {
       failed: number
       skipped: number
       messages: string[]
+      browserFallback: number
     }>
   > => ipcRenderer.invoke('bili:pull', { videos }),
 
@@ -259,6 +260,7 @@ const api = {
     ipcRenderer.invoke('bridge:requestSubtitles', { bvid, page, cid }),
   userscript: (): Promise<{ path: string; exists: boolean; content: string }> =>
     ipcRenderer.invoke('bridge:userscript'),
+  revealUserscript: (): Promise<boolean> => ipcRenderer.invoke('bridge:revealUserscript'),
 
   /* 本地切片 */
   sliceCheck: (): Promise<SliceCheckResult> => ipcRenderer.invoke('slice:check'),
@@ -456,6 +458,8 @@ const api = {
       ok: boolean
       /** 桌面端缺登录态时为 true，界面据此引导去同步 */
       needCookie?: boolean
+      /** 桌面端未完成的分P已交给浏览器补抓 */
+      browserFallback?: boolean
       message?: string
       docs?: number
       updated?: number

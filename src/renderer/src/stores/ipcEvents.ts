@@ -154,6 +154,11 @@ export function setupIpcEvents(): void {
   subs.push(
     window.api.onBridgePull((p) => {
       ui.pluginPull = null
+      if (p.browserFallback) {
+        void resource.load()
+        ui.showToast('桌面端已完成可获取部分，剩余分P正在由浏览器补抓', 'info', 5600)
+        return
+      }
       if (!p.ok) {
         if (p.needCookie) {
           ui.showToast(p.message || '桌面端缺少 B站登录状态', 'error', 8000)

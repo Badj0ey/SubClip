@@ -2170,8 +2170,8 @@ test('BV 号不合法时整条丢弃（不要发起一次注定失败的抓取�
   assert.strictEqual(parseClientMessage(JSON.stringify({ type: 'pull-request' })), null)
 })
 
-test('桌面端协议版本为 4（跨端一致由 tests/wbi.test.ts 校验）', () => {
-  assert.strictEqual(BRIDGE_PROTOCOL_VERSION, 4)
+test('桌面端协议版本为 5（跨端一致由 tests/wbi.test.ts 校验）', () => {
+  assert.strictEqual(BRIDGE_PROTOCOL_VERSION, 5)
 })
 
 /* ------------------------- 统一信封与能力表（第七阶段） ------------------------- */

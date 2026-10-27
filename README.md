@@ -7,7 +7,7 @@
 
 SubClip 是基于 Electron、Vue 3、TypeScript 和 SQLite 的本地桌面工作台。它将 B 站字幕拉取、字幕阅读编辑、弹幕辅助定位、全文/语义检索、片段收藏、FFmpeg 切片和发布素材整理连接成一条工作流。基础功能无需云端 AI 服务。
 
-> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.1**，保留现有数据库结构、迁移流程、浏览器用户脚本协议和核心功能。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
+> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.2**，保留现有数据库结构、迁移流程和核心功能；用户脚本与桌面端通信协议已同步升级到 v5。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
 
 ## 快速开始
 
@@ -55,7 +55,7 @@ Windows 已安装依赖并完成构建后，可运行 `SubClip.bat`。中国大�
 | AI 辅助 | 摘要、标签建议、字幕解释、标题等 | 可选 Ollama 或 OpenAI 兼容接口 |
 | 浏览器联动 | B 站页面用户脚本推送字幕与页面信息 | 可选 Tampermonkey 脚本 |
 
-完整的输入输出、能力边界和配置方式见 [功能清单](docs/FEATURES.md)。
+浏览器端安装 `userscript/SubClip.user.js` 后，在 B 站视频页面点击「同步视频及字幕（全部分P）」即可一并同步视频信息和字幕。桌面端会优先拉取可访问的字幕，失败分P交由当前浏览器补抓。**3.18.2 用户脚本必须配合 3.18.2 桌面端使用**；如设置页提示连接失败，请检查端口及配对令牌。
 
 ## 项目结构
 
@@ -75,11 +75,10 @@ src/
 tests/                回归测试与字幕样本
 scripts/              调试脚本和本地模拟服务
 userscript/            B 站用户脚本（与桥接协议配套）
-docs/                  功能、架构、开发与发布文档
 build/                 打包图标
 ```
 
-架构和数据流见 [ARCHITECTURE.md](docs/ARCHITECTURE.md)，开发及测试见 [DEVELOPMENT.md](docs/DEVELOPMENT.md)。
+主要模块和版本改动见本文件与 [CHANGELOG.md](CHANGELOG.md)。原工程部分 `docs/` 文档已在上游整理时移除，源码包不包含这些失效链接对应的文件。
 
 ## 数据与隐私
 
@@ -89,14 +88,8 @@ B 站 Cookie、浏览器桥接配对令牌以及可选的云端 AI API Key 优�
 
 ## 测试状态与限制
 
-3.18.1 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建以及 NSIS 安装包 / ZIP 构建，并验证打包版能识别内置 FFmpeg；正式代码签名、真实 B 站登录和完整剪辑导出仍未覆盖。3.16.1 的打包版 GUI 与 safeStorage 验收记录见 [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)。
+3.18.2 已在本机完成 TypeScript 检查、全量测试（7 个套件）、生产构建及 NSIS 安装包 / ZIP 构建，并对打包版做了启动冒烟与桥接端口/重启检查。**真实 B 站账号登录与受限字幕、浏览器脚本按钮的真实点击链路、NSIS 向导交互、正式代码签名和完整剪辑导出仍未覆盖**。
 
-- [弹幕参考说明](docs/DANMAKU_GUIDE.md)
-- [重构与验证报告](docs/REFACTOR_REPORT.md)
-- [品质优化整合记录](docs/OPTIMIZATION_REVIEW.md)
-- [界面优化整合记录](docs/UI_OPTIMIZATION_NOTES.md)
-- [纯手动开源与发布](docs/GITHUB.md)
-- [开发与验证](docs/DEVELOPMENT.md)
 - [版本变更](CHANGELOG.md)
 - [贡献说明](CONTRIBUTING.md)
 - [安全说明](SECURITY.md)
