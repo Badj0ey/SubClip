@@ -7,7 +7,6 @@
 
 SubClip is a local-first Electron + Vue 3 + TypeScript + SQLite desktop workspace for Bilibili subtitle acquisition, transcript editing, danmaku-assisted navigation, cross-video search, clip organization, FFmpeg exports, and publishing materials. Core editing and search do not require a cloud AI account.
 
-This source tree started from the original **3.16.0** codebase and is currently **3.18.2**. It preserves the existing database schema/migrations and core workflows, and updates the desktop/userscript bridge to protocol v5. It is **source code**; installers, portable archives and SHA-256 checksums are published on [GitHub Releases](https://github.com/Badj0ey/SubClip/releases).
 
 ## Get started
 

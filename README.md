@@ -7,7 +7,6 @@
 
 SubClip 是基于 Electron、Vue 3、TypeScript 和 SQLite 的本地桌面工作台。它将 B 站字幕拉取、字幕阅读编辑、弹幕辅助定位、全文/语义检索、片段收藏、FFmpeg 切片和发布素材整理连接成一条工作流。基础功能无需云端 AI 服务。
 
-> 本仓库从原项目 **3.16.0** 整理而来，当前源码版本 **3.18.3**，保留现有数据库结构、迁移流程和核心功能；用户脚本与桌面端通信协议已同步升级到 v5。它是**源码工程**；安装包、免安装包与 SHA-256 校验值见 [GitHub Releases](https://github.com/Badj0ey/SubClip/releases)。
 
 ## 快速开始
 
