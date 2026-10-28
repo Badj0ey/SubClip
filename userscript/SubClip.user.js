@@ -2,7 +2,7 @@
 // @name         字幕剪 SubClip · B站桥接
 // @name:en      SubClip Bilibili Bridge
 // @namespace    https://github.com/Badj0ey/SubClip
-// @version      3.18.3
+// @version      3.18.4
 // @description  在 B 站页面左下角识别视频，把页面信息、登录态与字幕同步给「字幕剪」桌面端
 // @author       Badj0ey
 // @homepageURL  https://github.com/Badj0ey/SubClip
@@ -82,6 +82,8 @@
     space: 'UP主投稿',
     unknown: '未识别'
   }
+  /** 这些页面没有单一 BV 号：主按钮把它们整页交给桌面端批量拉取 */
+  const COLLECTION_PAGE_TYPES = new Set(['season', 'series', 'favlist', 'space'])
   const SERVER_STATUS = {
     idle: { text: '未连接', state: 'idle' },
     connecting: { text: '连接中', state: 'warn' },
@@ -395,7 +397,8 @@
 
   function pageKey(page) {
     if (!page) return ''
-    return [page.pageType, page.bvid || '', page.page || 1].join(':')
+    // 合集 / 系列 / 收藏夹没有 bvid，用 seasonId（fid）区分不同页面，避免 SPA 切页时误判为同一页
+    return [page.pageType, page.bvid || '', page.page || 1, page.seasonId ?? ''].join(':')
   }
 
   /* =============================== WBI 与接口 =============================== */
@@ -1383,12 +1386,20 @@
     return false
   }
 
-  /** 唯一主操作：同步视频元数据，并拉取全部分P字幕；桌面端缺权限时自动请求浏览器补抓。 */
+  /** 唯一主操作：同步视频元数据，并拉取全部分P字幕；桌面端缺权限时自动请求浏览器补抓。
+   *  在合集 / 系列 / 收藏夹 / 投稿页上，改为把整页交给桌面端，由用户确认批量拉取。 */
   function syncVideoAndSubtitles() {
     if (!ensureOnline() || state.pulling) return
     const page = state.page
     if (!page?.bvid) {
-      feedback('请打开具体的视频页面后再同步', 'warn')
+      const collection = COLLECTION_PAGE_TYPES.has(page?.pageType)
+      const payload = collection ? currentPageInfo() : null
+      if (payload && send({ type: 'page-info', payload })) {
+        feedback(`${PAGE_TYPE_LABEL[page.pageType] || '页面'}已交给桌面端，请在桌面端确认批量拉取`, 'ok')
+        addEvent(`已上报${PAGE_TYPE_LABEL[page.pageType] || '页面'}：${payload.title || payload.url}`, 'ok')
+      } else {
+        feedback('请打开具体的视频页面后再同步', 'warn')
+      }
       return
     }
     const payload = currentPageInfo()
@@ -1880,9 +1891,17 @@
   function updateActionAvailability() {
     const page = state.page
     const hasVideo = Boolean(page?.bvid)
+    // 合集 / 系列 / 收藏夹 / 投稿页没有 BV 号，但主按钮仍可用：把整页交给桌面端批量拉取
+    const collection = !hasVideo && COLLECTION_PAGE_TYPES.has(page?.pageType)
     const online = isSocketOpen() && state.auth === 'ok' && state.compatible
-    if (els.syncVideo) els.syncVideo.disabled = !hasVideo || !online || state.pulling
-    if (els.syncVideo) els.syncVideo.textContent = state.pulling ? '正在同步视频与字幕…' : '同步视频及字幕（全部分P）'
+    if (els.syncVideo) {
+      els.syncVideo.disabled = (!hasVideo && !collection) || !online || state.pulling
+      els.syncVideo.textContent = state.pulling
+        ? '正在同步视频与字幕…'
+        : collection
+          ? `把该${PAGE_TYPE_LABEL[page.pageType] || '页面'}交给桌面端批量拉取`
+          : '同步视频及字幕（全部分P）'
+    }
     if (els.refreshTracks) {
       els.refreshTracks.disabled = !hasVideo || state.tracks.loading
     }
