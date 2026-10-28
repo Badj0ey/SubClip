@@ -21,14 +21,6 @@ import { useSubtitleStore } from './subtitle'
 import { useVideoStore } from './video'
 import { emit, on } from '@renderer/bus'
 
-/**
- * 已经自动询问过的合集（key = 类型:合集id:uid）。
- *
- * 用户在合集里翻分P 时页面会反复变化、反复上报同一个合集，
- * 不去重的话对话框会一直弹。
- */
-const askedCollections = new Set<string>()
-
 /** 已注册的取消订阅函数（`disposeIpcEvents()` 用） */
 let disposers: Array<() => void> = []
 
@@ -127,11 +119,9 @@ export function setupIpcEvents(): void {
   subs.push(
     window.api.onBridgeCollection((hint) => {
       if (!hint?.url) return
-      // 同一个合集只自动问一次：用户在合集里翻分P 时会反复触发页面变化
-      const key = `${hint.pageType}:${hint.seasonId ?? ''}:${hint.uid ?? ''}`
-      if (askedCollections.has(key)) return
-      askedCollections.add(key)
-
+      // 这里不做「同一合集只问一次」的去重：插件端没有自动上报收藏页的路径，
+      // 每一条无 bvid 的 page-info 都来自用户在插件上的显式点击，
+      // 去重会把用户的重试静默吞掉（3.18.5 修复：重试永远重新弹框）。
       ui.pendingCollection = { ...hint }
       emit('bridge.collection', { ...hint })
       ui.showToast(
