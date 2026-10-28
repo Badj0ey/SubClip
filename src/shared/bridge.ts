@@ -125,7 +125,7 @@ export const BRIDGE_LIMITS = {
 }
 
 /** 页面类型 */
-export type PageType = 'video' | 'season' | 'favlist' | 'space' | 'unknown'
+export type PageType = 'video' | 'season' | 'series' | 'favlist' | 'space' | 'unknown'
 
 /** 插件识别出的页面视频信息 */
 export interface BridgePageInfo {
@@ -311,7 +311,7 @@ export interface BridgeStatus {
 /* --------------------------------- 校验 ---------------------------------- */
 
 const BV_RE = /^BV[0-9A-Za-z]{10}$/
-const PAGE_TYPES: PageType[] = ['video', 'season', 'favlist', 'space', 'unknown']
+const PAGE_TYPES: PageType[] = ['video', 'season', 'series', 'favlist', 'space', 'unknown']
 const LOG_LEVELS: Array<'info' | 'warn' | 'error'> = ['info', 'warn', 'error']
 
 function isObject(v: unknown): v is Record<string, unknown> {

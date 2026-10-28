@@ -48,7 +48,7 @@ watch(
 const collectionNote = computed(() => {
   const c = state.pendingCollection
   if (!c) return ''
-  const kind = c.pageType === 'favlist' ? '收藏夹' : c.pageType === 'space' ? 'UP主投稿页' : '合集 / 系列'
+  const kind = c.pageType === 'favlist' ? '收藏夹' : c.pageType === 'space' ? 'UP主投稿页' : c.pageType === 'series' ? '系列' : '合集'
   return `浏览器用户脚本检测到${kind}${c.title ? `《${c.title}》` : ''}`
 })
 
@@ -222,7 +222,7 @@ function onImported(): void {
         <button class="btn header-import" type="button" title="导入本地 SRT / VTT / TXT" @click="showImport = true">
           <UiIcon name="upload" :size="16" /><span>导入</span>
         </button>
-        <button class="btn primary header-pull" type="button" title="从 B 站视频、合集或收藏夹拉取字幕" @click="showPull = true">
+        <button class="btn primary header-pull" type="button" title="从 B 站视频、合集、系列或收藏夹拉取字幕" @click="showPull = true">
           <UiIcon name="download" :size="16" /><span>拉取字幕</span>
         </button>
         <span class="topbar-divider compact" aria-hidden="true"></span>

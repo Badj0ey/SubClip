@@ -122,7 +122,7 @@ export function setupIpcEvents(): void {
     })
   )
 
-  /* ---------------- 插件浏览到合集 / 收藏夹：问用户是否批量拉取 ---------------- */
+  /* -------------- 插件浏览到合集 / 系列 / 收藏夹：问用户是否批量拉取 -------------- */
 
   subs.push(
     window.api.onBridgeCollection((hint) => {
@@ -135,7 +135,7 @@ export function setupIpcEvents(): void {
       ui.pendingCollection = { ...hint }
       emit('bridge.collection', { ...hint })
       ui.showToast(
-        `插件检测到${hint.pageType === 'favlist' ? '收藏夹' : hint.pageType === 'space' ? 'UP主投稿页' : '合集'}，已列出可拉取的视频`,
+        `插件检测到${hint.pageType === 'favlist' ? '收藏夹' : hint.pageType === 'space' ? 'UP主投稿页' : hint.pageType === 'series' ? '系列' : '合集'}，已列出可拉取的视频`,
         'info',
         5200
       )

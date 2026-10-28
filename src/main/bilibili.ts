@@ -30,6 +30,15 @@ const API_FAV_RESOURCES = 'https://api.bilibili.com/x/v3/fav/resource/list'
 const API_FAV_INFO = 'https://api.bilibili.com/x/v3/fav/folder/info'
 const API_SPACE_ARC = 'https://api.bilibili.com/x/space/wbi/arc/search'
 
+/** 单次解析最多翻页数；足够覆盖常见合集与收藏夹，同时避免异常链接无限请求。 */
+export const DEFAULT_TARGET_MAX_PAGES = 100
+/** 列表分页间隔：降低连续请求触发 B 站限流的概率。 */
+const LIST_PAGE_DELAY_MS = 250
+const SEASON_PAGE_SIZE = 30
+const SERIES_PAGE_SIZE = 30
+const FAVORITES_PAGE_SIZE = 20
+const SPACE_PAGE_SIZE = 30
+
 /**
  * 单次请求超时。
  *
@@ -50,6 +59,42 @@ const MIXIN_KEY_ENC_TAB = [
   14, 39, 12, 38, 41, 13, 37, 48, 7, 16, 24, 55, 40, 61, 26, 17, 0, 1, 60, 51, 30, 4, 22, 25, 54,
   21, 56, 59, 6, 63, 57, 62, 11, 36, 20, 34, 44, 52
 ]
+
+/** 清理复制自网页、Markdown 或聊天软件的链接格式，并补齐常见的省略协议。 */
+function normalizeTargetInput(raw: string): string {
+  let value = String(raw ?? '').trim()
+  if (!value) return ''
+  value = value
+    .replace(/\\&/g, '&')
+    .replace(/&amp;/gi, '&')
+    .replace(/^[\s<"'`]+|[\s>"'`),.;]+$/g, '')
+  if (!value) return ''
+  if (
+    /^(?:(?:space|www|m)\.)?bilibili\.com(?:[/:?#]|$)/i.test(value) ||
+    /^b23\.tv(?:[/:?#]|$)/i.test(value)
+  ) {
+    value = `https://${value}`
+  }
+  return value
+}
+
+function positiveId(raw: string | null | undefined): number | null {
+  if (!raw || !/^\d+$/.test(raw)) return null
+  const value = Number(raw)
+  return Number.isSafeInteger(value) && value > 0 ? value : null
+}
+
+function queryId(url: URL, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = positiveId(url.searchParams.get(key))
+    if (value !== null) return value
+  }
+  return null
+}
+
+async function waitForNextListPage(pageNum: number): Promise<void> {
+  if (pageNum > 1) await sleep(LIST_PAGE_DELAY_MS)
+}
 
 export class BiliApiError extends Error {
   code: number | null
@@ -72,19 +117,11 @@ export function parseCollectionUrl(url: string): {
   sid: number | null
   kind: 'season' | 'series' | null
 } {
-  try {
-    const u = new URL(url)
-    const midRaw = u.searchParams.get('mid')
-    const sidRaw = u.searchParams.get('season_id') || u.searchParams.get('sid')
-    const isSeries = u.pathname.includes('/seriesdetail')
-    return {
-      mid: midRaw ? Number(midRaw) : null,
-      sid: sidRaw ? Number(sidRaw) : null,
-      kind: isSeries ? 'series' : sidRaw ? 'season' : null
-    }
-  } catch {
-    return { mid: null, sid: null, kind: null }
+  const ref = classifyTargetUrl(normalizeTargetInput(url))
+  if (ref?.kind === 'season' || ref?.kind === 'series') {
+    return { mid: ref.mid, sid: ref.sid, kind: ref.kind }
   }
+  return { mid: null, sid: null, kind: null }
 }
 
 let wbiCache: { key: string; ts: number } | null = null
@@ -373,40 +410,53 @@ export async function resolveShortLink(input: string): Promise<string> {
  * 去重后追加。
  *
  * 分页拉取期间合集 / 收藏夹可能被作者改动，导致同一个视频落在两页里；
- * 三个列表接口都走这里，避免「同一个视频出现两次」。
+ * 各列表接口都走这里，避免「同一个视频出现两次」。
  */
-function pushUnique(list: ResolvedVideo[], item: ResolvedVideo): void {
-  if (!item.bvid) return
-  if (list.some((v) => v.bvid === item.bvid)) return
-  list.push(item)
+function pushUnique(list: ResolvedVideo[], item: ResolvedVideo, seen: Set<string>): void {
+  const bvid = extractBvid(String(item.bvid || ''))
+  if (!bvid) return
+  const key = bvid.toUpperCase()
+  if (seen.has(key)) return
+  seen.add(key)
+  list.push({ ...item, bvid })
 }
 
 /** 合集（season） */
 async function getSeasonVideos(mid: number, seasonId: number, cookie: string, maxPages: number) {
   const videos: ResolvedVideo[] = []
+  const seen = new Set<string>()
   let title = `合集 ${seasonId}`
   let truncated = false
 
   for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+    await waitForNextListPage(pageNum)
     const res = await requestJson(
       API_SEASON_ARCHIVES,
-      { mid, season_id: seasonId, sort_reverse: 'false', page_num: pageNum, page_size: 30 },
+      {
+        mid,
+        season_id: seasonId,
+        sort_reverse: 'false',
+        page_num: pageNum,
+        page_size: SEASON_PAGE_SIZE
+      },
       cookie
     )
     const data = res?.data ?? {}
     title = String(data.meta?.name || title)
     const archives = (data.archives ?? []) as any[]
     if (!archives.length) break
+    const before = videos.length
     for (const a of archives) {
       pushUnique(videos, {
         bvid: String(a.bvid || ''),
         title: String(a.title || ''),
         cover: String(a.pic || ''),
         duration: Number(a.duration) || 0
-      })
+      }, seen)
     }
     const total = Number(data.page?.total) || 0
     if (total && videos.length >= total) break
+    if ((!total && archives.length < SEASON_PAGE_SIZE) || videos.length === before) break
     if (pageNum === maxPages) truncated = true
   }
   return { title, videos, truncated }
@@ -415,6 +465,7 @@ async function getSeasonVideos(mid: number, seasonId: number, cookie: string, ma
 /** 系列（series） */
 async function getSeriesVideos(mid: number, seriesId: number, cookie: string, maxPages: number) {
   const videos: ResolvedVideo[] = []
+  const seen = new Set<string>()
   let title = `系列 ${seriesId}`
   let truncated = false
 
@@ -427,23 +478,33 @@ async function getSeriesVideos(mid: number, seriesId: number, cookie: string, ma
   }
 
   for (let pn = 1; pn <= maxPages; pn++) {
+    await waitForNextListPage(pn)
     const res = await requestJson(
       API_SERIES_ARCHIVES,
-      { mid, series_id: seriesId, only_normal: true, sort: 'desc', pn, ps: 30 },
+      {
+        mid,
+        series_id: seriesId,
+        only_normal: true,
+        sort: 'desc',
+        pn,
+        ps: SERIES_PAGE_SIZE
+      },
       cookie
     )
     const archives = (res?.data?.archives ?? []) as any[]
     if (!archives.length) break
+    const before = videos.length
     for (const a of archives) {
       pushUnique(videos, {
         bvid: String(a.bvid || ''),
         title: String(a.title || ''),
         cover: String(a.pic || ''),
         duration: Number(a.duration) || 0
-      })
+      }, seen)
     }
     const total = Number(res?.data?.page?.total) || 0
     if (total && videos.length >= total) break
+    if ((!total && archives.length < SERIES_PAGE_SIZE) || videos.length === before) break
     if (pn === maxPages) truncated = true
   }
   return { title, videos, truncated }
@@ -452,6 +513,7 @@ async function getSeriesVideos(mid: number, seriesId: number, cookie: string, ma
 /** 收藏夹 */
 async function getFavVideos(mediaId: number, cookie: string, maxPages: number) {
   const videos: ResolvedVideo[] = []
+  const seen = new Set<string>()
   let title = `收藏夹 ${mediaId}`
   let truncated = false
 
@@ -463,12 +525,14 @@ async function getFavVideos(mediaId: number, cookie: string, maxPages: number) {
   }
 
   for (let pn = 1; pn <= maxPages; pn++) {
+    await waitForNextListPage(pn)
     const res = await requestJson(
       API_FAV_RESOURCES,
-      { media_id: mediaId, pn, ps: 20, platform: 'web' },
+      { media_id: mediaId, pn, ps: FAVORITES_PAGE_SIZE, platform: 'web' },
       cookie
     )
-    const medias = (res?.data?.medias ?? []) as any[]
+    const data = res?.data ?? {}
+    const medias = (data.medias ?? []) as any[]
     if (!medias.length) break
     for (const m of medias) {
       // type 2 = 视频稿件；收藏夹里还可能混有音频 / 专栏等，跳过
@@ -478,9 +542,12 @@ async function getFavVideos(mediaId: number, cookie: string, maxPages: number) {
         title: String(m.title || ''),
         cover: String(m.cover || ''),
         duration: Number(m.duration) || 0
-      })
+      }, seen)
     }
-    if (!res?.data?.has_more) break
+    const hasMore = typeof data.has_more === 'boolean'
+      ? data.has_more
+      : medias.length >= FAVORITES_PAGE_SIZE
+    if (!hasMore) break
     if (pn === maxPages) truncated = true
   }
   return { title, videos, truncated }
@@ -489,6 +556,7 @@ async function getFavVideos(mediaId: number, cookie: string, maxPages: number) {
 /** UP主投稿（需要 WBI 签名） */
 async function getSpaceVideos(mid: number, cookie: string, maxPages: number) {
   const videos: ResolvedVideo[] = []
+  const seen = new Set<string>()
   let title = `UP主 ${mid} 的投稿`
   let truncated = false
 
@@ -505,20 +573,23 @@ async function getSpaceVideos(mid: number, cookie: string, maxPages: number) {
 
   const mixinKey = await getWbiKey(cookie)
   for (let pn = 1; pn <= maxPages; pn++) {
+    await waitForNextListPage(pn)
     const signed = signWbi({ mid, pn, ps: 30, order: 'pubdate', tid: 0 }, mixinKey)
     const res = await requestJson(API_SPACE_ARC, signed, cookie)
     const vlist = (res?.data?.list?.vlist ?? []) as any[]
     if (!vlist.length) break
+    const before = videos.length
     for (const v of vlist) {
       pushUnique(videos, {
         bvid: String(v.bvid || ''),
         title: String(v.title || ''),
         cover: String(v.pic || ''),
         duration: parseDurationText(String(v.length || ''))
-      })
+      }, seen)
     }
     const count = Number(res?.data?.page?.count) || 0
     if (count && videos.length >= count) break
+    if ((!count && vlist.length < SPACE_PAGE_SIZE) || videos.length === before) break
     if (pn === maxPages) truncated = true
   }
   return { title, videos, truncated }
@@ -550,23 +621,33 @@ export type TargetRef =
 export function classifyTargetUrl(raw: string): TargetRef | null {
   let u: URL
   try {
-    u = new URL(raw)
+    u = new URL(normalizeTargetInput(raw))
   } catch {
     return null
   }
+
+  if (u.protocol !== 'http:' && u.protocol !== 'https:') return null
+  const host = u.hostname.toLowerCase()
+  const isBilibiliHost = host === 'bilibili.com' || host.endsWith('.bilibili.com')
+  const isShortHost = host === 'b23.tv' || host.endsWith('.b23.tv')
+  if (!isBilibiliHost && !isShortHost) {
+    const loose = extractBvid(raw)
+    return loose ? { kind: 'video', bvid: loose } : null
+  }
+
   const path = u.pathname
 
   // 视频页
   const bv = /\/video\/(BV[0-9A-Za-z]{10})/i.exec(path)
   if (bv) return { kind: 'video', bvid: bv[1] }
 
-  // 合集播放页：/list/{mid}?sid=xxx
+  // 合集 / 系列播放页：/list/{mid}?sid=xxx（旧链接也可能使用 season_id / series_id）
   const listMatch = /^\/list\/(\d+)/.exec(path)
   if (listMatch) {
-    const sid = Number(u.searchParams.get('sid') || '0')
-    if (!sid) return null
-    const mid = Number(listMatch[1])
-    return u.searchParams.get('type') === 'series'
+    const sid = queryId(u, ['sid', 'season_id', 'series_id'])
+    const mid = positiveId(listMatch[1])
+    if (!sid || !mid) return null
+    return u.searchParams.get('type')?.toLowerCase() === 'series'
       ? { kind: 'series', mid, sid }
       : { kind: 'season', mid, sid }
   }
@@ -574,26 +655,39 @@ export function classifyTargetUrl(raw: string): TargetRef | null {
   // 空间合集 / 系列：/{mid}/lists/{sid}
   const listsMatch = /^\/(\d+)\/lists\/(\d+)/.exec(path)
   if (listsMatch) {
-    const mid = Number(listsMatch[1])
-    const sid = Number(listsMatch[2])
+    const mid = positiveId(listsMatch[1])
+    const sid = positiveId(listsMatch[2])
+    if (!mid || !sid) return null
     // 系列与合集走的是**不同接口**，靠查询参数区分，不能只看路径
-    return u.searchParams.get('type') === 'series'
+    return u.searchParams.get('type')?.toLowerCase() === 'series'
       ? { kind: 'series', mid, sid }
       : { kind: 'season', mid, sid }
+  }
+
+  // 旧版空间系列页：/{mid}/seriesdetail?sid=xxx
+  const seriesDetailMatch = /^\/(\d+)\/seriesdetail\/?$/.exec(path)
+  if (seriesDetailMatch) {
+    const mid = positiveId(seriesDetailMatch[1])
+    const sid = queryId(u, ['sid', 'series_id', 'season_id'])
+    return mid && sid ? { kind: 'series', mid, sid } : null
   }
 
   // 收藏夹：/{mid}/favlist?fid=xxx
   // 注意 `ftype=` 常常是空的，不能要求它非空
   const favMatch = /^\/(\d+)\/favlist/.exec(path)
   if (favMatch) {
-    const sid = Number(u.searchParams.get('fid') || '0')
-    if (!sid) return null
-    return { kind: 'favlist', mid: Number(favMatch[1]), sid }
+    const mid = positiveId(favMatch[1])
+    const sid = queryId(u, ['fid', 'media_id'])
+    if (!mid || !sid) return null
+    return { kind: 'favlist', mid, sid }
   }
 
   // 投稿页：/{mid} 或 /{mid}/video|/dynamic|/index
   const spaceMatch = /^\/(\d+)(?:\/(?:video|dynamic|index))?\/?$/.exec(path)
-  if (spaceMatch) return { kind: 'space', mid: Number(spaceMatch[1]) }
+  if (spaceMatch) {
+    const mid = positiveId(spaceMatch[1])
+    return mid ? { kind: 'space', mid } : null
+  }
 
   // 兜底：链接里任何位置带 BV 号
   const loose = extractBvid(raw)
@@ -609,10 +703,14 @@ export function classifyTargetUrl(raw: string): TargetRef | null {
 export async function resolveTarget(
   input: string,
   cookie = '',
-  maxPages = 30
+  maxPages = DEFAULT_TARGET_MAX_PAGES
 ): Promise<ResolvedTarget> {
-  const trimmed = (input || '').trim()
+  const trimmed = normalizeTargetInput(input)
   if (!trimmed) throw new BiliApiError('请输入 BV 号或链接')
+
+  const pageLimit = Number.isFinite(maxPages)
+    ? Math.max(1, Math.min(DEFAULT_TARGET_MAX_PAGES, Math.floor(maxPages)))
+    : DEFAULT_TARGET_MAX_PAGES
 
   const single = async (bvid: string, url: string): Promise<ResolvedTarget> => {
     const info = await getVideoInfo(bvid, cookie)
@@ -658,15 +756,15 @@ export async function resolveTarget(
   if (ref.kind === 'video') return single(ref.bvid, url)
 
   if (ref.kind === 'series') {
-    return listed('series', await getSeriesVideos(ref.mid, ref.sid, cookie, maxPages))
+    return listed('series', await getSeriesVideos(ref.mid, ref.sid, cookie, pageLimit))
   }
   if (ref.kind === 'season') {
-    return listed('season', await getSeasonVideos(ref.mid, ref.sid, cookie, maxPages))
+    return listed('season', await getSeasonVideos(ref.mid, ref.sid, cookie, pageLimit))
   }
   if (ref.kind === 'favlist') {
-    return listed('favlist', await getFavVideos(ref.sid, cookie, maxPages))
+    return listed('favlist', await getFavVideos(ref.sid, cookie, pageLimit))
   }
-  return listed('space', await getSpaceVideos(ref.mid, cookie, maxPages))
+  return listed('space', await getSpaceVideos(ref.mid, cookie, pageLimit))
 }
 
 /** 探测当前 Cookie 的登录状态 */

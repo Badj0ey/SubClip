@@ -1,5 +1,28 @@
 # Changelog
 
+## 3.18.3 — B 站合集 / 系列 / 收藏夹批量解析增强（2026-10-28）
+
+### 改进
+
+- 链接解析更宽容：自动补全省略的 `https://`，清理复制自网页 / Markdown / 聊天软件的转义（`\&`、`&amp;`）与首尾引号括号；非 B 站域名只按「内含 BV 号」兜底，不再误判。
+- 新增旧版系列页 `/{mid}/seriesdetail?sid=…` 与 `series_id` / `season_id` 参数变体的识别；`/list/…`、`/{mid}/lists/…` 页面按 `?type=series` 正确区分为「系列」而非「合集」，界面与用户脚本的页面类型提示同步补充「系列」。
+- 批量解析上限从 30 页提高到 100 页（`DEFAULT_TARGET_MAX_PAGES`），合集 / 系列 / 收藏夹 / 投稿分别按接口实际页大小（30/30/20/30）判断终止；接口未返回 total 时按「页不满或本页无新增」停止，避免空转请求。超过上限明确标记 `truncated`。
+- 同一视频跨页重复出现时按 BV 号（统一大写、`extractBvid` 归一）去重；列表翻页间隔 250ms，降低触发 B 站限流的概率。
+- 收藏夹识别支持 `fid` 与 `media_id` 两种参数；`has_more` 缺失时按「页满即有更多」推断。
+- 新增 `tests/target-list.test.ts`（离线 stub fetch）：系列分页与跨页去重、收藏夹 `fid` 透传与跨页读取、分页上限 `truncated` 标记，不依赖真实账号或网络；`npm test` 增至 8 个套件。
+
+### 兼容性
+
+- 应用和用户脚本版本均为 3.18.3，通信协议仍为 v5，无 SQLite 表结构变更、无新增 npm 依赖；旧版用户脚本仍可连接，但页面类型提示不含「系列」。
+
+### 验证（2026-10-28 本机）
+
+- `npm run typecheck` 通过；`npm test` 8 套件全部通过：core 183、refactor 6、wbi 20、slice 14、danmaku、smoke 45、bridge 38、targets 3（0 失败）。
+- `npm run build` 与 `npm run dist` 通过：`dist/SubClip-3.18.3-setup.exe` 161,047,528 B、`dist/SubClip-3.18.3-x64.zip` 217,941,237 B；`dist/SHA256SUMS.txt` 已生成。
+- 从 NSIS 安装包解包核对：`resources/userscript/SubClip.user.js` 与仓库脚本 md5 一致，`resources/ffmpeg/` 含内置 `ffmpeg.exe`，`app.asar` 内版本 3.18.3。
+- 打包版冒烟（临时 `userData`，CDP 检查）：窗口正常创建、渲染页从 `app.asar` 加载，preload 140 个 API；桥接在空闲端口启动（`protocol:5`），同端口重启后仍 `running:true`。
+- **未覆盖**：真实账号下的大合集 / 大收藏夹批量翻页、浏览器脚本点击链路、NSIS 向导交互、代码签名/SmartScreen、完整剪辑导出。
+
 ## 3.18.2 — 浏览器字幕联动与文件定位修复（2026-10-27）
 
 ### 修复与改进

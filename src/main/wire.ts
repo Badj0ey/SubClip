@@ -36,7 +36,7 @@ function askBrowser(
 }
 
 /**
- * 插件上报的「合集 / 收藏夹 / 投稿页」。
+ * 插件上报的「合集 / 系列 / 收藏夹 / 投稿页」。
  * 这类页面没有具体 BV 号，桌面端不建条目，而是交给界面提示用户「是否批量拉取」。
  */
 export interface CollectionHint {
@@ -57,7 +57,7 @@ export function wireBridge(push: PushFn): void {
 
   bridge.on('page-info', (payload) => {
     try {
-      // 合集 / 收藏夹 / 投稿页没有具体视频：不要建一条空条目，
+      // 合集 / 系列 / 收藏夹 / 投稿页没有具体视频：不要建一条空条目，
       // 而是把「这里有整包内容」告诉界面，由用户决定要不要批量拉。
       if (!String(payload?.bvid ?? '').trim()) {
         const hint: CollectionHint = {
@@ -70,7 +70,7 @@ export function wireBridge(push: PushFn): void {
         push('bridge:page-info', {
           info: payload,
           videoId: null,
-          message: '检测到合集 / 收藏夹 / 投稿页，等待用户确认是否批量拉取'
+          message: '检测到合集 / 系列 / 收藏夹 / 投稿页，等待用户确认是否批量拉取'
         })
         if (hint.url) push('bridge:collection', hint)
         return

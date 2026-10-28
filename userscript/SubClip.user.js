@@ -2,7 +2,7 @@
 // @name         字幕剪 SubClip · B站桥接
 // @name:en      SubClip Bilibili Bridge
 // @namespace    https://github.com/Badj0ey/SubClip
-// @version      3.18.2
+// @version      3.18.3
 // @description  在 B 站页面左下角识别视频，把页面信息、登录态与字幕同步给「字幕剪」桌面端
 // @author       Badj0ey
 // @homepageURL  https://github.com/Badj0ey/SubClip
@@ -77,6 +77,7 @@
   const PAGE_TYPE_LABEL = {
     video: '视频',
     season: '合集',
+    series: '系列',
     favlist: '收藏夹',
     space: 'UP主投稿',
     unknown: '未识别'
@@ -325,10 +326,11 @@
     }
 
     if (/^\/list\//.test(path)) {
-      const sid = url.searchParams.get('sid')
+      const sid = url.searchParams.get('sid') || url.searchParams.get('season_id') || url.searchParams.get('series_id')
+      const isSeries = url.searchParams.get('type')?.toLowerCase() === 'series'
       return {
         ...base,
-        pageType: 'season',
+        pageType: isSeries ? 'series' : 'season',
         bvid: '',
         seasonId: sid ? Number(sid) : null,
         seasonTitle: base.title
@@ -337,13 +339,27 @@
 
     const lists = /^\/(\d+)\/lists\/(\d+)/.exec(path)
     if (lists) {
+      const isSeries = url.searchParams.get('type')?.toLowerCase() === 'series'
       return {
         ...base,
-        pageType: 'season',
+        pageType: isSeries ? 'series' : 'season',
         bvid: '',
         seasonId: Number(lists[2]),
         seasonTitle: base.title,
         uploader: { uid: Number(lists[1]), name: base.uploader.name, avatar: null }
+      }
+    }
+
+    const seriesDetail = /^\/(\d+)\/seriesdetail\/?$/.exec(path)
+    if (seriesDetail) {
+      const sid = url.searchParams.get('sid') || url.searchParams.get('series_id') || url.searchParams.get('season_id')
+      return {
+        ...base,
+        pageType: 'series',
+        bvid: '',
+        seasonId: sid ? Number(sid) : null,
+        seasonTitle: base.title,
+        uploader: { uid: Number(seriesDetail[1]), name: base.uploader.name, avatar: null }
       }
     }
 

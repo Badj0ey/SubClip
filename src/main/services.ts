@@ -111,7 +111,7 @@ export async function persistVideo(input: string): Promise<PersistVideoResult> {
 /** 解析任意 B 站链接（视频 / 合集 / 系列 / 收藏夹 / 投稿页 / 短链） */
 export async function resolveTarget(input: string): Promise<bili.ResolvedTarget> {
   const cookie = loadSettings().biliCookie
-  return bili.resolveTarget(input, cookie, 30)
+  return bili.resolveTarget(input, cookie, bili.DEFAULT_TARGET_MAX_PAGES)
 }
 
 export type PullProgress = PullProgressInfo
@@ -421,7 +421,7 @@ export interface IngestPageResult {
 export function ingestPageInfo(info: BridgePageInfo): IngestPageResult {
   const bvid = String(info?.bvid ?? '').trim()
   if (!bvid) {
-    return { videoId: null, message: '该页面没有具体视频（合集 / 收藏夹 / 投稿页），无需同步' }
+    return { videoId: null, message: '该页面没有具体视频（合集 / 系列 / 收藏夹 / 投稿页），无需同步' }
   }
 
   const uid = readUploaderUid(info.uploader)

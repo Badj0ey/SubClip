@@ -22,7 +22,7 @@ import { buildDiagnostics, redactSettings } from '../src/main/diagnostics'
 import { DEFAULT_NAME_TEMPLATE, compactDuration, fileStamp, renderNameTemplate } from '../src/shared/naming'
 import { joinCueText, mergeCues, splitCue } from '../src/shared/cues'
 import { parseClipTasksJson, serializeClipTasks } from '../src/main/clipIO'
-import { classifyTargetUrl } from '../src/main/bilibili'
+import { classifyTargetUrl, parseCollectionUrl } from '../src/main/bilibili'
 import {
   applyRangeSelection,
   cueIndexAtTime,
@@ -1733,6 +1733,24 @@ test('page-info 的 pageType 只接受枚举值', () => {
   assert.strictEqual(msg.payload.page, 1, 'page 至少为 1')
 })
 
+test('page-info 正确保留系列页类型', () => {
+  const msg = parseClientMessage(JSON.stringify({
+    type: 'page-info',
+    payload: {
+      pageType: 'series',
+      bvid: '',
+      title: '系列标题',
+      url: 'https://space.bilibili.com/3546581515111228/lists/4130269?type=series',
+      page: 1,
+      uploader: { uid: 3546581515111228, name: 'UP主' },
+      seasonId: 4130269
+    }
+  }))
+  assert.ok(msg && msg.type === 'page-info')
+  if (msg?.type !== 'page-info') throw new Error('unreachable')
+  assert.strictEqual(msg.payload.pageType, 'series')
+})
+
 test('cookies 缺少内容或超长时丢弃', () => {
   const build = (cookie: string): string =>
     JSON.stringify({ type: 'cookies', payload: { cookie, loggedIn: true, count: 1 } })
@@ -2248,6 +2266,22 @@ test('系列：/{mid}/lists/{sid}?type=series → series（而不是 season）',
   assert.deepStrictEqual(ref, { kind: 'series', mid: 3546581515111228, sid: 4130269 })
 })
 
+test('用户给出的系列链接可解析，复制时省略协议也可解析', () => {
+  const expected = { kind: 'series', mid: 3546581515111228, sid: 4130269 }
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/3546581515111228/lists/4130269?type=series'),
+    expected
+  )
+  assert.deepStrictEqual(
+    classifyTargetUrl('space.bilibili.com/3546581515111228/lists/4130269?type=series'),
+    expected
+  )
+  assert.deepStrictEqual(
+    parseCollectionUrl('https://space.bilibili.com/3546581515111228/lists/4130269?type=series'),
+    { mid: 3546581515111228, sid: 4130269, kind: 'series' }
+  )
+})
+
 test('合集：/{mid}/lists/{sid} 不带 type → season', () => {
   assert.deepStrictEqual(
     classifyTargetUrl('https://space.bilibili.com/123/lists/456'),
@@ -2264,6 +2298,14 @@ test('收藏夹：favlist?fid=xxx，且 ftype 为空也要认（实际链接常�
   assert.deepStrictEqual(
     classifyTargetUrl('https://space.bilibili.com/500278643/favlist?fid=4061631943&ftype=create'),
     { kind: 'favlist', mid: 500278643, sid: 4061631943 }
+  )
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/500278643/favlist?fid=4262986443\\&ftype=create'),
+    { kind: 'favlist', mid: 500278643, sid: 4262986443 }
+  )
+  assert.deepStrictEqual(
+    classifyTargetUrl('https://space.bilibili.com/500278643/favlist?media_id=4262986443'),
+    { kind: 'favlist', mid: 500278643, sid: 4262986443 }
   )
 })
 
