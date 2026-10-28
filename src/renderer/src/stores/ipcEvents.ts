@@ -64,31 +64,96 @@ export function setupIpcEvents(): void {
     })
   )
 
+  /**
+   * 插件字幕入库提示聚合。
+   *
+   * 批量补抓（收藏夹 / 系列 / 投稿页交给浏览器补抓）时，插件会逐视频逐分P
+   * 推送字幕并逐条触发这里，单条 toast 的提示框会被连续顶掉、看起来在刷屏。
+   * 因此按 2.5 秒静默窗口聚合：窗口内只有一条时沿用原详细文案，
+   * 多条则汇总成一条；库树刷新（resource.load）也合并到窗口结束时做一次。
+   * 单个视频的常规同步只产生一条消息，最多晚 2.5 秒显示，无感。
+   */
+  let subtitleAggTimer: ReturnType<typeof setTimeout> | null = null
+  let subtitleAggNeedsLoad = false
+  const subtitleAgg = {
+    ok: 0,
+    cues: 0,
+    unlinked: 0,
+    errors: 0,
+    videos: new Set<string>(),
+    last: '',
+    lastUnlinked: false,
+    lastError: ''
+  }
+
+  const flushSubtitleAgg = (): void => {
+    subtitleAggTimer = null
+    if (subtitleAggNeedsLoad) {
+      subtitleAggNeedsLoad = false
+      void resource.load()
+    }
+    const { ok, cues, unlinked, errors } = subtitleAgg
+    if (ok === 1 && errors === 0) {
+      // 单条：原样保留详细文案
+      ui.showToast(subtitleAgg.last, subtitleAgg.lastUnlinked ? 'info' : 'success', subtitleAgg.lastUnlinked ? 5200 : 4000)
+    } else if (ok > 1) {
+      const extra: string[] = []
+      if (unlinked) extra.push(`${unlinked} 条暂归「未关联」`)
+      if (errors) extra.push(`${errors} 条失败`)
+      ui.showToast(
+        `插件批量导入完成：${subtitleAgg.videos.size} 个视频共 ${cues} 条字幕${extra.length ? `（${extra.join('，')}）` : ''}`,
+        cues > 0 ? 'success' : 'error',
+        5600
+      )
+    } else if (errors === 1) {
+      ui.showToast(subtitleAgg.lastError, 'error', 4200)
+    } else if (errors > 1) {
+      ui.showToast(`插件补抓有 ${errors} 条字幕未入库，最近一条：${subtitleAgg.lastError}`, 'error', 5600)
+    }
+    subtitleAgg.ok = 0
+    subtitleAgg.cues = 0
+    subtitleAgg.unlinked = 0
+    subtitleAgg.errors = 0
+    subtitleAgg.videos.clear()
+    subtitleAgg.last = ''
+    subtitleAgg.lastUnlinked = false
+    subtitleAgg.lastError = ''
+  }
+
+  const scheduleSubtitleFlush = (): void => {
+    if (subtitleAggTimer) clearTimeout(subtitleAggTimer)
+    subtitleAggTimer = setTimeout(flushSubtitleAgg, 2500)
+  }
+
   subs.push(
     window.api.onBridgeSubtitle((p) => {
       if (!p.ok) {
-        ui.showToast(
-          `插件推送的字幕为空或缺少 BV 号：${p.bvid || '(无 BV 号)'} P${p.page}`,
-          'error',
-          4200
-        )
-        void resource.load()
+        subtitleAgg.errors += 1
+        subtitleAgg.lastError = `插件推送的字幕为空或缺少 BV 号：${p.bvid || '(无 BV 号)'} P${p.page}`
+        subtitleAggNeedsLoad = true
+        scheduleSubtitleFlush()
         return
       }
-      const action = p.created ? '已导入' : '已更新'
-      const where = p.unlinked
-        ? '，暂时归入「未关联」，同步页面信息后会自动归位'
-        : p.title
-          ? ` → ${p.title}`
-          : ''
-      ui.showToast(
-        `插件${action}字幕：${p.label}（${p.count} 条）${where}`,
-        p.unlinked ? 'info' : 'success',
-        p.unlinked ? 5200 : 4000
-      )
-      void resource.load()
+      subtitleAgg.ok += 1
+      subtitleAgg.cues += p.count ?? 0
+      if (p.unlinked) subtitleAgg.unlinked += 1
+      if (p.bvid) subtitleAgg.videos.add(p.bvid)
+      subtitleAggNeedsLoad = true
+      subtitleAgg.last =
+        `插件${p.created ? '已导入' : '已更新'}字幕：${p.label}（${p.count} 条）` +
+        (p.unlinked
+          ? '，暂时归入「未关联」，同步页面信息后会自动归位'
+          : p.title
+            ? ` → ${p.title}`
+            : '')
+      subtitleAgg.lastUnlinked = p.unlinked
+      scheduleSubtitleFlush()
     })
   )
+  // 组件卸载 / 热更新时清掉未触发的聚合定时器，避免卸载后还弹提示
+  subs.push(() => {
+    if (subtitleAggTimer) clearTimeout(subtitleAggTimer)
+  })
 
   subs.push(
     window.api.onBridgeLog(({ level, message }) => {

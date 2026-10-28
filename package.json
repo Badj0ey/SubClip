@@ -1,6 +1,6 @@
 {
   "name": "subclip",
-  "version": "3.18.5",
+  "version": "3.18.6",
   "private": true,
   "description": "字幕剪 SubClip：基于字幕检索的 B站视频智能切片工作台。搜字幕，选片段，一键剪视频。",
   "license": "MIT",
