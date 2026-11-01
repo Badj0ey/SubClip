@@ -73,6 +73,10 @@ async function doShift(): Promise<void> {
     toast('平移和倍速都没有变化', 'info')
     return
   }
+  if (!Number.isFinite(scale.value) || scale.value <= 0 || scale.value > 100) {
+    toast('倍速需要是 0 到 100 之间的正数', 'error')
+    return
+  }
   busy.value = true
   try {
     await pushUndo(id, `时间轴调整（${offsetMs.value}ms × ${scale.value}）`)

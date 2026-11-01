@@ -504,6 +504,8 @@ export class BridgeServer extends EventEmitter {
       }
 
       case 'log': {
+        // 日志会写进桌面端「最近事件」面板，配置了令牌后未认证客户端不应能刷屏
+        if (!this.requireAuth(client)) break
         this.emit('log', msg.level, msg.message)
         break
       }

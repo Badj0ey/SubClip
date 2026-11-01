@@ -70,7 +70,11 @@ export const useSemanticStore = defineStore('semantic', {
     startPolling(intervalMs = 1200): void {
       if (this._timer) return
       this._timer = setInterval(() => {
-        void this.refresh()
+        void this.refresh().then(() => {
+          // 主进程空闲了（下载/加载/建索引都结束，含失败收尾）就自动停，
+          // 否则这个轮询会永远挂着，每 1.2 秒空打一次 IPC。
+          if (this.status.busy === 'idle') this.stopPolling()
+        })
       }, intervalMs)
     },
 

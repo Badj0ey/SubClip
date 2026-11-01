@@ -109,6 +109,10 @@
 .modal, .dialog { border: 1px solid var(--border); border-radius: 16px; }
 .toast { border-color: var(--border); border-radius: 10px; }
 .toast.error, .toast.success { color: #fff; }
+/* 深色主题下 error/success 的底色偏亮（#ff8290 / #66d2b2），白字对比度不足 2.5:1，
+   换成底色加深的深色文字，对比度回到 7:1 以上。 */
+[data-theme='dark'] .toast.error { color: color-mix(in srgb, var(--danger) 25%, #14141a); }
+[data-theme='dark'] .toast.success { color: color-mix(in srgb, var(--success) 25%, #14141a); }
 ::-webkit-scrollbar { width: 9px; height: 9px; }
 ::-webkit-scrollbar-thumb { border-width: 2px; }
 @media (max-width: 1470px) {

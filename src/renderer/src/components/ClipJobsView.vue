@@ -105,6 +105,10 @@ async function retry(ids: number[]): Promise<void> {
   ui.showToast(n ? `已重新排队 ${n} 条` : '没有可重试的任务', n ? 'success' : 'info')
 }
 
+/** 历史筛选里的成功数 / 失败数（模板里反复 filter 会在每帧重排整个历史列表，先算好） */
+const doneCount = computed(() => jobs.finished.filter((j) => j.state === 'done').length)
+const notDoneCount = computed(() => jobs.finished.length - doneCount.value)
+
 /* --------------------------------- 执行切片 -------------------------------- */
 
 const clip = useClipStore()
@@ -307,19 +311,19 @@ function goLibrary(): void {
           全部 {{ jobs.finished.length }}
         </button>
         <button class="btn sm" :class="{ primary: historyFilter === 'ok' }" @click="historyFilter = 'ok'">
-          成功 {{ jobs.finished.filter((j) => j.state === 'done').length }}
+          成功 {{ doneCount }}
         </button>
         <button
           class="btn sm"
           :class="{ primary: historyFilter === 'failed' }"
           @click="historyFilter = 'failed'"
         >
-          失败 {{ jobs.finished.filter((j) => j.state !== 'done').length }}
+          失败 {{ notDoneCount }}
         </button>
         <span class="grow"></span>
         <button
           class="btn sm"
-          :disabled="!jobs.finished.some((j) => j.state !== 'done')"
+          :disabled="!notDoneCount"
           title="把所有失败/取消的任务重新排队"
           @click="retry(jobs.finished.filter((j) => j.state !== 'done').map((j) => j.id))"
         >

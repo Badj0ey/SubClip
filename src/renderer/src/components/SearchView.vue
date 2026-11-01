@@ -317,7 +317,15 @@ function weightLabel(hit: CueSearchHit): string {
           {{ semantic.done ? '没有相近的段落' : '输入一句话后回车或点「按意思搜」' }}
         </div>
         <div v-for="hit in semantic.hits" :key="`${hit.docId}:${hit.start}`" class="search-hit">
-          <div class="hit-main" @click="semantic.jump(hit)">
+          <div
+            class="hit-main"
+            role="button"
+            tabindex="0"
+            title="打开这条命中"
+            @click="semantic.jump(hit)"
+            @keydown.enter="semantic.jump(hit)"
+            @keydown.space.prevent="semantic.jump(hit)"
+          >
             <div class="hit-text">
               <span class="hit-badge" :title="`余弦相似度 ${hit.score}`">{{ hit.score.toFixed(3) }}</span>
               {{ hit.text }}
@@ -383,7 +391,15 @@ function weightLabel(hit: CueSearchHit): string {
           :checked="search.selected.has(search.key(hit))"
           @change="search.toggle(hit)"
         />
-        <div class="hit-main" @click="search.jump(hit)">
+        <div
+          class="hit-main"
+          role="button"
+          tabindex="0"
+          title="打开这条命中"
+          @click="search.jump(hit)"
+          @keydown.enter="search.jump(hit)"
+          @keydown.space.prevent="search.jump(hit)"
+        >
           <div class="hit-text">
             <span
               v-if="(hit.hitWeight ?? 1) > 1"

@@ -159,6 +159,11 @@ export function similarityStats(samples = 20, topK = 10): {
   buckets: Array<{ range: string; count: number }>
   topTexts: string[]
 } {
+  // 这是诊断路径，但 samples/topK 来自渲染进程，直接照跑会把主进程卡住：
+  // samples 个参照段 × 全库向量两两算余弦，是 O(samples × N) 的解码量。
+  // 诊断抽样 50 个足够标定阈值，多余的请求一律截断。
+  samples = Math.max(1, Math.min(50, Math.floor(samples) || 20))
+  topK = Math.max(1, Math.min(50, Math.floor(topK) || 10))
   const all = db.allChunkVectors()
   if (all.length < 2) {
     return { samples: 0, avgTop: 0, avgMedian: 0, buckets: [], topTexts: [] }

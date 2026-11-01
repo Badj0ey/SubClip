@@ -11,7 +11,7 @@
  * 数据层已经预留好位置（`analysis` 表可存 `kind = 'tags'` 的建议结果）。
  */
 import { defineStore } from 'pinia'
-import type { TagInfo } from '@shared/types'
+import type { TagInfo, TreeNode } from '@shared/types'
 import { useUiStore } from './ui'
 import { useResourceStore } from './resource'
 
@@ -57,16 +57,27 @@ export const useTagsStore = defineStore('tags', {
      * 新建标签。
      * 已存在同名标签时不会报错（后端直接返回既有 id），
      * 并给出「已存在」的提示，避免用户以为没生效。
+     *
+     * @param silent 批量场景（如一次应用多条 AI 标签建议）传 true：
+     *               跳过每条的 toast 与「全量重读标签 + 资源树」，
+     *               由调用方在循环结束后统一刷新一次，避免 2N 次全库 IPC。
      */
-    async create(name: string): Promise<number | null> {
+    async create(name: string, silent = false): Promise<number | null> {
       const ui = useUiStore()
       const value = name.trim()
       if (!value) {
-        ui.showToast('标签名不能为空', 'error')
+        if (!silent) ui.showToast('标签名不能为空', 'error')
         return null
       }
       const existed = this.tags.find((t) => t.name === value)
-      const res = await window.api.createTag(value)
+      let res: { id: number; tree: TreeNode[] }
+      try {
+        res = await window.api.createTag(value)
+      } catch (err) {
+        if (!silent) ui.showToast(`新建标签失败：${(err as Error).message}`, 'error', 4200)
+        return null
+      }
+      if (silent) return res.id
       await this.load()
       await useResourceStore().load()
       // 新标签给个默认颜色，方便在一堆标签里区分。

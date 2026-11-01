@@ -5,7 +5,7 @@
 import * as bili from './bilibili'
 import { bridge } from './bridge'
 import { ingestPageInfo, ingestSubtitle, pullSubtitles } from './services'
-import { saveSettings } from './settings'
+import { loadSettings, saveSettings } from './settings'
 
 export type PushFn = (channel: string, payload: unknown) => void
 
@@ -33,6 +33,30 @@ function askBrowser(
     if (bridge.requestSubtitlesTo(id, bvid, page, null, options)) return id
   }
   return null
+}
+
+/**
+ * 合并插件同步来的凭证与桌面端已存的凭证。
+ *
+ * 背景：插件在 GM_cookie 未授权时会回退 document.cookie，那是没有 HttpOnly
+ * 键（SESSDATA 等）的子集。无条件覆盖会把桌面端已有的完整登录态悄悄降级。
+ * 规则：新值里有的键以新值为准（用户主动同步的最新凭证）；旧值里有、新值里
+ * 没有的键保留旧值（保住 HttpOnly 键）。
+ */
+function mergeBiliCookie(stored: string, incoming: string): string {
+  const parse = (text: string): Map<string, string> => {
+    const map = new Map<string, string>()
+    for (const part of text.split(';')) {
+      const eq = part.indexOf('=')
+      if (eq <= 0) continue
+      const key = part.slice(0, eq).trim()
+      if (key) map.set(key, part.slice(eq + 1).trim())
+    }
+    return map
+  }
+  const merged = parse(stored)
+  for (const [key, value] of parse(incoming)) merged.set(key, value)
+  return [...merged.entries()].map(([key, value]) => `${key}=${value}`).join('; ')
 }
 
 /**

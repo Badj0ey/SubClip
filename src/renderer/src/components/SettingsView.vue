@@ -25,8 +25,11 @@ import {
 } from '../store'
 import { useSemanticStore } from '../stores/semantic'
 import { useAiStore } from '../stores/ai'
+import { useSettingsStore } from '../stores/settings'
 
 import { DEFAULT_NAME_TEMPLATE } from '@shared/naming'
+
+const settingsStore = useSettingsStore()
 
 /** 重新拉一次统计（备份恢复 / 清空数据后用） */
 async function refreshStats(): Promise<void> {
@@ -117,9 +120,11 @@ onMounted(async () => {
 })
 
 async function save(patch: Partial<AppSettings>): Promise<void> {
-  state.settings = await window.api.saveSettings(patch)
-  applyTheme(state.settings.theme)
-  applyReadingStyle()
+  await settingsStore.save(patch)
+  if (state.settings) {
+    applyTheme(state.settings.theme)
+    applyReadingStyle()
+  }
 }
 
 /* ----------------------------- 字幕烧录（本地切片） ----------------------------- */
@@ -230,7 +235,11 @@ function onReadLine(e: Event): void {
 }
 
 async function onPort(e: Event): Promise<void> {
-  const port = Number((e.target as HTMLInputElement).value) || 8765
+  const port = Number((e.target as HTMLInputElement).value)
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    toast('端口需要是 1 到 65535 之间的整数', 'error', 4200)
+    return
+  }
   await save({ port })
   await restartBridge(port)
 }
@@ -406,7 +415,7 @@ function startRecord(id: ShortcutAction): void {
 async function saveShortcut(id: ShortcutAction, binding: string): Promise<void> {
   if (!state.settings) return
   const next = { ...shortcutMap.value, [id]: binding }
-  state.settings = await window.api.saveSettings({ shortcuts: next })
+  await settingsStore.save({ shortcuts: next })
 }
 
 async function resetOne(id: ShortcutAction): Promise<void> {
@@ -416,7 +425,7 @@ async function resetOne(id: ShortcutAction): Promise<void> {
 
 async function resetAllShortcuts(): Promise<void> {
   stopRecord()
-  state.settings = await window.api.saveSettings({ shortcuts: normalizeShortcuts(undefined) })
+  await settingsStore.save({ shortcuts: normalizeShortcuts(undefined) })
   toast('快捷键已恢复默认', 'success')
 }
 

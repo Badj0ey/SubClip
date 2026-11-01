@@ -25,7 +25,7 @@
  * 不联网、不依赖 AI。语料里混着外语轨，所以抽取层做了语言过滤
  * —— 这些取舍写在 `@shared/extract` 的注释里。
  */
-import { computed, onMounted, ref, watch } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import type { GraphCounts, GraphTopic, GraphTopicVideo, GraphViewpoint } from '@shared/types'
 import { formatTime } from '@shared/time'
 import { useClipStore } from '../stores/clip'
@@ -49,6 +49,8 @@ const viewpoints = ref<GraphViewpoint[]>([])
 const loading = ref(false)
 /** 轮询建图进度用的定时器（组件卸载/建完即清） */
 let pollTimer: number | null = null
+/** 右栏选择请求序号：旧请求晚回来时直接丢弃，防止列表被覆盖成上一个主题的内容 */
+let selectSeq = 0
 
 const builtAtText = computed(() =>
   counts.value.builtAt ? new Date(counts.value.builtAt).toLocaleString() : '还没建过'
@@ -97,24 +99,30 @@ function startPolling(): void {
 }
 
 async function selectTopic(t: GraphTopic): Promise<void> {
+  const seq = ++selectSeq
   activeTopic.value = t
   activeVideo.value = null
   viewpoints.value = []
   loading.value = true
   try {
-    topicVideos.value = await window.api.graphTopicVideos({ topicId: t.id, limit: 100 })
+    const list = await window.api.graphTopicVideos({ topicId: t.id, limit: 100 })
+    if (seq !== selectSeq) return // 期间又点了别的，丢弃过期结果
+    topicVideos.value = list
   } finally {
-    loading.value = false
+    if (seq === selectSeq) loading.value = false
   }
 }
 
 async function selectVideo(v: GraphTopicVideo): Promise<void> {
+  const seq = ++selectSeq
   activeVideo.value = v
   loading.value = true
   try {
-    viewpoints.value = await window.api.graphViewpoints({ videoId: v.videoId, limit: 30 })
+    const list = await window.api.graphViewpoints({ videoId: v.videoId, limit: 30 })
+    if (seq !== selectSeq) return
+    viewpoints.value = list
   } finally {
-    loading.value = false
+    if (seq === selectSeq) loading.value = false
   }
 }
 
@@ -167,6 +175,18 @@ let searchTimer: number | null = null
 watch(keyword, () => {
   if (searchTimer !== null) window.clearTimeout(searchTimer)
   searchTimer = window.setTimeout(() => void loadTopics(), 250)
+})
+
+onBeforeUnmount(() => {
+  if (pollTimer !== null) {
+    window.clearInterval(pollTimer)
+    pollTimer = null
+  }
+  if (searchTimer !== null) {
+    window.clearTimeout(searchTimer)
+    searchTimer = null
+  }
+  selectSeq++ // 卸载后到达的响应一律作废
 })
 </script>
 
@@ -226,7 +246,12 @@ watch(keyword, () => {
             :key="t.id"
             class="graph-item"
             :class="{ active: activeTopic?.id === t.id }"
+            role="button"
+            tabindex="0"
+            :aria-label="`主题：${t.term}，${t.videoCount} 个视频`"
             @click="selectTopic(t)"
+            @keydown.enter="selectTopic(t)"
+            @keydown.space.prevent="selectTopic(t)"
           >
             <span class="graph-term">{{ t.term }}</span>
             <span class="graph-count" :title="`出现在 ${t.videoCount} 个视频，共 ${t.totalCount} 次`">
@@ -253,7 +278,12 @@ watch(keyword, () => {
             :key="v.videoId"
             class="graph-item tall"
             :class="{ active: activeVideo?.videoId === v.videoId }"
+            role="button"
+            tabindex="0"
+            :aria-label="`视频：${v.title}`"
             @click="selectVideo(v)"
+            @keydown.enter="selectVideo(v)"
+            @keydown.space.prevent="selectVideo(v)"
           >
             <div class="graph-video-title" :title="v.title">{{ v.title }}</div>
             <div class="muted graph-meta">

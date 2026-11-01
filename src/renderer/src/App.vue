@@ -8,6 +8,7 @@ import {
   selectAll, state, toggleSelect, toast, undoLastEdit
 } from './store'
 import { usePaneLayout } from './composables/usePaneLayout'
+import { useSettingsStore } from './stores/settings'
 import { useVideoStore } from './stores/video'
 import { useSubtitleStore } from './stores/subtitle'
 import { useUiStore } from './stores/ui'
@@ -67,7 +68,8 @@ async function toggleTheme(): Promise<void> {
   if (!state.settings) return
   const order: Array<'light' | 'dark' | 'system'> = ['light', 'dark', 'system']
   const next = order[(order.indexOf(state.settings.theme) + 1) % order.length]
-  state.settings = await window.api.saveSettings({ theme: next })
+  // 走设置 store 保存：直接调 IPC 会跳过 settings.changed 事件与内存副本的同步
+  await useSettingsStore().save({ theme: next })
   applyTheme(next)
 }
 

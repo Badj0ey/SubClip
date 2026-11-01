@@ -201,6 +201,9 @@ async function onRename(node: TreeNode, name: string): Promise<void> {
 
 const menu = ref<{ x: number; y: number; node: TreeNode } | null>(null)
 
+/** 右键菜单「重命名」的触发信号，传给 TreeNodeItem 后由命中节点进入内联编辑 */
+const renameRequest = ref<{ key: string; n: number } | null>(null)
+
 function onMenu(node: TreeNode, event: MouseEvent): void {
   menu.value = { x: event.clientX, y: event.clientY, node }
 }
@@ -228,10 +231,8 @@ const menuItems = computed<MenuItem[]>(() => {
       label: '重命名',
       icon: '✎',
       action: () => {
-        // 让该行进入内联编辑：派发一次 dblclick 比自己操作 DOM 稳
-        document
-          .querySelector<HTMLElement>(`[data-key="${node.key}"] .label`)
-          ?.dispatchEvent(new MouseEvent('dblclick', { bubbles: true }))
+        // 让该行进入内联编辑：通过 renameRequest 传给 TreeNodeItem 匹配触发
+        renameRequest.value = { key: node.key, n: Date.now() }
       }
     }
   ]
@@ -337,6 +338,7 @@ async function refresh(): Promise<void> {
           :node="node"
           :depth="0"
           :force-open="searching"
+          :rename-request="renameRequest"
           @open="onOpen"
           @delete="onDelete"
           @favorite="onFavorite"

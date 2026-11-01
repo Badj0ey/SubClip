@@ -1,6 +1,7 @@
 import { onBeforeUnmount, ref, watch } from 'vue'
 import type { AppSettings } from '@shared/types'
 import { constrainPanes, constrainPreview, resizeSidePane, DEFAULT_PANES } from '@shared/layout'
+import { useSettingsStore } from '../stores/settings'
 
 type Pane = 'left' | 'right' | 'preview'
 
@@ -28,11 +29,13 @@ export function usePaneLayout(settings: () => AppSettings | null) {
   }, { immediate: true })
 
   function persist(which: Pane): void {
-    if (which === 'preview') {
-      void window.api.saveSettings({ videoPaneHeight: previewHeight.value })
-    } else {
-      void window.api.saveSettings({ treePaneWidth: treeWidth.value, taskPaneWidth: taskWidth.value })
-    }
+    // 走设置 store：直接调 IPC 会绕过内存副本与 settings.changed，
+    // 其它组件读到的窗格宽度就一直停在旧值。
+    const patch: Partial<AppSettings> =
+      which === 'preview'
+        ? { videoPaneHeight: previewHeight.value }
+        : { treePaneWidth: treeWidth.value, taskPaneWidth: taskWidth.value }
+    void useSettingsStore().save(patch)
   }
 
   function startDrag(which: Pane, event: PointerEvent): void {
@@ -100,7 +103,7 @@ export function usePaneLayout(settings: () => AppSettings | null) {
     taskWidth.value = DEFAULT_PANES.task
     previewHeight.value = DEFAULT_PANES.preview
     constrain()
-    void window.api.saveSettings({
+    void useSettingsStore().save({
       treePaneWidth: treeWidth.value,
       taskPaneWidth: taskWidth.value,
       videoPaneHeight: previewHeight.value

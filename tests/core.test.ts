@@ -1501,6 +1501,24 @@ test('CSV 带 BOM 且转义特殊字符', () => {
   assert.ok(csv.includes('"含,逗号""引号"'))
 })
 
+test('CSV 防公式注入：= + - @ 开头的备注强制按文本处理', () => {
+  const csv = toCsv([
+    { bvid: 'BV1', page: 1, start: 0, end: 5, note: '=SUM(A1)' },
+    { bvid: 'BV2', page: 1, start: 0, end: 5, note: '+1-1' },
+    { bvid: 'BV3', page: 1, start: 0, end: 5, note: '-2+3' },
+    { bvid: 'BV4', page: 1, start: 0, end: 5, note: '@cmd' },
+    { bvid: 'BV5', page: 1, start: 0, end: 5, note: '=A1,B1' }
+  ])
+  const lines = csv.replace(/^﻿/, '').trim().split('\r\n')
+  // 无特殊字符：只加防注入前缀，不额外加引号
+  assert.strictEqual(lines[1], "BV1,1,00:00:00,00:00:05,'=SUM(A1)")
+  assert.strictEqual(lines[2], "BV2,1,00:00:00,00:00:05,'+1-1")
+  assert.strictEqual(lines[3], "BV3,1,00:00:00,00:00:05,'-2+3")
+  assert.strictEqual(lines[4], "BV4,1,00:00:00,00:00:05,'@cmd")
+  // 含逗号：防注入前缀之外还要按常规规则加引号
+  assert.strictEqual(lines[5], `BV5,1,00:00:00,00:00:05,"'=A1,B1"`)
+})
+
 test('共享常量里不再内置开发机绝对路径', () => {
   // 早期版本把需求文档里的 D:\subtitle2clip\... 当成默认值写死，
   // 导致每个人新装后一进设置页就看到「目录不存在」。这里锁住这个回归。

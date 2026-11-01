@@ -49,6 +49,7 @@ import type { MenuItem } from './ContextMenu.vue'
 import { useVideoStore } from '../stores/video'
 import { useSubtitleStore } from '../stores/subtitle'
 import { useAiStore } from '../stores/ai'
+import { useSettingsStore } from '../stores/settings'
 
 /**
  * 视频预览的播放位置（时间轴画进度用）。
@@ -105,9 +106,9 @@ function onTimelineSeek(payload: { index: number; second: number }): void {
 
 /** 复制 AI 解释内容 */
 async function copyExplanation(): Promise<void> {
-  const idx = aiStore.explainIndex
-  if (idx == null) return
-  const text = aiStore.explanations[idx]
+  const key = aiStore.explanationKey
+  if (!key) return
+  const text = aiStore.explanations[key]
   if (!text) return
   await window.api.copyText(text)
   toast('已复制解释', 'success')
@@ -319,23 +320,37 @@ const matchPosition = computed(() => {
   return i === -1 ? '–' : String(i + 1)
 })
 
+/** 关键词高亮切分缓存：同一关键词 + 同一文本只切一次，避免每行重渲染都重复扫描 */
+const segCache = new Map<string, Array<{ t: string; m: boolean }>>()
+watch(
+  () => state.keyword,
+  () => segCache.clear()
+)
+
 function segments(text: string): Array<{ t: string; m: boolean }> {
+  const key = `${state.keyword}\u0000${text}`
+  const hit = segCache.get(key)
+  if (hit) return hit
   const k = state.keyword.trim().toLowerCase()
-  if (!k) return [{ t: text, m: false }]
-  const lower = text.toLowerCase()
-  const out: Array<{ t: string; m: boolean }> = []
-  let i = 0
-  while (i < text.length) {
-    const idx = lower.indexOf(k, i)
-    if (idx === -1) {
-      out.push({ t: text.slice(i), m: false })
-      break
+  const out: Array<{ t: string; m: boolean }> = (() => {
+    if (!k) return [{ t: text, m: false }]
+    const lower = text.toLowerCase()
+    const res: Array<{ t: string; m: boolean }> = []
+    let i = 0
+    while (i < text.length) {
+      const idx = lower.indexOf(k, i)
+      if (idx === -1) {
+        res.push({ t: text.slice(i), m: false })
+        break
+      }
+      if (idx > i) res.push({ t: text.slice(i, idx), m: false })
+      res.push({ t: text.slice(idx, idx + k.length), m: true })
+      i = idx + k.length
     }
-    if (idx > i) out.push({ t: text.slice(i, idx), m: false })
-    out.push({ t: text.slice(idx, idx + k.length), m: true })
-    i = idx + k.length
-  }
-  return out.length ? out : [{ t: text, m: false }]
+    return res.length ? res : [{ t: text, m: false }]
+  })()
+  segCache.set(key, out)
+  return out
 }
 
 function isChecked(cue: Cue): boolean {
@@ -596,14 +611,14 @@ function cancelEdit(): void {
 
 async function toggleReadLine(): Promise<void> {
   if (!state.settings) return
-  state.settings = await window.api.saveSettings({ readLine: !readLineEnabled.value })
+  await useSettingsStore().save({ readLine: !readLineEnabled.value })
   scheduleReadLine()
 }
 
 async function changeFont(delta: number): Promise<void> {
   if (!state.settings) return
   const size = Math.min(30, Math.max(11, state.settings.fontSize + delta))
-  state.settings = await window.api.saveSettings({ fontSize: size })
+  await useSettingsStore().save({ fontSize: size })
   applyReadingStyle()
 }
 
@@ -741,16 +756,20 @@ const totalSeconds = computed(() => totalDuration(ranges.value))
             第 {{ aiStore.explainIndex }} 条
           </span>
         </h3>        <blockquote class="ai-explain-cue">
-          {{ state.cues.find((c) => c.origIndex === aiStore.explainIndex)?.text ?? '' }}
+          {{
+            state.cues.find(
+              (c) => c.docId === aiStore.explainDocId && c.origIndex === aiStore.explainIndex
+            )?.text ?? ''
+          }}
         </blockquote>
         <div v-if="aiStore.busyKind === 'explain'" class="muted">正在解释…</div>
         <p v-else class="ai-explain-text">
-          {{ aiStore.explanations[aiStore.explainIndex] || '（没有结果）' }}
+          {{ aiStore.explanations[aiStore.explanationKey] || '（没有结果）' }}
         </p>
         <div class="ai-explain-actions">
           <button
             class="btn sm"
-            :disabled="!aiStore.explanations[aiStore.explainIndex]"
+            :disabled="!aiStore.explanations[aiStore.explanationKey]"
             @click="copyExplanation"
           >
             复制

@@ -192,7 +192,10 @@ export const useSubtitleStore = defineStore('subtitle', {
       if (shift && this.anchor !== null) {
         const from = Math.min(this.anchor, index)
         const to = Math.max(this.anchor, index)
-        const on = !this.selected.has(index)
+        // 方向由锚点决定（而不是目标行）：锚点已选中则整段选中，锚点未选中则整段取消，
+        // 与文件管理器/编辑器里 shift 连选「延续上次动作」的习惯一致。
+        // （旧逻辑看目标行状态：目标恰好在已选区内时会把整段选反。）
+        const on = this.selected.has(this.anchor)
         for (let i = from; i <= to; i++) {
           if (on) this.selected.add(i)
           else this.selected.delete(i)
@@ -320,9 +323,12 @@ export const useSubtitleStore = defineStore('subtitle', {
         return
       }
       const doc = this.siblingDocs.find((d) => d.id === docId)
+      // 先记下目标再取数据；连续切换时晚到的响应可能覆盖后一次的选择，
+      // 所以拿到结果后校验「当前要的仍是这一条」再写入。
       this.compareDocId = docId
       this.comparePage = doc?.page ?? null
-      this.compareCues = (await window.api.getCues(docId)) as Cue[]
+      const cues = (await window.api.getCues(docId)) as Cue[]
+      if (this.compareDocId === docId) this.compareCues = cues
     },
 
     /**
@@ -399,7 +405,9 @@ export const useSubtitleStore = defineStore('subtitle', {
         /* 拿不到当前状态就不支持重做这一步，撤销本身照做 */
       }
       await window.api.updateCues(entry.docId, entry.cues)
-      await this.reload()
+      // 撤销的文档在合并阅读视图里才刷新；不在（比如撤销的是另一个文档的编辑）时
+      // 只落库，避免刷新当前文档让界面「看起来没反应」。
+      if (this.docs.some((d) => d.id === entry.docId)) await this.reload()
       this._syncUndo()
       ui.showToast(`已撤销：${entry.label}`, 'success')
     },
@@ -420,7 +428,7 @@ export const useSubtitleStore = defineStore('subtitle', {
         /* 同上 */
       }
       await window.api.updateCues(entry.docId, entry.cues)
-      await this.reload()
+      if (this.docs.some((d) => d.id === entry.docId)) await this.reload()
       this._syncUndo()
       ui.showToast(`已重做：${entry.label}`, 'success')
     },

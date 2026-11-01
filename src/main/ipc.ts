@@ -315,7 +315,13 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     ): OpResult<{ count: number }> => {
       const cues = db.loadCues(payload.docId)
       if (!cues.length) return { ok: false, message: '这个字幕文档是空的' }
-      const next = shiftCues(cues, Number(payload.offsetMs) || 0, Number(payload.scale) || 1)
+      const offset = Number(payload.offsetMs)
+      const scale = Number(payload.scale)
+      // 倍速必须是有意义的正数，否则一次请求就把整份字幕时间轴毁掉
+      if (!Number.isFinite(offset) || (payload.scale != null && (!Number.isFinite(scale) || scale <= 0 || scale > 100))) {
+        return { ok: false, message: '平移量或倍速不合法，已取消调整' }
+      }
+      const next = shiftCues(cues, offset || 0, scale || 1)
       db.updateDocCues(payload.docId, next)
       return { ok: true, data: { count: next.length } }
     }
@@ -574,7 +580,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       }
     ) => {
       const video = db.getVideo(db.getDoc(payload.docId)?.videoId ?? -1)
-      const bvid = payload.bvid || video?.bvid || ''
+      // 以 docId 反查出的视频为准（合并阅读视图里当前视频可能与字幕所属视频不同），
+      // 渲染进程传的 bvid 只作文档没有关联视频时的兜底。
+      const bvid = video?.bvid || payload.bvid || ''
       const template = loadSettings().sliceNameTemplate
       const prefix = payload.notePrefix || video?.title || 'clip'
       // 第五阶段：片段名称默认「按内容生成」——取该范围覆盖的字幕文本，
@@ -632,14 +640,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
       cueCache.set(docId, cues)
       return cues
     }
+    // 大库下逐条 getDoc/getVideo 会重复打同几条记录：片段通常集中在少数视频，
+    // 缓存一次查到的文档与视频，避免同一条记录被反复查。
+    const docCache = new Map<number, ReturnType<typeof db.getDoc>>()
+    const videoCache = new Map<number, ReturnType<typeof db.getVideo>>()
     let renamed = 0
     for (const [i, clip] of clips.entries()) {
       const cues = loadFor(clip.docId)
       const covered = cues.filter(
         (c) => c.start <= Math.max(clip.start, clip.end) && c.end >= Math.min(clip.start, clip.end)
       )
-      const doc = db.getDoc(clip.docId)
-      const video = doc ? db.getVideo(doc.videoId) : null
+      const doc = docCache.has(clip.docId) ? docCache.get(clip.docId) : docCache.set(clip.docId, db.getDoc(clip.docId)).get(clip.docId)
+      const video = doc && doc.videoId != null
+        ? videoCache.has(doc.videoId) ? videoCache.get(doc.videoId) : videoCache.set(doc.videoId, db.getVideo(doc.videoId)).get(doc.videoId)
+        : null
       const name = generateClipTitle({
         cues: covered,
         videoTitle: video?.title ?? '',
@@ -965,7 +979,9 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('bridge:status', () => bridge.status())
 
   ipcMain.handle('bridge:restart', (_e, port?: number) => {
-    const target = Number(port) || loadSettings().port
+    const given = Number(port)
+    // 端口只在 1~65535 之间有效，越界时退回已保存的端口
+    const target = Number.isInteger(given) && given >= 1 && given <= 65535 ? given : loadSettings().port
     bridge.start(target)
     return bridge.status()
   })
@@ -1518,7 +1534,20 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
         const target = uniqueDir(join(base, safeKitName(data.folder)))
         mkdirSync(target, { recursive: true })
         for (const file of data.files) {
-          const full = join(target, ...file.path.split('/'))
+          // 渲染进程不可信：file.path 由渲染层中转，逐段校验后再拼接，
+          // 拒绝空段 / `.` / `..` / 含反斜杠或盘符的段，防止路径穿越到 target 之外。
+          const segments = String(file.path ?? '').split('/')
+          if (
+            segments.some(
+              (seg) => seg === '' || seg === '.' || seg === '..' || seg.includes('\\') || /^[A-Za-z]:/.test(seg)
+            )
+          ) {
+            return { ok: false, message: '素材包文件路径不合法，已取消导出' }
+          }
+          const full = resolve(target, ...segments)
+          if (!full.startsWith(resolve(target) + sep)) {
+            return { ok: false, message: '素材包文件路径不合法，已取消导出' }
+          }
           mkdirSync(dirname(full), { recursive: true })
           writeFileSync(full, file.content, 'utf8')
         }

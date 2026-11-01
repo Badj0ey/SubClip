@@ -21,6 +21,8 @@ export const useClipStore = defineStore('clip', {
     clips: [] as ClipTask[],
     /** 切片历史（最近 200 条），用于查失败与一键重试 */
     history: [] as SliceHistoryEntry[],
+    /** 正在提交「加入切片任务」（防连点重复建任务） */
+    enqueuing: false,
 
     /* ------------------------------ ffmpeg 状态 ------------------------------ */
     ffmpegReady: false,
@@ -80,6 +82,7 @@ export const useClipStore = defineStore('clip', {
     async enqueueCurrentRanges(notePrefix?: string): Promise<void> {
       const ui = useUiStore()
       const sub = useSubtitleStore()
+      if (this.enqueuing) return
       if (!sub.doc || !sub.video) {
         ui.showToast('请先打开一个字幕文档', 'error')
         return
@@ -88,42 +91,56 @@ export const useClipStore = defineStore('clip', {
         ui.showToast('还没有选中任何字幕', 'error')
         return
       }
-      const res = await window.api.addClips({
-        docId: sub.doc.id,
-        bvid: sub.video.bvid || '',
-        page: sub.doc.page || 1,
-        ranges: sub.ranges.map((r) => ({ start: r.start, end: r.end, segments: r.segments })),
-        notePrefix: notePrefix || sub.video.title || 'clip'
-      })
-      if (!res.ok) {
-        ui.showToast(res.message || '加入切片任务失败', 'error')
-        return
+      // 防连点：提交期间挡住重复请求，避免同一批范围被加两遍
+      this.enqueuing = true
+      try {
+        const res = await window.api.addClips({
+          docId: sub.doc.id,
+          bvid: sub.video.bvid || '',
+          page: sub.doc.page || 1,
+          ranges: sub.ranges.map((r) => ({ start: r.start, end: r.end, segments: r.segments })),
+          notePrefix: notePrefix || sub.video.title || 'clip'
+        })
+        if (!res.ok) {
+          ui.showToast(res.message || '加入切片任务失败', 'error')
+          return
+        }
+        await this.loadClips()
+        // 加片段的同时也排了任务 → 队列变了，让剪辑任务页跟着更新
+        await useJobsStore().load()
+        ui.showToast(`已加入 ${res.data?.count ?? 0} 条切片任务`, 'success')
+      } finally {
+        this.enqueuing = false
       }
-      await this.loadClips()
-      // 加片段的同时也排了任务 → 队列变了，让剪辑任务页跟着更新
-      await useJobsStore().load()
-      ui.showToast(`已加入 ${res.data?.count ?? 0} 条切片任务`, 'success')
     },
 
-    /** 单独把某一条字幕加进切片任务（右键菜单用） */
+    /**
+     * 单独把某一条字幕加进切片任务（右键菜单用）。
+     * bvid/备注不在这里传：主进程按 docId 反查所属视频，合并阅读视图里
+     * 当前视频与字幕所属视频不一致时也不会挂错。
+     */
     async enqueueOne(cueStart: number, cueEnd: number, page: number, docId: number): Promise<void> {
       const ui = useUiStore()
-      const sub = useSubtitleStore()
-      const res = await window.api.addClips({
-        docId,
-        bvid: sub.video?.bvid ?? '',
-        page,
-        ranges: [{ start: cueStart, end: cueEnd }],
-        notePrefix: sub.video?.title || 'clip'
-      })
-      if (!res.ok) {
-        ui.showToast(res.message || '加入切片任务失败', 'error')
-        return
+      if (this.enqueuing) return
+      this.enqueuing = true
+      try {
+        const res = await window.api.addClips({
+          docId,
+          bvid: '',
+          page,
+          ranges: [{ start: cueStart, end: cueEnd }]
+        })
+        if (!res.ok) {
+          ui.showToast(res.message || '加入切片任务失败', 'error')
+          return
+        }
+        await this.loadClips()
+        // 单选加入同样会排任务
+        await useJobsStore().load()
+        ui.showToast('已加入 1 条切片任务', 'success')
+      } finally {
+        this.enqueuing = false
       }
-      await this.loadClips()
-      // 单选加入同样会排任务
-      await useJobsStore().load()
-      ui.showToast('已加入 1 条切片任务', 'success')
     },
 
     async remove(id: number): Promise<void> {
@@ -279,27 +296,29 @@ export const useClipStore = defineStore('clip', {
       const ui = useUiStore()
       const jobs = useJobsStore()
       if (ui.sliceRunning) return
-      if (!jobs.jobs.length) await jobs.load()
-      const pending = jobs.pending.filter((j) => !jobIds?.length || jobIds.includes(j.id))
-      if (!pending.length) {
-        ui.showToast('待处理队列为空', 'error')
-        return
-      }
-      if (!this.ffmpegReady) {
-        ui.showToast('未检测到 ffmpeg，请先在「设置 → 本地切片」中配置', 'error', 5200)
-        return
-      }
-      const usable = pending.filter((j) => Boolean(j.bvid))
-      if (!usable.length) {
-        ui.showToast('所有任务都缺少 BV 号，无法切片', 'error', 5200)
-        return
-      }
-
+      // 先置「运行中」再等待数据：双击时第二个调用会在上面的守卫被拦下，
+      // 不会出现两个切片进程并行跑同一批任务。
       ui.sliceRunning = true
-      ui.sliceProgress = null
-      ui.sliceResult = null
-
       try {
+        if (!jobs.jobs.length) await jobs.load()
+        const pending = jobs.pending.filter((j) => !jobIds?.length || jobIds.includes(j.id))
+        if (!pending.length) {
+          ui.showToast('待处理队列为空', 'error')
+          return
+        }
+        if (!this.ffmpegReady) {
+          ui.showToast('未检测到 ffmpeg，请先在「设置 → 本地切片」中配置', 'error', 5200)
+          return
+        }
+        const usable = pending.filter((j) => Boolean(j.bvid))
+        if (!usable.length) {
+          ui.showToast('所有任务都缺少 BV 号，无法切片', 'error', 5200)
+          return
+        }
+
+        ui.sliceProgress = null
+        ui.sliceResult = null
+
         const res = await window.api.sliceRun(
           usable.map((j) => ({
             bvid: j.bvid,

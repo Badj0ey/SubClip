@@ -7,6 +7,7 @@ import { useAiStore } from '../stores/ai'
 import { useTagsStore } from '../stores/tags'
 import { useSubtitleStore } from '../stores/subtitle'
 import { useUiStore } from '../stores/ui'
+import { useResourceStore } from '../stores/resource'
 import { enqueueCurrentRanges, exportSlice, openSliceOutput, ranges, state } from '../store'
 import AiPanel from './AiPanel.vue'
 import DanmakuPanel from './DanmakuPanel.vue'
@@ -47,10 +48,14 @@ async function applyTagSuggestions(names: string[]): Promise<void> {
   const video = subtitle.video
   if (!video) return
   const ids: number[] = []
+  // 批量建标签时逐条走「静默模式」，循环结束后统一刷一次标签列表与资源树，
+  // 避免每条建议都触发两次全库 IPC（AI 一次会给 5 条建议，那就是 10 次）。
   for (const name of names) {
-    const id = await tags.create(name)
+    const id = await tags.create(name, true)
     if (id) ids.push(id)
   }
+  await tags.load()
+  await useResourceStore().load()
   if (ids.length) await tags.addToVideos([video.id], ids)
   ai.clearTagSuggestions()
 }

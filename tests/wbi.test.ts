@@ -228,9 +228,12 @@ check('Origin 白名单拒绝伪装域名与非 B站来源', () => {
   }
 })
 
-check('没有 Origin 的非浏览器客户端仍放行', () => {
-  assert.strictEqual(isBridgeOriginAllowed(undefined), true)
-  assert.strictEqual(isBridgeOriginAllowed(''), true)
+check('没有 Origin 的非浏览器客户端默认拒绝（本地进程可伪造 Origin，不能只靠它拦）', () => {
+  assert.strictEqual(isBridgeOriginAllowed(undefined), false)
+  assert.strictEqual(isBridgeOriginAllowed(''), false)
+  // 显式关闭校验（allowedOrigins: []）时一切来源都放行，测试环境专用
+  assert.strictEqual(isBridgeOriginAllowed(undefined, []), true)
+  assert.strictEqual(isBridgeOriginAllowed('https://evil.example', []), true)
 })
 
 console.log(`\n通过 ${passed}，失败 ${failed}\n`)

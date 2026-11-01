@@ -85,7 +85,7 @@ async function run(): Promise<void> {
   })
 
   /* ------------------------------ 连接与握手 ------------------------------ */
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
   const inbox: any[] = []
   ws.on('message', (raw) => inbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {
@@ -497,7 +497,7 @@ async function run(): Promise<void> {
   const pageDocs = (): number[] => db.listDocsByVideo(targetVideo!.id).map((d) => d.page)
 
   const noTokenInbox: any[] = []
-  const noToken = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const noToken = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
   noToken.on('message', (raw) => noTokenInbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {
     noToken.on('open', () => resolve())
@@ -529,7 +529,7 @@ async function run(): Promise<void> {
   })
 
   const withTokenInbox: any[] = []
-  const withToken = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const withToken = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
   withToken.on('message', (raw) => withTokenInbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {
     withToken.on('open', () => resolve())
@@ -567,7 +567,7 @@ async function run(): Promise<void> {
   /* --------------------- 合集页检测 与 插件「请桌面端拉取」 --------------------- */
 
   const pullInbox: any[] = []
-  const pullWs = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const pullWs = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
   pullWs.on('message', (raw) => pullInbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {
     pullWs.on('open', () => resolve())
@@ -673,7 +673,7 @@ async function run(): Promise<void> {
   /* --------------- 协议版本倒挂与能力校验（第七阶段，v5） --------------- */
 
   // 声明了能力表、但**故意不声明** pageInfo 的连接
-  const capsWs = new WebSocket(`ws://127.0.0.1:${PORT}`)
+  const capsWs = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
   const capsInbox: any[] = []
   capsWs.on('message', (raw) => capsInbox.push(JSON.parse(raw.toString())))
   await new Promise<void>((resolve, reject) => {

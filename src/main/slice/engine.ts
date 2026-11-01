@@ -57,6 +57,22 @@ export interface SliceTaskInput {
 
 export type SlicePhase = 'resolve' | 'download' | 'cut' | 'mux' | 'done' | 'error'
 
+/**
+ * 输出文件路径去重：目标已存在时加 `-2`/`-3` 后缀，绝不覆盖已有文件。
+ * 与 publishKit.uniqueDir 同思路——覆盖是唯一不可逆的操作。
+ */
+function uniqueOutputPath(base: string): string {
+  if (!existsSync(base)) return base
+  const dot = base.lastIndexOf('.')
+  const stem = dot > base.lastIndexOf('/') && dot > base.lastIndexOf('\\') ? base.slice(0, dot) : base
+  const ext = stem === base ? '' : base.slice(dot)
+  for (let i = 2; i < 100; i++) {
+    const candidate = `${stem}-${i}${ext}`
+    if (!existsSync(candidate)) return candidate
+  }
+  return `${stem}-${Date.now()}${ext}`
+}
+
 export interface SliceProgress {
   index: number
   total: number
@@ -336,7 +352,9 @@ export async function runSliceTasks(
 
     try {
       report('resolve', 3)
-      const output = join(outDir, `${sanitizeFileName(label)}.mp4`)
+      // 同名文件不覆盖：重跑同一条切片（或不同片段备注撞名）时加 -2/-3 后缀，
+      // 覆盖用户已有的导出是最容易造成不可逆损失的操作（与 kit:export 的 uniqueDir 同理）。
+      const output = uniqueOutputPath(join(outDir, `${sanitizeFileName(label)}.mp4`))
 
       if (segments.length === 1) {
         await sliceSegment(ctx, task.bvid, segments[0], output, stamp, task.subtitleSegments?.[0])

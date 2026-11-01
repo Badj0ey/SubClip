@@ -103,7 +103,8 @@ interface DocRow {
 
 interface ClipRow {
   id: number
-  doc_id: number
+  /** JSON 导入的任务没有对应文档，此列为 null */
+  doc_id: number | null
   bvid: string
   page: number
   start: number
@@ -448,8 +449,10 @@ create index if not exists idx_cues_doc on cues(doc_id);
 
 create table if not exists clips (
   id integer primary key autoincrement,
-  -- 外键带级联：删文档时它的切片任务必须一起走，否则会留下指向不存在文档的孤儿任务
-  doc_id integer not null references docs(id) on delete cascade,
+  -- 外键带级联：删文档时它的切片任务必须一起走，否则会留下指向不存在文档的孤儿任务。
+  -- 可空：JSON 导入的任务没有对应文档（doc_id 记 null，读出时归零），
+  -- 老库的 not null 由 runSchemaMigrations 里的重建迁移去掉。
+  doc_id integer references docs(id) on delete cascade,
   bvid text not null default '',
   page integer not null,
   start real not null,
@@ -834,6 +837,57 @@ function runSchemaMigrations(): void {
     handle.exec('alter table videos add column centroid blob')
   }
   clearCorruptCentroids()
+  migrateClipsDocIdNullable()
+}
+
+/**
+ * clips.doc_id 改为可空：JSON 导入的任务没有对应文档。
+ *
+ * SQLite 不能直接改列约束，老库需要重建表。重建时**所有行原样保留**
+ * （列显式列出，顺序无关），clip_tags 的外键在重命名后依然指向 `clips`。
+ * 唯一要注意的是 `drop table clips` 会触发 FK 级联 —— 所以整个重建在
+ * `foreign_keys=OFF` 下进行（pragma 不能在事务内改，故包在最外层）。
+ */
+function migrateClipsDocIdNullable(): void {
+  const handle = requireDb()
+  const cols = handle.prepare('pragma table_info(clips)').all() as unknown as Array<{
+    name: string
+    notnull: number
+  }>
+  const docCol = cols.find((c) => c.name === 'doc_id')
+  if (!docCol || docCol.notnull === 0) return
+
+  handle.exec('pragma foreign_keys = OFF')
+  try {
+    withTransaction(() => {
+      handle.exec(`
+        create table clips_new (
+          id integer primary key autoincrement,
+          doc_id integer references docs(id) on delete cascade,
+          bvid text not null default '',
+          page integer not null,
+          start real not null,
+          end real not null,
+          note text not null,
+          segments text,
+          sort_order integer not null default 0,
+          name text not null default '',
+          source text not null default 'manual',
+          favorite integer not null default 0,
+          created_at integer not null
+        );
+        insert into clips_new
+          (id, doc_id, bvid, page, start, end, note, segments, sort_order, name, source, favorite, created_at)
+          select id, doc_id, bvid, page, start, end, note, segments, sort_order, name, source, favorite, created_at
+          from clips;
+        drop table clips;
+        alter table clips_new rename to clips;
+        create index if not exists idx_clips_doc on clips(doc_id);
+      `)
+    })
+  } finally {
+    handle.exec('pragma foreign_keys = ON')
+  }
 }
 
 /**
@@ -1113,7 +1167,8 @@ function migrateFromJson(dataDir: string, userDataDir: string): void {
       for (const c of rows<Record<string, unknown>>('clips')) {
         insClip.run(
           Number(c.id),
-          Number(c.docId),
+          // 老备份里可能有 docId=0 的「无文档」片段，落库时记 null（见 migrateClipsDocIdNullable）
+          Number(c.docId) === 0 ? null : Number(c.docId),
           String(c.bvid ?? ''),
           Number(c.page ?? 1),
           Number(c.start ?? 0),
@@ -1502,11 +1557,16 @@ export function searchCuesPage(
     join videos v on v.id = d.video_id
     left join collections col on col.id = v.collection_id
     where ${where}
-    order by hitWeight desc, v.created_at desc, c.doc_id asc, c.idx asc`
+    order by hitWeight desc, v.created_at desc, c.doc_id asc, c.idx asc
+    limit ?`
 
+  // 命中总数最多只会报告 CAP 条，SQL 层取 CAP+1 行就够用：
+  // 短关键词（「我」「的」这类）命中全表时，不再把数十万行物化进内存。
   let rows: Array<Record<string, unknown>> = []
   try {
-    rows = handle.prepare(sql).all(like, like, ...params) as Array<Record<string, unknown>>
+    rows = handle
+      .prepare(sql)
+      .all(like, like, ...params, CUE_SEARCH_COUNT_CAP + 1) as Array<Record<string, unknown>>
   } catch {
     // FTS 语法问题（例如查询串里带特殊字符）时退回 LIKE，语义等价
     if (kw.length >= 3) {
@@ -2332,7 +2392,7 @@ export function importNode(snap: NodeSnapshot): number {
     for (const c of snap.clips ?? []) {
       insClip.run(
         c.id,
-        c.doc_id,
+        c.doc_id === 0 ? null : c.doc_id,
         c.bvid,
         c.page,
         c.start,
@@ -2430,7 +2490,8 @@ function toClip(r: ClipRow): ClipTask {
     r.source === 'search' || r.source === 'slice' ? r.source : 'manual'
   return {
     id: r.id,
-    docId: r.doc_id,
+    // 无文档来源（JSON 导入）时 docId 归零，保持对外的「0 = 无文档」约定
+    docId: r.doc_id == null ? 0 : r.doc_id,
     bvid: r.bvid,
     page: r.page,
     start: r.start,
@@ -2473,7 +2534,8 @@ export function addClips(tasks: NewClipTask[], withPendingJob = false): number {
   const run = (): number => {
     tasks.forEach((t) => {
       const res = ins.run(
-        t.docId,
+        // docId 0 = 无文档来源（JSON 导入的任务），落库时记 null（列可空，见迁移）
+        t.docId === 0 ? null : t.docId,
         t.bvid,
         t.page,
         t.start,
@@ -2676,6 +2738,8 @@ function toExportJob(r: ExportJobRow): ExportJob {
 
 /** 按 id 把片段排进导出队列（已被排过的片段不会重复排队） */
 export function enqueueExportJobsFromClips(clipIds: number[]): number {
+  // 空数组会产生 `where id in ()` 的 SQL 语法错误，直接短路
+  if (!clipIds.length) return 0
   const handle = requireDb()
   const all = handle
     .prepare('select * from clips where id in (' + clipIds.map(() => '?').join(',') + ')')
@@ -3396,16 +3460,21 @@ export interface ChunkMeta {
  *
  * 幂等：已有段落的文档直接跳过（所以可以反复调用）。
  * 合并规则：同一分P 内，相邻字幕间隔不超过 3 秒且总时长不超过窗口（默认 45 秒）就并入同一段。
+ *
+ * @param limit 单次最多处理多少篇文档（0 = 不限）。建索引入口用它分批调用、
+ *              每批之间让出事件循环，避免大库一次性切分把主进程卡住。
  */
-export function buildSemanticChunks(windowSeconds = 45): number {
+export function buildSemanticChunks(windowSeconds = 45, limit = 0, offset = 0): number {
   const handle = requireDb()
-  const docs = handle
-    .prepare(
-      `select d.id as id, d.video_id as videoId, d.page as page
-       from docs d
-       where not exists (select 1 from semantic_chunks c where c.doc_id = d.id)`
-    )
-    .all() as unknown as Array<{ id: number; videoId: number; page: number }>
+  const baseSql =
+    `select d.id as id, d.video_id as videoId, d.page as page
+     from docs d
+     where not exists (select 1 from semantic_chunks c where c.doc_id = d.id)`
+  const docs = (
+    limit > 0
+      ? handle.prepare(`${baseSql} limit ? offset ?`).all(limit, offset)
+      : handle.prepare(baseSql).all()
+  ) as unknown as Array<{ id: number; videoId: number; page: number }>
   if (!docs.length) return 0
 
   const ins = handle.prepare(

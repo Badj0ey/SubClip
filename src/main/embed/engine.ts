@@ -30,6 +30,8 @@ import { downloadModel, isModelReady, modelDir, modelSizeMb, removeModel } from 
 
 /** 一批处理多少段落（太大卡顿，太小开销高） */
 const BATCH = 32
+/** 一次切分多少篇文档的段落（切分是纯同步的库操作，分批 + 让出事件循环防卡界面） */
+const CHUNK_DOCS_PER_BATCH = 64
 
 interface WorkerRequest {
   id: number
@@ -189,8 +191,13 @@ export async function startIndexing(): Promise<void> {
   busy = 'loading'
   message = '正在加载模型…'
   try {
-    // 段落切分：把所有还没有段落的文档切一遍（便宜，先做掉）
-    db.buildSemanticChunks()
+    // 段落切分：把所有还没有段落的文档切一遍（便宜，先做掉）。
+    // 分批切、批间让出事件循环：大库一次性切分是「全库字幕读入内存 + 逐条插表」，
+    // 会阻塞主进程数秒；分批后每批只需几十毫秒，界面与插件通信不被饿死。
+    for (;;) {
+      if (db.buildSemanticChunks(45, CHUNK_DOCS_PER_BATCH) === 0) break
+      await new Promise((r) => setImmediate(r))
+    }
     busy = 'indexing'
     for (;;) {
       if (stopRequested) {

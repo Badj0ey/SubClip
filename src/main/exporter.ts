@@ -14,8 +14,11 @@ export type SliceRow = SliceRowLike
 export const SLICE_HEADER = ['BV号', '分P', '开始时间', '结束时间', '备注(文件名)']
 
 function csvCell(value: string): string {
-  if (/[",\r\n]/.test(value)) return `"${value.replace(/"/g, '""')}"`
-  return value
+  // 防公式注入：以 = + - @ 开头的单元格会被 Excel 当公式执行。
+  // 前面加单引号强制按文本处理（OWASP CSV Injection 标准做法）。
+  const safe = /^[=+\-@\t]/.test(value) ? `'${value}` : value
+  if (/[",\r\n]/.test(safe)) return `"${safe.replace(/"/g, '""')}"`
+  return safe
 }
 
 /** 生成 CSV 文本（带 BOM，Excel 直接打开不乱码） */
@@ -24,7 +27,8 @@ export function toCsv(rows: SliceRow[]): string {
   for (const r of rows) {
     lines.push(
       [
-        r.bvid,
+        // bvid 同样走 csvCell：导入的 JSON 里 bvid 未做格式校验，防公式注入
+        csvCell(r.bvid ?? ''),
         String(r.page),
         formatTime(r.start),
         formatTime(r.end),
@@ -45,7 +49,8 @@ export function writeXlsx(path: string, rows: SliceRow[]): void {
   const XLSX = require('xlsx') as typeof import('xlsx')
   const aoa: (string | number)[][] = [SLICE_HEADER]
   for (const r of rows) {
-    aoa.push([r.bvid, r.page, formatTime(r.start), formatTime(r.end), r.note ?? ''])
+    // 与 CSV 同理：= 开头的值在 Excel 里会被当公式，前面加单引号强制按文本处理
+    aoa.push([csvCell(r.bvid ?? ''), r.page, formatTime(r.start), formatTime(r.end), csvCell(r.note ?? '')])
   }
   const ws = XLSX.utils.aoa_to_sheet(aoa)
   ws['!cols'] = [{ wch: 16 }, { wch: 6 }, { wch: 12 }, { wch: 12 }, { wch: 36 }]

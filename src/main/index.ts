@@ -1,4 +1,4 @@
-import { app, BrowserWindow, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, session, shell } from 'electron'
 import { cpSync, existsSync, renameSync, rmSync, statSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { APP_DATA_DIR } from '@shared/constants'
@@ -223,6 +223,19 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
+}).catch((err) => {
+  // 启动期异常（数据库损坏、磁盘满、迁移失败）要有兜底：
+  // 没有它时 unhandled rejection 会让主进程静默退出，用户只会看到「打不开」。
+  try {
+    dialog.showErrorBox(
+      '字幕剪启动失败',
+      `启动时遇到问题：${(err as Error)?.message ?? String(err)}\n\n` +
+        '请先尝试重启应用；若反复出现，可备份数据目录后联系开发者。'
+    )
+  } catch {
+    /* 弹不出来就安静退出，至少不再留下无提示的崩溃 */
+  }
+  app.quit()
 })
 
 app.on('window-all-closed', () => {
@@ -238,4 +251,10 @@ app.on('before-quit', () => {
   closeDb()
   // Embedding worker 是一条活线程，不收掉 Electron 不会真正退出
   void shutdownEmbed()
+})
+
+// 兜底：漏网的 unhandled rejection 记日志，而不是让主进程静默退出
+// （切片进行中被意外杀掉，用户拿到的会是半截文件）。
+process.on('unhandledRejection', (reason) => {
+  console.error('[subclip] unhandledRejection:', reason)
 })

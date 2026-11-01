@@ -138,7 +138,9 @@ export function loadSettings(): AppSettings {
 }
 
 export function saveSettings(patch: Partial<AppSettings>): AppSettings {
-  const merged = { ...loadSettings(), ...patch }
+  // 渲染进程不可信（本项目的既定安全模型）：只接受已知键，
+  // 并对 URL / 路径 / 端口这类高危字段做值校验，非法值直接丢弃（保持旧值）。
+  const merged = { ...loadSettings(), ...sanitizePatch(patch) }
   const p = settingsPath()
   mkdirSync(dirname(p), { recursive: true })
   const temp = `${p}.${randomUUID()}.tmp`
@@ -150,4 +152,38 @@ export function saveSettings(patch: Partial<AppSettings>): AppSettings {
     throw err
   }
   return merged
+}
+
+const SETTINGS_KEYS = new Set(Object.keys(defaultSettings()))
+
+/**
+ * 设置键白名单 + 高危字段值校验。
+ *
+ * - 未知键：丢弃（防止被攻陷的渲染进程往设置文件里塞任意内容）；
+ * - port：1~65535 整数，否则丢弃（非法端口会被持久化，导致 bridge 停服）；
+ * - URL 类：必须是 http(s)（防止 aiOpenaiUrl 被改指向攻击者服务器，API Key 外泄）；
+ * - embedModel：拒绝 `..` / 反斜杠 / 盘符（它会被拼进缓存目录路径）。
+ */
+function sanitizePatch(patch: Partial<AppSettings>): Partial<AppSettings> {
+  const out: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(patch)) {
+    if (!SETTINGS_KEYS.has(key)) continue
+    if (key === 'port') {
+      const p = Number(value)
+      if (Number.isInteger(p) && p >= 1 && p <= 65535) out[key] = p
+      continue
+    }
+    if (key === 'aiOpenaiUrl' || key === 'aiOllamaUrl' || key === 'embedHost') {
+      const s = String(value ?? '').trim()
+      if (/^https?:\/\//i.test(s)) out[key] = s
+      continue
+    }
+    if (key === 'embedModel') {
+      const s = String(value ?? '').trim()
+      if (s && !s.includes('..') && !s.includes('\\') && !/^[A-Za-z]:/.test(s)) out[key] = s
+      continue
+    }
+    out[key] = value
+  }
+  return out as Partial<AppSettings>
 }

@@ -26,6 +26,12 @@ export function hitKey(hit: CueSearchHit): string {
 }
 
 /**
+ * 检索请求序号（模块级，不进响应式）：每次发起检索都自增，
+ * 结果返回时序号不匹配说明有更新的检索在跑，丢弃本次结果防乱序覆盖。
+ */
+let searchSeq = 0
+
+/**
  * 高级筛选（第四阶段）。
  *
  * 这些都是**服务端（SQL）筛选**，不是拿回来再过滤：
@@ -178,9 +184,11 @@ export const useSearchStore = defineStore('search', {
         ui.showToast('请输入要检索的关键词', 'error')
         return
       }
+      const seq = ++searchSeq
       this.searching = true
       try {
         const page = await window.api.searchLibrary(this.buildQuery(0))
+        if (seq !== searchSeq) return // 期间又发起过新检索，丢弃本次结果
         this.results = page.hits
         this.total = page.total
         this.totalCapped = Boolean(page.totalCapped)
@@ -189,17 +197,19 @@ export const useSearchStore = defineStore('search', {
         this.selected = new Set<string>()
         this.done = true
       } finally {
-        this.searching = false
+        if (seq === searchSeq) this.searching = false
       }
     },
 
     /** 加载下一页并追加（「加载更多」按钮） */
     async loadMore(): Promise<void> {
       if (!this.hasMore || this.searching) return
+      const seq = ++searchSeq
       this.searching = true
       try {
         const next = this.page + 1
         const page = await window.api.searchLibrary(this.buildQuery(next * SEARCH_PAGE_SIZE))
+        if (seq !== searchSeq) return // 期间发起过新检索，丢弃本次结果
         // 去重后追加（排序稳定，理论上不会重复，但不去重一旦重复就是难以察觉的脏数据）
         const seen = new Set(this.results.map(hitKey))
         this.results = [...this.results, ...page.hits.filter((h) => !seen.has(hitKey(h)))]
@@ -208,7 +218,7 @@ export const useSearchStore = defineStore('search', {
         this.hasMore = page.hasMore
         this.page = next
       } finally {
-        this.searching = false
+        if (seq === searchSeq) this.searching = false
       }
     },
 

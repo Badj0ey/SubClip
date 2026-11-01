@@ -66,24 +66,59 @@ export function resolveFfmpeg(): string | null {
 export function runFfmpeg(
   bin: string,
   args: string[],
-  opts: { onLog?: (line: string) => void; signal?: AbortSignal } = {}
+  opts: {
+    onLog?: (line: string) => void
+    signal?: AbortSignal
+    /** 无输出多久判为卡死（毫秒），默认 10 分钟（ffmpeg 正常时持续刷统计行） */
+    idleTimeoutMs?: number
+  } = {}
 ): Promise<void> {
-  const { onLog, signal } = opts
+  const { onLog, signal, idleTimeoutMs = 10 * 60_000 } = opts
   return new Promise((resolve, reject) => {
     const child = spawn(bin, args, { windowsHide: true })
     let tail = ''
+
+    // 卡死兜底：ffmpeg 正常工作时会持续往 stderr 刷统计行；
+    // 长时间没有任何输出说明它已挂住，杀掉并让任务明确报错而不是无限等待。
+    const killHang = (): void => {
+      try {
+        child.kill('SIGKILL')
+      } catch {
+        /* ignore */
+      }
+      reject(
+        new Error(`ffmpeg 长时间无输出（超过 ${Math.round(idleTimeoutMs / 60000)} 分钟），已中止`)
+      )
+    }
+    let idleTimer: NodeJS.Timeout | null = setTimeout(killHang, idleTimeoutMs)
+    const poke = (): void => {
+      if (!idleTimer) return
+      clearTimeout(idleTimer)
+      idleTimer = setTimeout(killHang, idleTimeoutMs)
+    }
+    const stopIdle = (): void => {
+      if (idleTimer) {
+        clearTimeout(idleTimer)
+        idleTimer = null
+      }
+    }
 
     child.stderr?.on('data', (chunk: Buffer) => {
       const text = chunk.toString()
       tail = (tail + text).slice(-6000)
       onLog?.(text)
+      poke()
     })
     child.stdout?.on('data', () => {
-      /* 忽略 */
+      poke()
     })
 
-    child.on('error', (err) => reject(new Error(`无法启动 ffmpeg：${err.message}`)))
+    child.on('error', (err) => {
+      stopIdle()
+      reject(new Error(`无法启动 ffmpeg：${err.message}`))
+    })
     child.on('close', (code) => {
+      stopIdle()
       if (code === 0) resolve()
       else reject(new Error(`ffmpeg 退出码 ${code}\n${tail.slice(-1000)}`))
     })

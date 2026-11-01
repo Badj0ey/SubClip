@@ -57,6 +57,8 @@ async function save(): Promise<void> {
     state.tree = await window.api.setVideoTags(props.videoId, [...checked.value])
     toast(`已更新标签（${checkedCount.value} 个）`, 'success')
     emit('close')
+  } catch (err) {
+    toast(`保存标签失败：${(err as Error).message}`, 'error', 4200)
   } finally {
     busy.value = false
   }

@@ -30,10 +30,12 @@ export const useAiStore = defineStore('ai', {
     summaryProvider: '',
     /** 当前展示的标签建议（未审核） */
     tagSuggestions: [] as AiTagSuggestion[],
-    /** 逐句解释（按字幕序号缓存，避免来回点重复请求） */
-    explanations: {} as Record<number, string>,
-    /** 解释弹窗当前显示的那条 */
-    explainIndex: null as number | null
+    /** 逐句解释（缓存键按「文档+序号」，避免合并视图里不同文档的解释互相串） */
+    explanations: {} as Record<string, string>,
+    /** 解释弹窗当前显示的那条（字幕序号） */
+    explainIndex: null as number | null,
+    /** 解释弹窗当前显示的文档（与 explainIndex 组合成缓存键、定位字幕） */
+    explainDocId: null as number | null
   }),
 
   getters: {
@@ -51,6 +53,12 @@ export const useAiStore = defineStore('ai', {
       const model =
         s.provider === 'ollama' ? s.models[0] ?? '' : s.models[0] ?? ''
       return `已连接${model ? ` · ${model}` : ''}（${s.latencyMs} 毫秒）`
+    },
+    /** 当前弹窗那条解释的缓存键（没有弹窗时为 ''） */
+    explanationKey(state): string {
+      return state.explainIndex != null && state.explainDocId != null
+        ? `${state.explainDocId}:${state.explainIndex}`
+        : ''
     }
   },
 
@@ -149,11 +157,13 @@ export const useAiStore = defineStore('ai', {
       }
     },
 
-    /** 逐句解释（先看缓存） */
+    /** 逐句解释（先看缓存，缓存键按「文档:序号」隔离不同文档的同序号字幕） */
     async explain(docId: number, index: number, text: string): Promise<void> {
       const ui = useUiStore()
+      const key = `${docId}:${index}`
+      this.explainDocId = docId
       this.explainIndex = index
-      if (this.explanations[index]) return
+      if (this.explanations[key]) return
       if (!this.ready) {
         ui.showToast(this.statusText, 'error', 5200)
         return
@@ -168,7 +178,7 @@ export const useAiStore = defineStore('ai', {
         if (hit) {
           const parsed = JSON.parse(hit.payload) as { text?: string }
           if (parsed.text) {
-            this.explanations = { ...this.explanations, [index]: parsed.text }
+            this.explanations = { ...this.explanations, [key]: parsed.text }
             return
           }
         }
@@ -184,7 +194,7 @@ export const useAiStore = defineStore('ai', {
           return
         }
         const value = String((res.data as AiResult).value)
-        this.explanations = { ...this.explanations, [index]: value }
+        this.explanations = { ...this.explanations, [key]: value }
       } finally {
         this.busyKind = ''
       }
@@ -192,6 +202,7 @@ export const useAiStore = defineStore('ai', {
 
     closeExplain(): void {
       this.explainIndex = null
+      this.explainDocId = null
     },
 
     clearTagSuggestions(): void {

@@ -84,7 +84,9 @@ export const BRIDGE_ALLOWED_ORIGINS = ['https://*.bilibili.com']
 /**
  * Origin 是否在白名单里。
  *
- * - 没有 Origin 头的是非浏览器客户端（调试脚本 / 命令行），保持放行；
+ * - 没有 Origin 头的一律拒绝：浏览器发起的 WebSocket 握手必带 Origin，
+ *   不带的只可能是本地原生程序（调试脚本 / 命令行）——它们可以随意伪造
+ *   Origin，所以「缺失默认拒绝」只是第一道闸门，真正的屏障是配对令牌；
  * - 白名单为空表示不限制（测试或用户显式配置）；
  * - 支持 `*` 通配，但必须整串匹配。
  */
@@ -92,8 +94,8 @@ export function isBridgeOriginAllowed(
   origin: string | undefined,
   allowed: readonly string[] = BRIDGE_ALLOWED_ORIGINS
 ): boolean {
-  if (!origin) return true
   if (!allowed.length) return true
+  if (!origin) return false
   return allowed.some((pattern) => {
     if (pattern === origin) return true
     if (!pattern.includes('*')) return false

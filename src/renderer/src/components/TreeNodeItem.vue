@@ -1,13 +1,23 @@
 <script setup lang="ts">
-import { computed, nextTick, ref } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import type { TreeNode } from '@shared/types'
 import { state } from '../store'
 
 defineOptions({ name: 'TreeNodeItem' })
 
-const props = withDefaults(defineProps<{ node: TreeNode; depth: number; forceOpen?: boolean }>(), {
-  forceOpen: false
-})
+const props = withDefaults(
+  defineProps<{
+    node: TreeNode
+    depth: number
+    forceOpen?: boolean
+    /** 外部（右键菜单）请求进入内联重命名：{ key, n } 匹配节点 key 时触发 */
+    renameRequest?: { key: string; n: number } | null
+  }>(),
+  {
+    forceOpen: false,
+    renameRequest: null
+  }
+)
 const emit = defineEmits<{
   (e: 'open', node: TreeNode): void
   (e: 'delete', node: TreeNode): void
@@ -33,6 +43,15 @@ function startRename(): void {
 }
 
 let cancelled = false
+
+// 右键菜单「重命名」的落点：菜单在 ResourceTree 层，通过 renameRequest 传下来，
+// 匹配到自己的 key 时进入内联编辑（此前用派发 dblclick 的方式，但本组件没有 dblclick 监听，点了没反应）。
+watch(
+  () => props.renameRequest,
+  (req) => {
+    if (req && req.key === props.node.key) startRename()
+  }
+)
 
 function commitRename(): void {
   if (cancelled) {
@@ -190,6 +209,7 @@ function onKeydown(e: KeyboardEvent): void {
         :node="child"
         :depth="depth + 1"
         :force-open="forceOpen"
+        :rename-request="renameRequest"
         @open="(n) => emit('open', n)"
         @delete="(n) => emit('delete', n)"
         @favorite="(n) => emit('favorite', n)"

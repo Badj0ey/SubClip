@@ -79,11 +79,20 @@ const composeOutput = ref('')
 let offProgress: (() => void) | null = null
 let offDone: (() => void) | null = null
 
+/** 退订合成进度事件（失败路径与正常完成都会走到，幂等） */
+function detachCompose(): void {
+  offProgress?.()
+  offDone?.()
+  offProgress = null
+  offDone = null
+}
+
 async function compose(): Promise<void> {
   if (selectedIds.value.length < 2) {
     ui.showToast('至少需要两条片段才能拼成成片', 'error')
     return
   }
+  detachCompose()
   composing.value = true
   composePercent.value = 0
   composeOutput.value = ''
@@ -107,10 +116,7 @@ async function compose(): Promise<void> {
         composeMessage.value += `（已保留 ${r.keptIntermediate.length} 个中间文件，便于排查）`
       }
     }
-    offProgress?.()
-    offDone?.()
-    offProgress = null
-    offDone = null
+    detachCompose()
   })
   const res = await window.api.composeRun({
     clipIds: selectedIds.value,
@@ -118,6 +124,7 @@ async function compose(): Promise<void> {
   })
   if (!res.ok) {
     composing.value = false
+    detachCompose()
     ui.showToast(res.message || '无法开始合成', 'error')
   }
 }
@@ -128,8 +135,7 @@ async function cancelCompose(): Promise<void> {
 }
 
 onUnmounted(() => {
-  offProgress?.()
-  offDone?.()
+  detachCompose()
 })
 
 const selectedIds = computed(() =>
@@ -303,7 +309,13 @@ function useCurrentTitle(): void {
                 :key="c.id"
                 class="kit-clip"
                 :class="{ off: excluded.has(c.id) }"
+                role="checkbox"
+                :aria-checked="!excluded.has(c.id)"
+                tabindex="0"
+                :aria-label="`${c.name}，${formatTime(c.start)} 到 ${formatTime(c.end)}${excluded.has(c.id) ? '（已排除）' : ''}`"
                 @click="toggle(c.id)"
+                @keydown.enter.prevent="toggle(c.id)"
+                @keydown.space.prevent="toggle(c.id)"
               >
                 <span class="kit-order">{{ excluded.has(c.id) ? '—' : i + 1 }}</span>
                 <span class="kit-clip-name" :title="c.name">{{ c.name }}</span>
