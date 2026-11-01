@@ -122,7 +122,18 @@ function encodeSecrets(settings: AppSettings): AppSettings {
 export function loadSettings(): AppSettings {
   const base = defaultSettings()
   const p = settingsPath()
-  if (!existsSync(p)) return base
+  if (!existsSync(p)) {
+    // 全新安装：默认生成随机配对令牌并落盘。
+    // 旧版本升级上来的用户设置文件已存在，保持原值不变（不破坏已配对的连接）。
+    const fresh = { ...base, bridgeToken: randomUUID().replace(/-/g, '') }
+    try {
+      mkdirSync(dirname(p), { recursive: true })
+      writeFileSync(p, JSON.stringify(encodeSecrets(fresh), null, 2), { encoding: 'utf8', mode: 0o600 })
+    } catch {
+      // 写盘失败不阻塞启动：这次用内存值，下次 load 再重试
+    }
+    return fresh
+  }
   try {
     const raw = decodeSecrets(JSON.parse(readFileSync(p, 'utf8')) as Partial<AppSettings>)
     return {

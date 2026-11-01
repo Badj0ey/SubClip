@@ -1062,8 +1062,8 @@ async function openOutputDir(): Promise<void> {
         </div>
       </div>
       <div class="hint">
-        本地服务只放行 B 站页面来源（<code>https://*.bilibili.com</code>），普通网页连不进来。
-        若还想防本机其它程序伪造来源，可在这里生成一个随机令牌，并在左下角浮框的「连接设置」里填同样的值。
+        新安装默认生成随机配对令牌，浮框「连接设置」里需要填同值才能连上；旧版本升级的用户保持原值不受影响。
+        留空只做来源校验（放行 B 站页面，但防不住本机其它程序伪造来源），可点「清除」恢复。
       </div>
 
       <div class="field" style="align-items: flex-start">

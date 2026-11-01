@@ -113,6 +113,8 @@
     retry: 0,
     retryTimer: 0,
     connectTimer: 0,
+    helloWatchdog: 0,
+    pullWatchdog: 0,
     lna: 'unsupported',
     lnaStatus: null,
     permissionNeedsReload: false,
@@ -270,7 +272,15 @@
   }
 
   function getTitle() {
+    // 优先稳定的 meta 来源：og:title 与样式哈希类名无关，B 站改版也不受影响
+    const og = attr(['meta[property="og:title"]', 'meta[name="title"]'], 'content')
+    if (og) {
+      const cleaned = og.replace(SUFFIX_RE, '').trim()
+      if (cleaned) return cleaned
+    }
     const dom = text([
+      'h1[aria-label]',
+      'h1[data-title]',
       'h1.video-title',
       '.video-title',
       'h1[title]',
@@ -279,13 +289,13 @@
       'h1'
     ])
     if (dom) return dom
-    const og = attr(['meta[property="og:title"]', 'meta[name="title"]'], 'content')
-    if (og) return og
     return document.title.replace(SUFFIX_RE, '').trim()
   }
 
   function getUploader() {
+    // 视频页的 meta author 就是 UP 主名，比样式类名稳定，优先用；DOM 选择器兜底
     const name =
+      attr(['meta[name="author"]'], 'content') ||
       text([
         '.up-name',
         '.up-info .name',
@@ -923,12 +933,35 @@
     }
   }
 
-  function send(message) {
-    if (!sendRaw(message)) {
-      feedback('未连接桌面端', 'error')
+  /** 发送已序列化好的帧（大字幕只序列化一次，序列化与发送共用同一字符串） */
+  function sendRawString(text) {
+    if (!isSocketOpen()) return false
+    try {
+      state.ws.send(text)
+      return true
+    } catch {
       return false
     }
-    return true
+  }
+
+  function send(message) {
+    if (sendRaw(message)) return true
+    const ws = state.ws
+    if (ws && ws.readyState === WebSocket.CONNECTING) {
+      // 连接还没建立：open 后补发一次，避免用户手势恰好落在建连之前丢消息
+      const resend = () => {
+        try {
+          ws.removeEventListener('open', resend)
+        } catch {
+          /* ignore */
+        }
+        sendRaw(message)
+      }
+      ws.addEventListener('open', resend)
+      return true
+    }
+    feedback('未连接桌面端', 'error')
+    return false
   }
 
   function sendHello() {
@@ -997,6 +1030,11 @@
     ws.onclose = () => {
       if (state.ws !== ws) return
       clearConnectTimer()
+      if (state.helloWatchdog) {
+        clearTimeout(state.helloWatchdog)
+        state.helloWatchdog = 0
+      }
+      clearPullWatchdog()
       state.ws = null
       state.helloAcks = 0
       state.auth = 'unknown'
@@ -1119,6 +1157,16 @@
     // 服务端在收到 hello 前就会发一次 ack；第二次才代表能力与令牌已完成协商。
     if (state.helloAcks < 2) {
       setStatus('auth', '正在确认连接与配对令牌…')
+      if (state.helloWatchdog) clearTimeout(state.helloWatchdog)
+      state.helloWatchdog = setTimeout(() => {
+        // 第二个 ack 迟迟不来（旧版桌面端或偶发丢包）：能力已协商过，按已连接处理，
+        // 避免永远停在「正在确认连接」
+        if (state.ws && state.helloAcks >= 1 && state.compatible && state.auth !== 'ok') {
+          state.auth = 'ok'
+          state.blockReconnect = false
+          setStatus('online', state.serverVersion ? `桌面端 v${state.serverVersion}` : '')
+        }
+      }, 4_000)
       return
     }
 
@@ -1157,7 +1205,16 @@
     if (stage === 'done' || stage === 'error') {
       state.pulling = false
       state.pendingPullBvid = ''
+      clearPullWatchdog()
       updateActionAvailability()
+    }
+  }
+
+  /** 清除「同步长时间无响应」的看门狗（任务结束/断线/超时触发时都走这里） */
+  function clearPullWatchdog() {
+    if (state.pullWatchdog) {
+      clearTimeout(state.pullWatchdog)
+      state.pullWatchdog = 0
     }
   }
 
@@ -1190,6 +1247,7 @@
       if (!state.pendingPullBvid || state.pendingPullBvid === bvid) {
         state.pulling = false
         state.pendingPullBvid = ''
+        clearPullWatchdog()
         updateActionAvailability()
       }
     })
@@ -1259,6 +1317,7 @@
     if (!state.pendingPullBvid || state.pendingPullBvid === bvid) {
       state.pulling = false
       state.pendingPullBvid = ''
+      clearPullWatchdog()
       updateActionAvailability()
     }
   }
@@ -1266,10 +1325,10 @@
   /** 512KB 单帧上限下先试整份传输；大字幕拆成有序分块，桌面端完整组装后才入库。 */
   async function sendSubtitle(payload) {
     const encoder = new TextEncoder()
-    const bytes = (value) => encoder.encode(JSON.stringify(value)).length
-    const message = { type: 'subtitle', payload }
-    if (bytes({ v: PROTOCOL_VERSION, caps: CLIENT_CAPS, ...message }) <= 440_000) {
-      if (!sendRaw(message)) throw new Error('桌面端连接已断开')
+    // 只序列化一次：序列化与发送共用同一个字符串，避免 2 万行字幕被 JSON 化两遍
+    const full = JSON.stringify({ v: PROTOCOL_VERSION, caps: CLIENT_CAPS, type: 'subtitle', payload })
+    if (encoder.encode(full).length <= 440_000) {
+      if (!sendRawString(full)) throw new Error('桌面端连接已断开')
       return
     }
     if (state.serverCaps.subtitleChunk !== true) {
@@ -1279,6 +1338,7 @@
     const parts = []
     let part = []
     let size = 0
+    const bytes = (value) => encoder.encode(JSON.stringify(value)).length
     for (const cue of payload.cues) {
       const n = bytes(cue) + 2
       if (part.length && (size + n > 180_000 || part.length >= 1500)) {
@@ -1389,6 +1449,12 @@
   /** 唯一主操作：同步视频元数据，并拉取全部分P字幕；桌面端缺权限时自动请求浏览器补抓。
    *  在合集 / 系列 / 收藏夹 / 投稿页上，改为把整页交给桌面端，由用户确认批量拉取。 */
   function syncVideoAndSubtitles() {
+    // SPA 切页后 1.5s 轮询可能还没跑：先强制重测一次页面，避免同步到上一页的信息
+    try {
+      tick()
+    } catch {
+      /* 页面识别失败时沿用旧结果 */
+    }
     if (!ensureOnline() || state.pulling) return
     const page = state.page
     if (!page?.bvid) {
@@ -1422,6 +1488,17 @@
       updateActionAvailability()
       return
     }
+    // 看门狗：桌面端 90 秒没有任何拉取状态回来就复位，避免「正在同步」永远卡住
+    clearPullWatchdog()
+    state.pullWatchdog = setTimeout(() => {
+      if (state.pulling && state.pendingPullBvid === page.bvid) {
+        state.pulling = false
+        state.pendingPullBvid = ''
+        updateActionAvailability()
+        addEvent('同步超时：桌面端 90 秒没有响应，已复位', 'warn')
+        feedback('同步超时，请检查桌面端是否卡住', 'error')
+      }
+    }, 90_000)
     addEvent(`已请求同步 ${page.bvid} 的视频信息及全部分P字幕`)
     feedback('正在同步视频及字幕，失败分P将由浏览器补抓…', 'warn')
   }
@@ -2097,6 +2174,12 @@
   /* =============================== 数据刷新 =============================== */
 
   async function refreshTracks(force) {
+    // 拉字幕轨前强制重测一次页面：SPA 切页瞬间点按钮时防止拉到上一页的字幕
+    try {
+      tick()
+    } catch {
+      /* 页面识别失败时沿用旧结果 */
+    }
     const page = state.page
     if (!page?.bvid) {
       renderTracks()
