@@ -271,12 +271,28 @@ const api = {
       start: number
       end: number
       note: string
+      clipId?: number
+      jobId?: number
       segments?: Array<{ page: number; start: number; end: number }>
     }>
-  ): Promise<OpResult<{ ok: number; failed: number; outputs: string[]; messages: string[] }>> =>
-    ipcRenderer.invoke('slice:run', { tasks }),
+  ): Promise<
+    OpResult<{
+      ok: number
+      failed: number
+      outputs: string[]
+      messages: string[]
+      warnings: string[]
+    }>
+  > => ipcRenderer.invoke('slice:run', { tasks }),
   sliceCancel: (): Promise<boolean> => ipcRenderer.invoke('slice:cancel'),
   onSliceProgress: (cb: (p: SliceProgressInfo) => void) => subscribe('slice:progress', cb),
+
+  /* 字幕烧录字体 */
+  builtinSubtitleFonts: (): Promise<Array<{ family: string; label: string }>> =>
+    ipcRenderer.invoke('subtitleFont:builtin'),
+  pickSubtitleFont: (): Promise<OpResult<{ file: string; family: string }>> =>
+    ipcRenderer.invoke('subtitleFont:pick'),
+  clearSubtitleFont: (): Promise<boolean> => ipcRenderer.invoke('subtitleFont:clear'),
 
   /** 首页 Dashboard 的全部卡片数据（第二阶段） */
   dashboardOverview: (): Promise<DashboardOverview> => ipcRenderer.invoke('dashboard:overview'),

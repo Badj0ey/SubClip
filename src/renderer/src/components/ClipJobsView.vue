@@ -123,6 +123,11 @@ const jobsLoading = computed(() => jobs.loading)
  */
 const outputDir = computed(() => settings.effectiveSliceOutputDir || '（未设置）')
 
+/** 执行条上的烧录提示：显示实际使用的字体（导入的优先，其次内置族名） */
+const burnFontLabel = computed(
+  () => settings.settings?.sliceSubtitleFontFamily || settings.settings?.sliceSubtitleFont || '系统字体'
+)
+
 const runHint = computed(() => {
   if (ui.sliceRunning) return '正在切片'
   if (!clip.ffmpegReady) return '需要先配置 ffmpeg（设置 → 本地切片）'
@@ -219,6 +224,9 @@ function goLibrary(): void {
       <span class="muted jobs-run-out" :title="outputDir">
         输出到 {{ outputDir }}
         <button class="btn sm" @click="pickOutputDir">更改</button>
+      </span>
+      <span v-if="settings.settings?.sliceBurnSubtitles" class="muted jobs-burn-hint">
+        字幕烧录：{{ burnFontLabel }}，需要重新编码
       </span>
       <span class="grow"></span>
       <!--
@@ -400,6 +408,12 @@ function goLibrary(): void {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* 执行条上的烧录提示（开了「字幕烧录」才显示） */
+.jobs-burn-hint {
+  font-size: var(--fs-sm);
+  flex-shrink: 0;
 }
 
 /*

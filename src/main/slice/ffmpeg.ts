@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { app } from 'electron'
 import { loadSettings } from '../settings'
+import { subtitlesFilter } from './ass'
 
 const EXE = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg'
 
@@ -150,6 +151,13 @@ export interface CutOptions {
   /** 音频 codecs 串，用于判断要不要转码（flac 需要） */
   audioCodec?: string
   output: string
+  /**
+   * 烧录字幕：ASS 文件（时间已平移为相对本段起点）。
+   * 有值即启用重新编码烧录，否则走无损 copy。
+   */
+  assFile?: string
+  /** 附加字体目录（导入字体时注册给 libass；留空走系统字体） */
+  fontsDir?: string
   onLog?: (line: string) => void
   signal?: AbortSignal
 }
@@ -176,12 +184,30 @@ export async function cutAndMux(opts: CutOptions): Promise<void> {
   try {
     // 1. 视频：remux 成标准 mp4
     await runFfmpeg(ffmpeg, ['-i', videoFile, '-c', 'copy', '-y', tempV], { onLog, signal })
-    // 2. 视频：精确裁剪
-    await runFfmpeg(
-      ffmpeg,
-      ['-ss', ss(vSs), '-i', tempV, '-t', ss(vT), '-c', 'copy', '-y', midV],
-      { onLog, signal }
-    )
+    // 2. 视频：精确裁剪；烧录字幕时必须重编码（copy 只是复制原始画面）
+    if (opts.assFile) {
+      await runFfmpeg(
+        ffmpeg,
+        [
+          '-ss', ss(vSs),
+          '-i', tempV,
+          '-t', ss(vT),
+          '-vf', subtitlesFilter(opts.assFile, opts.fontsDir),
+          '-c:v', 'libx264',
+          '-preset', 'veryfast',
+          '-crf', '20',
+          '-pix_fmt', 'yuv420p',
+          '-y', midV
+        ],
+        { onLog, signal }
+      )
+    } else {
+      await runFfmpeg(
+        ffmpeg,
+        ['-ss', ss(vSs), '-i', tempV, '-t', ss(vT), '-c', 'copy', '-y', midV],
+        { onLog, signal }
+      )
+    }
 
     if (audioFile) {
       // 3. 音频：remux + 裁剪

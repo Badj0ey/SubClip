@@ -250,6 +250,8 @@ export async function getVideoInfo(bvid: string, cookie = ''): Promise<BiliVideo
     title: String(d.title || bvid),
     cover: String(d.pic || ''),
     duration: Number(d.duration) || 0,
+    width: Number(d.dimension?.width) || undefined,
+    height: Number(d.dimension?.height) || undefined,
     ownerUid: Number(d.owner?.mid) || 0,
     ownerName: String(d.owner?.name || '未知UP主'),
     ownerAvatar: String(d.owner?.face || ''),

@@ -218,6 +218,19 @@ export interface AppSettings {
    * 占位符见 `@shared/naming` 的 NAME_TEMPLATE_TOKENS。
    */
   sliceNameTemplate: string
+  /**
+   * 切片时把字幕直接烧进画面（硬字幕）。
+   * 需要重新编码（不再是无损复制），切片速度会明显变慢。
+   */
+  sliceBurnSubtitles: boolean
+  /** 烧录字体（内置字体族名，Windows 常见中文字体） */
+  sliceSubtitleFont: string
+  /** 导入的字体文件名（存于 userData/fonts 下；留空表示用内置字体） */
+  sliceSubtitleFontFile: string
+  /** 导入字体解析出的族名（写进 ASS Fontname） */
+  sliceSubtitleFontFamily: string
+  /** 字幕字号（1080p 基准，按视频高度等比缩放） */
+  sliceSubtitleFontSize: number
   /** ffmpeg 可执行文件路径（留空则自动查找） */
   ffmpegPath: string
   /** 切片输出目录（留空则用切片表输出目录） */
@@ -295,6 +308,9 @@ export interface BiliVideoInfo {
   title: string
   cover: string
   duration: number
+  /** 视频宽 / 高（view 接口的 dimension；缺失时烧录字幕按 1920x1080 设计画布） */
+  width?: number
+  height?: number
   /** UP主 UID（B站接口字段名是 `owner.mid`，本地统一叫 uid） */
   ownerUid: number
   ownerName: string

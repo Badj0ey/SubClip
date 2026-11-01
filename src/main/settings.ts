@@ -30,6 +30,19 @@ export function defaultSettings(): AppSettings {
     sliceQuality: 80,
     sliceConcurrency: 3,
     sliceNameTemplate: DEFAULT_NAME_TEMPLATE,
+    /**
+     * 切片时把字幕直接烧进画面（硬字幕）。
+     * 需要重新编码（不再是无损复制），切片速度会明显变慢。
+     */
+    sliceBurnSubtitles: false,
+    /** 烧录字体（内置字体族名，Windows 常见中文字体） */
+    sliceSubtitleFont: 'Microsoft YaHei',
+    /** 导入的字体文件名（存于 userData/fonts 下；留空表示用内置字体） */
+    sliceSubtitleFontFile: '',
+    /** 导入字体解析出的族名（写进 ASS Fontname） */
+    sliceSubtitleFontFamily: '',
+    /** 字幕字号（1080p 基准，按视频高度等比缩放） */
+    sliceSubtitleFontSize: 54,
     ffmpegPath: '',
     sliceOutputDir: '',
     subtitleCacheDir: join(app.getPath('userData'), APP_DATA_DIR, 'docs'),

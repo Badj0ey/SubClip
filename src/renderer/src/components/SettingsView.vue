@@ -110,6 +110,7 @@ onMounted(async () => {
   cookieDraft.value = ''
   login.value = await window.api.loginStatus()
   userscript.value = await window.api.userscript()
+  builtinFonts.value = await window.api.builtinSubtitleFonts()
   await refreshSemantic()
   await ai.probe()
   await loadBridgeStatus()
@@ -119,6 +120,50 @@ async function save(patch: Partial<AppSettings>): Promise<void> {
   state.settings = await window.api.saveSettings(patch)
   applyTheme(state.settings.theme)
   applyReadingStyle()
+}
+
+/* ----------------------------- 字幕烧录（本地切片） ----------------------------- */
+
+const builtinFonts = ref<Array<{ family: string; label: string }>>([])
+
+const importedFontLabel = computed(
+  () =>
+    state.settings?.sliceSubtitleFontFamily ||
+    state.settings?.sliceSubtitleFontFile ||
+    '已导入字体'
+)
+
+function onBurnSubtitles(e: Event): void {
+  void save({ sliceBurnSubtitles: (e.target as HTMLInputElement).checked })
+}
+
+function onSubtitleFont(e: Event): void {
+  void save({ sliceSubtitleFont: (e.target as HTMLSelectElement).value })
+}
+
+function onSubtitleFontSize(e: Event): void {
+  const n = Math.max(20, Math.min(120, Number((e.target as HTMLInputElement).value) || 54))
+  void save({ sliceSubtitleFontSize: n })
+}
+
+async function pickSubtitleFont(): Promise<void> {
+  const res = await window.api.pickSubtitleFont()
+  if (!res.ok) {
+    if (res.message && res.message !== '已取消') toast(res.message, 'error', 5200)
+    return
+  }
+  const { file, family } = res.data ?? { file: '', family: '' }
+  await save({ sliceSubtitleFontFile: file, sliceSubtitleFontFamily: family })
+  toast(
+    family ? `已导入字体：${family}` : '字体已导入，但未能识别族名，将按文件名匹配',
+    'success',
+    4600
+  )
+}
+
+async function clearSubtitleFont(): Promise<void> {
+  await save({ sliceSubtitleFontFile: '', sliceSubtitleFontFamily: '' })
+  toast('已恢复内置字体', 'success')
 }
 
 async function pickDir(field: keyof AppSettings): Promise<void> {
@@ -629,6 +674,63 @@ async function openOutputDir(): Promise<void> {
         才需要点「选择…」指定，或把 <code>ffmpeg.exe</code> 放到用户数据目录的
         <code>bin\</code> 下；「获取 ffmpeg」会打开官方下载页。
       </div>
+
+      <!-- 字幕烧录 -->
+      <div class="field">
+        <label>字幕烧录</label>
+        <div class="row">
+          <label class="row" style="gap: 6px; cursor: pointer">
+            <input
+              type="checkbox"
+              :checked="Boolean(state.settings?.sliceBurnSubtitles)"
+              @change="onBurnSubtitles"
+            />
+            切片时把字幕直接烧进画面（硬字幕）
+          </label>
+        </div>
+      </div>
+      <template v-if="state.settings?.sliceBurnSubtitles">
+        <div class="field">
+          <label>字体</label>
+          <div class="row">
+            <select
+              v-if="!state.settings?.sliceSubtitleFontFile"
+              :value="state.settings?.sliceSubtitleFont"
+              class="input"
+              style="width: 200px"
+              @change="onSubtitleFont"
+            >
+              <option v-for="f in builtinFonts" :key="f.family" :value="f.family">
+                {{ f.label }}
+              </option>
+            </select>
+            <template v-else>
+              <span class="muted">{{ importedFontLabel }}</span>
+              <button class="btn" @click="clearSubtitleFont">恢复内置字体</button>
+            </template>
+            <button class="btn" @click="pickSubtitleFont">导入字体…</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>字号</label>
+          <div class="row">
+            <input
+              type="number"
+              min="20"
+              max="120"
+              :value="state.settings?.sliceSubtitleFontSize"
+              class="input"
+              style="width: 90px"
+              @change="onSubtitleFontSize"
+            />
+            <span class="muted">20–120，以 1080p 为基准，其它分辨率自动等比缩放</span>
+          </div>
+        </div>
+        <div class="hint">
+          烧录会把字幕画进视频画面（白色黑边、底部居中），需要重新编码，切片比无损复制慢。
+          只有来自本地片段的字幕能烧录；由「导出表格 → 导入」生成的任务不带字幕，会自动跳过。
+        </div>
+      </template>
 
       <!-- ------------------------------ 语义检索 ------------------------------ -->
       <h2 class="sec">语义检索（按意思搜）</h2>

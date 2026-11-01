@@ -11,11 +11,13 @@
  *
  * 任务之间串行（ffmpeg 同一时刻只跑一个），任务内部的字节区间可并发下载。
  */
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
+import { app } from 'electron'
 import type { BiliVideoInfo } from '@shared/types'
 import * as bili from '../bilibili'
 import { loadSettings } from '../settings'
+import { buildAss, type BurnCue } from './ass'
 import { downloadRange, downloadRangesConcurrent } from './downloader'
 import { sanitizeFileName } from './filename'
 import { concatVideos, cutAndMux, resolveFfmpeg } from './ffmpeg'
@@ -45,6 +47,12 @@ export interface SliceTaskInput {
    * 没有它的话跑完只能补一条历史，队列里那条会永远停在「排队中」。
    */
   jobId?: number
+  /**
+   * 烧录字幕（可选）：与 segments 对齐的每组字幕，时间已平移为相对该段起点。
+   * 只有设置里开了「字幕烧录」且该任务能取到字幕时才有值；
+   * 拿不到字幕（导入的任务没有文档、区间内无字幕）时由 ipc 层留空，引擎负责提示。
+   */
+  subtitleSegments?: BurnCue[][]
 }
 
 export type SlicePhase = 'resolve' | 'download' | 'cut' | 'mux' | 'done' | 'error'
@@ -64,6 +72,11 @@ export interface SliceResult {
   failed: number
   outputs: string[]
   messages: string[]
+  /**
+   * 非致命提示（如「该任务没有字幕来源，未烧录」）。
+   * 与 messages（错误）分开，前端用 info 级别展示。
+   */
+  warnings: string[]
   /** 逐条结果：切片历史靠它把输出文件对回具体任务 */
   entries: SliceEntryResult[]
 }
@@ -137,6 +150,14 @@ interface RunContext {
   signal: AbortSignal
   infoCache: Map<string, BiliVideoInfo>
   streamCache: Map<string, PlayInfo>
+  /** 烧录配置（设置里关掉时整体不传，此字段为空） */
+  subtitle?: {
+    fontName: string
+    /** 1080p 基准字号，按视频高度等比换算后写进 ASS */
+    fontSize: number
+    /** 导入字体目录（注册给 libass）；留空走系统字体 */
+    fontsDir?: string
+  }
   report: (phase: SlicePhase, percent: number) => void
 }
 
@@ -146,7 +167,8 @@ async function sliceSegment(
   bvid: string,
   segment: SliceSegmentInput,
   output: string,
-  stamp: string
+  stamp: string,
+  subtitles?: BurnCue[]
 ): Promise<void> {
   let info = ctx.infoCache.get(bvid)
   if (!info) {
@@ -196,6 +218,23 @@ async function sliceSegment(
   writeFileSync(videoFile, videoSeg.buffer)
   if (audioFile && audioSeg) writeFileSync(audioFile, audioSeg.buffer)
 
+  // 烧录字幕：字幕时间是相对本段起点的，直接写进 ASS，滤镜会按 PTS 对齐
+  let assFile: string | null = null
+  if (ctx.subtitle && subtitles?.length) {
+    const height = info.height || 1080
+    assFile = join(ctx.outDir, `.slice-sub-${stamp}.ass`)
+    writeFileSync(
+      assFile,
+      buildAss(subtitles, {
+        width: info.width || 1920,
+        height,
+        fontName: ctx.subtitle.fontName,
+        fontSize: Math.max(16, Math.round(ctx.subtitle.fontSize * (height / 1080)))
+      }),
+      'utf8'
+    )
+  }
+
   try {
     await cutAndMux({
       ffmpeg: ctx.ffmpeg,
@@ -207,10 +246,12 @@ async function sliceSegment(
       aT: audioSeg?.t ?? 0,
       audioCodec: audioStream?.codecs ?? '',
       output,
+      assFile: assFile ?? undefined,
+      fontsDir: ctx.subtitle?.fontsDir,
       signal: ctx.signal
     })
   } finally {
-    safeRemove(videoFile, audioFile)
+    safeRemove(videoFile, audioFile, assFile)
   }
 }
 
@@ -231,9 +272,29 @@ export async function runSliceTasks(
 
   const outputs: string[] = []
   const messages: string[] = []
+  const warnings: string[] = []
   const entries: SliceEntryResult[] = []
   let ok = 0
   let failed = 0
+
+  // 烧录字幕配置：设置关了就没有；导入字体文件丢了就退回系统字体并提示一次
+  let subtitle: RunContext['subtitle']
+  if (settings.sliceBurnSubtitles) {
+    subtitle = {
+      fontName: settings.sliceSubtitleFont || 'Microsoft YaHei',
+      fontSize: Math.max(20, Math.min(120, settings.sliceSubtitleFontSize || 54))
+    }
+    const fontFile = settings.sliceSubtitleFontFile?.trim()
+    if (fontFile) {
+      const fontsDir = join(app.getPath('userData'), 'fonts')
+      if (existsSync(join(fontsDir, fontFile))) {
+        subtitle.fontName = settings.sliceSubtitleFontFamily || subtitle.fontName
+        subtitle.fontsDir = fontsDir
+      } else {
+        warnings.push('导入的字幕字体文件不存在，已改用系统字体')
+      }
+    }
+  }
 
   const baseCtx = {
     ffmpeg,
@@ -242,7 +303,8 @@ export async function runSliceTasks(
     outDir,
     signal,
     infoCache: new Map<string, BiliVideoInfo>(),
-    streamCache: new Map<string, PlayInfo>()
+    streamCache: new Map<string, PlayInfo>(),
+    subtitle
   }
 
   for (let i = 0; i < tasks.length; i++) {
@@ -263,12 +325,21 @@ export async function runSliceTasks(
 
     const stamp = `${i}-${process.pid}-${Date.now()}`
 
+    // 烧录提示：开了烧录但拿不到字幕时，说明原因而不是静默跳过
+    if (subtitle) {
+      if (!task.subtitleSegments) {
+        warnings.push(`《${label}》没有可用的字幕来源，未烧录字幕`)
+      } else if (task.subtitleSegments.every((group) => !group.length)) {
+        warnings.push(`《${label}》切片区间内没有字幕，未烧录`)
+      }
+    }
+
     try {
       report('resolve', 3)
       const output = join(outDir, `${sanitizeFileName(label)}.mp4`)
 
       if (segments.length === 1) {
-        await sliceSegment(ctx, task.bvid, segments[0], output, stamp)
+        await sliceSegment(ctx, task.bvid, segments[0], output, stamp, task.subtitleSegments?.[0])
       } else {
         // 跨分P：逐段裁到临时文件，再拼接
         const temps: string[] = []
@@ -279,7 +350,14 @@ export async function runSliceTasks(
               Math.round((s / segments.length) * 70)
             )
             const tmp = join(outDir, `.slice-part-${stamp}-${s}.mp4`)
-            await sliceSegment(ctx, task.bvid, segments[s], tmp, `${stamp}-${s}`)
+            await sliceSegment(
+              ctx,
+              task.bvid,
+              segments[s],
+              tmp,
+              `${stamp}-${s}`,
+              task.subtitleSegments?.[s]
+            )
             temps.push(tmp)
           }
           report('mux', 88)
@@ -322,5 +400,5 @@ export async function runSliceTasks(
     }
   }
 
-  return { ok, failed, outputs, messages, entries }
+  return { ok, failed, outputs, messages, warnings, entries }
 }

@@ -330,6 +330,10 @@ export const useClipStore = defineStore('clip', {
         if (res.data.messages.length) {
           ui.showToast(res.data.messages.slice(0, 3).join('\n'), 'error', 7000)
         }
+        // 烧录相关的非致命提示（如「该任务没有字幕来源」）
+        if (res.data.warnings?.length) {
+          ui.showToast(res.data.warnings.slice(0, 3).join('\n'), 'info', 7000)
+        }
       } finally {
         ui.sliceRunning = false
         ui.sliceProgress = null

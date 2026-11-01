@@ -5,7 +5,7 @@
 import { app, BrowserWindow, clipboard, dialog, ipcMain, shell } from 'electron'
 import type { OpenDialogOptions, SaveDialogOptions } from 'electron'
 import { existsSync, rmSync, copyFileSync, statSync, mkdirSync, writeFileSync } from 'node:fs'
-import { extname, join, resolve, sep, dirname } from 'node:path'
+import { basename, extname, join, resolve, sep, dirname } from 'node:path'
 import * as os from 'node:os'
 
 /** 允许导入 / 打开的字幕文件扩展名（拖拽导入靠它把关） */
@@ -54,6 +54,8 @@ import { loadSettings, saveSettings } from './settings'
 import { readFile, writeFile } from 'node:fs/promises'
 import { resolveFfmpeg } from './slice/ffmpeg'
 import { sanitizeFileName } from './slice/filename'
+import { parseFontFamily } from './slice/fontName'
+import type { BurnCue } from './slice/ass'
 import { closeAllSessions, openMediaSession, type MediaSession } from './media'
 import * as embed from './embed/engine'
 import * as ai from './ai/provider'
@@ -120,6 +122,52 @@ function safe<T>(fn: () => T): T | { error: string } {
     return fn()
   } catch (err) {
     return { error: (err as Error).message }
+  }
+}
+
+/** 内置烧录字体清单（Windows 常见中文字体；libass 走 DirectWrite 按族名匹配） */
+const BUILTIN_SUBTITLE_FONTS = [
+  { family: 'Microsoft YaHei', label: '微软雅黑' },
+  { family: 'DengXian', label: '等线' },
+  { family: 'SimHei', label: '黑体' },
+  { family: 'SimSun', label: '宋体' },
+  { family: 'KaiTi', label: '楷体' },
+  { family: 'FangSong', label: '仿宋' }
+]
+
+/**
+ * 烧录字幕：给任务附上「与 segments 对齐的字幕组」。
+ *
+ * 字幕按段过滤，时间平移为相对该段起点（引擎拿到后直接写 ASS）。
+ * 拿不到字幕（导入的任务没有文档、区间内无字幕）时该任务保持空值，引擎负责提示。
+ */
+function attachSubtitleSegments(tasks: SliceTaskInput[]): void {
+  for (const task of tasks) {
+    if (!task.clipId) continue
+    const clip = db.getClip(task.clipId)
+    if (!clip) continue
+    const doc = db.getDoc(clip.docId)
+    if (!doc) continue
+    const segments =
+      task.segments && task.segments.length > 1
+        ? task.segments
+        : [{ page: task.page, start: task.start, end: task.end }]
+    const groups: BurnCue[][] = []
+    for (const seg of segments) {
+      // 段落在哪一页就取哪一页的文档（同一视频、同一语言）；本页直接用已有 doc
+      const segDoc = seg.page === clip.page ? doc : db.findDoc(doc.videoId, seg.page, doc.lang)
+      const cues = segDoc ? db.loadCues(segDoc.id) : []
+      groups.push(
+        cues
+          .filter((c) => c.end > seg.start && c.start < seg.end)
+          .map((c) => ({
+            start: Math.max(0, c.start - seg.start),
+            end: Math.min(seg.end, c.end) - seg.start,
+            text: c.text
+          }))
+      )
+    }
+    task.subtitleSegments = groups
   }
 }
 
@@ -940,6 +988,8 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
     const controller = new AbortController()
     sliceAbort = controller
     const tasks = payload.tasks ?? []
+    // 烧录字幕：开了设置就给每个任务解析字幕（clipId → 片段 → 文档 → cues）
+    if (loadSettings().sliceBurnSubtitles) attachSubtitleSegments(tasks)
     /**
      * 先把队列里对应的任务标成「进行中」。
      *
@@ -1008,6 +1058,51 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
   ipcMain.handle('slice:cancel', () => {
     sliceAbort?.abort()
     sliceAbort = null
+    return true
+  })
+
+  /** 内置烧录字体清单（设置页下拉框） */
+  ipcMain.handle('subtitleFont:builtin', () => BUILTIN_SUBTITLE_FONTS)
+
+  /** 导入字幕字体：复制进 userData/fonts 并解析族名 */
+  ipcMain.handle('subtitleFont:pick', async () => {
+    const opts: OpenDialogOptions = {
+      title: '选择字幕字体',
+      filters: [
+        { name: '字体文件', extensions: ['ttf', 'otf', 'ttc'] },
+        { name: '全部文件', extensions: ['*'] }
+      ],
+      properties: ['openFile']
+    }
+    const win = getWindow()
+    const res = win ? await dialog.showOpenDialog(win, opts) : await dialog.showOpenDialog(opts)
+    const src = res.canceled ? '' : res.filePaths[0]
+    if (!src) return { ok: false, message: '已取消' }
+    try {
+      const raw = await readFile(src)
+      const family = parseFontFamily(raw)
+      const dir = join(app.getPath('userData'), 'fonts')
+      mkdirSync(dir, { recursive: true })
+      // 文件名仅作存储标识，族名靠解析；同名文件会被覆盖（视为用户重导同一字体）
+      const name = sanitizeFileName(basename(src))
+      await writeFile(join(dir, name), raw)
+      saveSettings({
+        sliceSubtitleFontFile: name,
+        sliceSubtitleFontFamily: family ?? name.replace(/\.[^.]+$/, '')
+      })
+      return {
+        ok: true,
+        data: { file: name, family: family ?? '' },
+        message: family ? '' : '未能识别字体族名，将按文件名匹配'
+      }
+    } catch (err) {
+      return { ok: false, message: `导入失败：${(err as Error).message}` }
+    }
+  })
+
+  /** 清除导入的字体，回退到内置字体 */
+  ipcMain.handle('subtitleFont:clear', () => {
+    saveSettings({ sliceSubtitleFontFile: '', sliceSubtitleFontFamily: '' })
     return true
   })
 
