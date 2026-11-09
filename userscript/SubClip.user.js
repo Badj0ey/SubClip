@@ -2,7 +2,7 @@
 // @name         字幕剪 SubClip · B站桥接
 // @name:en      SubClip Bilibili Bridge
 // @namespace    https://github.com/Badj0ey/SubClip
-// @version      3.18.6
+// @version      3.18.8
 // @description  在 B 站页面左下角识别视频，把页面信息、登录态与字幕同步给「字幕剪」桌面端
 // @author       Badj0ey
 // @homepageURL  https://github.com/Badj0ey/SubClip
@@ -55,7 +55,8 @@
   const STORAGE = {
     port: 'subclip.port',
     token: 'subclip.token',
-    collapsed: 'subclip.collapsed'
+    collapsed: 'subclip.collapsed',
+    autoCookie: 'subclip.autoCookie'
   }
   const API_TIMEOUT_MS = 15_000
   const SUBTITLE_TIMEOUT_MS = 30_000
@@ -65,6 +66,8 @@
   const RECONNECT_MAX_MS = 30_000
   const MAX_EVENTS = 30
   const COOKIE_LIMIT = 8_000
+  /** 连上桌面端后自动补传登录态的最小间隔：既能压住重连风暴，又能在换号后及时更新 */
+  const AUTO_COOKIE_INTERVAL_MS = 60_000
   const COOKIE_PRIORITY = [
     'SESSDATA',
     'bili_jct',
@@ -120,6 +123,14 @@
     permissionNeedsReload: false,
     lastAnnounced: '',
     cookieSynced: false,
+    /** 上次自动同步登录态的时间戳，用来给重连加节流 */
+    autoCookieAt: 0,
+    /** 是否有一次「自动」同步正在等桌面端回执（回执到了就别再弹 toast 打扰） */
+    autoCookiePending: false,
+    /** 等回执的超时兜底：桌面端不回话时不能把后续自动同步永久卡死 */
+    autoCookieTimer: 0,
+    /** 是否允许连上桌面端后自动同步登录态（用户可在「连接设置」里关掉） */
+    autoCookie: true,
     page: null,
     pageSignature: '',
     tracks: { key: '', at: 0, data: null, error: '', loading: false },
@@ -1039,6 +1050,12 @@
       state.helloAcks = 0
       state.auth = 'unknown'
       state.cookieSynced = false
+      // 断线时别把「等回执」的标记留着，否则重连后第一次自动同步会被自己挡住
+      state.autoCookiePending = false
+      if (state.autoCookieTimer) {
+        clearTimeout(state.autoCookieTimer)
+        state.autoCookieTimer = 0
+      }
       state.pulling = false
       state.pendingPullBvid = ''
       if (state.blockReconnect) {
@@ -1226,10 +1243,17 @@
   }
 
   function onCookiesResult(message) {
+    // 自动同步不弹 toast：用户没点任何东西，成功与否都只写事件列表 + 更新角标
+    const auto = state.autoCookiePending
+    state.autoCookiePending = false
+    if (state.autoCookieTimer) {
+      clearTimeout(state.autoCookieTimer)
+      state.autoCookieTimer = 0
+    }
     state.cookieSynced = Boolean(message.ok)
     const detail = String(message.message || (message.ok ? '登录状态已保存' : '登录状态保存失败'))
     addEvent(detail, message.ok ? 'ok' : 'error')
-    feedback(detail, message.ok ? 'ok' : 'error')
+    if (!auto) feedback(detail, message.ok ? 'ok' : 'error')
     renderLogin()
   }
 
@@ -1503,12 +1527,21 @@
     feedback('正在同步视频及字幕，失败分P将由浏览器补抓…', 'warn')
   }
 
-  async function syncCookies() {
+  /**
+   * 把浏览器登录态交给桌面端。
+   *
+   * `auto` 用于「连上桌面端 / 刚登录」时的自动补传：不弹「正在读取…」之类的提示，
+   * 没登录、读不到 SESSDATA 也保持安静（桌面端自己会提示没有凭证），只有真的发出去了
+   * 才写一条事件。「同步登录状态」按钮走手动模式，文案与以前一致。
+   */
+  async function syncCookies(options) {
+    const auto = Boolean(options?.auto)
     if (!ensureOnline()) return
-    feedback('正在读取浏览器登录状态…')
+    if (!auto) feedback('正在读取浏览器登录状态…')
 
     const result = await collectCookies()
     if (result.tooLarge) {
+      if (auto) return
       feedback('Cookie 过大，已取消同步', 'error')
       addEvent('Cookie 超过 8KB，为避免写入不完整凭证已取消同步', 'error')
       return
@@ -1517,6 +1550,8 @@
       const reason = result.usedGM
         ? '没有读到 SESSDATA（可能未登录，或脚本管理器未授权 Cookie）'
         : '脚本管理器不支持 GM_cookie，读不到 HttpOnly 的 SESSDATA'
+      // 自动模式下这就是「没登录」的常态，不值得每次都记一笔
+      if (auto) return
       feedback('未读取到有效登录状态', 'error')
       addEvent(`${reason}；可在桌面端手动粘贴 Cookie`, 'warn')
       return
@@ -1530,8 +1565,34 @@
       userName: login?.verified ? login.name : ''
     }
     if (!send({ type: 'cookies', payload })) return
+    state.autoCookiePending = auto
+    if (auto) {
+      if (state.autoCookieTimer) clearTimeout(state.autoCookieTimer)
+      state.autoCookieTimer = setTimeout(() => {
+        state.autoCookiePending = false
+        state.autoCookieTimer = 0
+      }, 15_000)
+      addEvent(`已自动提交登录状态（${result.count} 项），等待桌面端保存`)
+      return
+    }
     addEvent(`已提交登录状态（${result.count} 项），等待桌面端保存`)
     feedback('已发送登录状态，等待桌面端确认…', 'warn')
+  }
+
+  /**
+   * 连上桌面端（或页面里刚登录完）时自动补传一次登录态。
+   *
+   * 为什么要有：B 站对未登录访问只下发 480P 流，桌面端没 Cookie 时切片一定是 480P，
+   * 而旧版只有面板里那个不显眼的「同步登录状态」按钮能补——八成用户根本不会点，
+   * 于是全部变成「切片画质只有 480P」的反馈。手动按钮保留，自动只在必要时补一刀。
+   */
+  function autoSyncCookies(options) {
+    if (!state.autoCookie) return
+    if (state.autoCookiePending) return
+    if (!isSocketOpen() || state.auth !== 'ok' || !state.compatible) return
+    if (!options?.force && Date.now() - state.autoCookieAt < AUTO_COOKIE_INTERVAL_MS) return
+    state.autoCookieAt = Date.now()
+    void syncCookies({ auto: true })
   }
 
   /* =============================== UI 构建 =============================== */
@@ -1794,6 +1855,8 @@
       font-size: 12px;
     }
     .sc-field input:focus { border-color: #4f7cff; }
+    .sc-check { flex-direction: row; align-items: center; gap: 6px; width: 100%; cursor: pointer; font-size: 11px; }
+    .sc-check input { width: auto; margin: 0; padding: 0; border: none; background: none; accent-color: #4f7cff; }
     .sc-form-foot { display: flex; align-items: center; gap: 8px; width: 100%; }
     .sc-form-foot .sc-hint { margin: 0; }
     .sc-log { display: flex; flex-direction: column; gap: 3px; max-height: 118px; margin-top: 7px; overflow-y: auto; padding-right: 2px; scrollbar-width: thin; }
@@ -1878,7 +1941,7 @@
                 <span class="sc-pill" data-ref="loginBrowser" data-state="idle" title="B站登录状态"><i></i><b>浏览器 · 检测中</b></span>
                 <span class="sc-pill" data-ref="loginDesktop" data-state="idle" title="桌面端是否已连接"><i></i><b>桌面端 · 未连接</b></span>
               </div>
-              <p class="sc-hint">登录态只同步给本机桌面端；读不到 HttpOnly Cookie 时，可在桌面端手动粘贴。</p>
+              <p class="sc-hint">登录态只同步给本机桌面端；连上桌面端后会自动同步一次。读不到 HttpOnly Cookie 时，可在桌面端手动粘贴。</p>
             </section>
             <details class="sc-details" data-ref="settings">
               <summary>连接设置</summary>
@@ -1889,6 +1952,7 @@
                   <button class="sc-btn small" type="button" data-ref="saveConn">保存并重连</button>
                   <span class="sc-hint">与桌面端「设置 → 用户脚本通信」保持一致</span>
                 </div>
+                <label class="sc-field sc-check"><input data-ref="autoCookie" type="checkbox">连上桌面端后自动同步登录态</label>
               </div>
             </details>
             <details class="sc-details" data-ref="eventsBox">
@@ -1913,6 +1977,7 @@
     els.eventsBox.open = false
     els.port.value = String(state.port)
     els.token.value = state.token
+    els.autoCookie.checked = state.autoCookie
     els.footer.textContent = `127.0.0.1:${state.port} · 协议 v${PROTOCOL_VERSION}`
     els.body = shadow.querySelector('.sc-body')
 
@@ -2137,6 +2202,8 @@
     if (!changed) return
     if (status === 'online') {
       addEvent(`已连接桌面端${state.serverVersion ? ` v${state.serverVersion}` : ''}`, 'ok')
+      // 连上就把登录态补过去：桌面端没 Cookie 时切片只能是 480P
+      autoSyncCookies()
     } else if (status === 'outdated') {
       addEvent(detail || '桌面端协议过旧', 'warn')
     } else if (status === 'token') {
@@ -2217,11 +2284,15 @@
   async function refreshLogin(force) {
     if (state.login.loading) return
     if (!force && Date.now() - state.login.at < LOGIN_TTL_MS) return
+    const wasLoggedIn = Boolean(state.login.data?.loggedIn)
     state.login.loading = true
     renderLogin()
     try {
       state.login.data = await checkBrowserLogin()
       state.login.at = Date.now()
+      // 刚在这个页面里登录完：立刻把新登录态推给桌面端，否则要等下次连上才会更新，
+      // 期间切的片子还是 480P
+      if (!wasLoggedIn && state.login.data?.loggedIn) autoSyncCookies({ force: true })
     } finally {
       state.login.loading = false
       renderLogin()
@@ -2347,6 +2418,16 @@
       if (event.key === 'Enter') els.saveConn.click()
     })
 
+    els.autoCookie.addEventListener('change', () => {
+      state.autoCookie = Boolean(els.autoCookie.checked)
+      gmSet(STORAGE.autoCookie, state.autoCookie)
+      addEvent(
+        state.autoCookie
+          ? '已开启：连上桌面端后自动同步登录态'
+          : '已关闭：连上桌面端后不再自动同步登录态（仍可手动点「同步登录状态」）'
+      )
+    })
+
     els.eventsBox.addEventListener('toggle', () => {
       if (els.eventsBox.open) els.events.scrollTop = els.events.scrollHeight
     })
@@ -2370,6 +2451,8 @@
     const storedPort = normalizePort(gmGet(STORAGE.port, DEFAULT_PORT))
     state.port = storedPort || DEFAULT_PORT
     state.token = String(gmGet(STORAGE.token, '') || '').trim()
+    const storedAutoCookie = gmGet(STORAGE.autoCookie, true)
+    state.autoCookie = typeof storedAutoCookie === 'boolean' ? storedAutoCookie : true
     const storedCollapsed = gmGet(STORAGE.collapsed, true)
     state.collapsed = typeof storedCollapsed === 'boolean' ? storedCollapsed : true
 

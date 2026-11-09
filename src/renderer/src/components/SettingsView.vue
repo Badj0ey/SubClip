@@ -960,8 +960,12 @@ async function openOutputDir(): Promise<void> {
               {{ q.label }}
             </option>
           </select>
-          <span class="muted">实际清晰度受账号权限限制，会自动降级</span>
+          <span class="muted">1080P 及以上需要登录 B 站账号，游客最高 480P</span>
         </div>
+      </div>
+      <div v-if="!state.settings?.biliCookie" class="hint warn-hint">
+        ⚠ 没有 B 站登录凭证，切片实际最高只有 480P（B 站对未登录访问的限制，不是软件压缩）。
+        请在下方「B站账号」里登录，或点用户脚本浮框里的「同步登录状态」。
       </div>
 
       <div class="field">

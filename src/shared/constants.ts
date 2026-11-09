@@ -26,5 +26,30 @@ export const QUALITY_OPTIONS = [
   { value: 16, label: '360P 流畅' }
 ]
 
+/**
+ * 画质代码（B站 qn 值）转中文标签。
+ *
+ * `QUALITY_OPTIONS` 只有设置里能选的那六档；B 站实际下发时还会出现
+ * 74（720P 60帧）、112（1080P+）、125（HDR）、126（杜比视界）、127（8K）——
+ * 这些档位用户选不到、但降级提示里要说清楚「实际给的是什么」，所以单独补一份。
+ * 认不出来的值原样回显，避免提示里出现 `undefined`。
+ */
+export function qualityLabel(qn: number): string {
+  const labels: Record<number, string> = {
+    127: '8K 超高清',
+    126: '杜比视界',
+    125: 'HDR 真彩',
+    120: '4K 超清',
+    116: '1080P 60帧',
+    112: '1080P 高码率',
+    80: '1080P',
+    74: '720P 60帧',
+    64: '720P',
+    32: '480P',
+    16: '360P'
+  }
+  return labels[qn] ?? `qn ${qn}`
+}
+
 /** ffmpeg 官方 Windows 构建下载页 */
 export const FFMPEG_DOWNLOAD_URL = 'https://www.gyan.dev/ffmpeg/builds/'

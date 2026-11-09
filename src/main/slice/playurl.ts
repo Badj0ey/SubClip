@@ -30,6 +30,18 @@ export interface PlayInfo {
   audio: DashStream[]
   /** 视频总时长（秒） */
   duration: number
+  /**
+   * 实际挑中的视频流清晰度（B站 qn 值），没有视频流时为 0。
+   *
+   * 注意**不能**用接口返回的 `data.quality` 判断实际画质：实测（2026-11-09）
+   * 匿名请求 qn=80 时 `data.quality` 照样回 64，而 `dash.video` 里只有
+   * 480P/360P 两档。B 站按账号权限下发**流**，`quality` 字段只是「我以为给了」。
+   */
+  quality: number
+  /** 调用方期望的清晰度，原样回传，便于比对是否被降级 */
+  requested: number
+  /** 稿件本身支持的最高清晰度（`accept_quality` 的最大值），接口没给时为 0 */
+  qualityCap: number
 }
 
 interface RawStream {
@@ -127,10 +139,19 @@ export async function getPlayInfo(
   const pickedVideo = pickVideo(video, qn)
   const pickedAudio = pickAudio(audio)
 
+  // accept_quality 是「这个稿件本来有哪些档」，跟账号权限无关；
+  // 用它就能区分「稿件就 480P」和「账号不够格」这两种降级。
+  const accept = Array.isArray(d.accept_quality)
+    ? (d.accept_quality as unknown[]).map(Number).filter((n) => Number.isFinite(n))
+    : []
+
   return {
     video: pickedVideo ? [pickedVideo] : [],
     audio: pickedAudio ? [pickedAudio] : [],
-    duration: Number(d.timelength || 0) / 1000
+    duration: Number(d.timelength || 0) / 1000,
+    quality: pickedVideo?.id ?? 0,
+    requested: qn,
+    qualityCap: accept.length ? Math.max(...accept) : 0
   }
 }
 

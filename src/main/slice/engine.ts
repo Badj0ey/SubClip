@@ -14,6 +14,7 @@
 import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { app } from 'electron'
+import { qualityLabel } from '@shared/constants'
 import type { BiliVideoInfo } from '@shared/types'
 import * as bili from '../bilibili'
 import { loadSettings } from '../settings'
@@ -122,6 +123,37 @@ function safeRemove(...paths: Array<string | null | undefined>): void {
   }
 }
 
+/**
+ * 实际画质低于设置值时的说明文案（不低于就是正常，返回 null）。
+ *
+ * 为什么需要这个：B 站 playurl **不会**因为权限不够而报错，它只是把
+ * `dash.video` 里的高档位删掉（实测匿名 qn=80 只回 32/16，而 `data.quality`
+ * 还照样写 64）。以前这里拿到什么就用什么，用户在设置里选 1080P、导出却是
+ * 480P，看不到任何提示——480P 的反馈基本都是这么来的。
+ *
+ * 文案分三种原因，免得用户白折腾（去升级会员 / 去查稿子 / 去登录）：
+ */
+function downgradeText(play: PlayInfo): string | null {
+  if (!play.quality || play.quality >= play.requested) return null
+  const got = qualityLabel(play.quality)
+  const want = qualityLabel(play.requested)
+  // 稿件本身就没这一档，跟账号无关
+  if (play.qualityCap && play.quality >= play.qualityCap) {
+    return `该视频最高只有 ${got}（设置为 ${want}），已按 ${got} 切片`
+  }
+  // 720P 及以上说明登录态是有效的，差的是大会员档位
+  if (play.quality >= 64) {
+    return `实际只取到 ${got}（设置为 ${want}）：更高档位需要大会员，或该分P没有这一档`
+  }
+  return `实际只取到 ${got}（设置为 ${want}）：B 站未登录时最高只给 480P，请到「设置 → B站账号」登录，或点用户脚本浮框里的「同步登录状态」后重试`
+}
+
+/** 成功任务的补充说明：只在实际降级时写，正常画质不刷屏 */
+function qualityNote(actual: number, requested: number): string | undefined {
+  if (!actual || actual >= requested) return undefined
+  return `实际画质 ${qualityLabel(actual)}（设置为 ${qualityLabel(requested)}）`
+}
+
 /** 下载某个流在 [startSec, endSec] 内需要的字节，返回分片数据与裁剪参数 */
 async function fetchSegment(
   stream: DashStream,
@@ -174,6 +206,8 @@ interface RunContext {
     /** 导入字体目录（注册给 libass）；留空走系统字体 */
     fontsDir?: string
   }
+  /** 拿到播放信息后回调（用于发现「设置 1080P、实际只有 480P」这类静默降级） */
+  onQuality?: (play: PlayInfo) => void
   report: (phase: SlicePhase, percent: number) => void
 }
 
@@ -185,7 +219,7 @@ async function sliceSegment(
   output: string,
   stamp: string,
   subtitles?: BurnCue[]
-): Promise<void> {
+): Promise<number> {
   let info = ctx.infoCache.get(bvid)
   if (!info) {
     info = await bili.getVideoInfo(bvid, ctx.cookie)
@@ -200,6 +234,8 @@ async function sliceSegment(
     play = await getPlayInfo(bvid, pageInfo.cid, ctx.cookie, ctx.quality)
     ctx.streamCache.set(cacheKey, play)
   }
+  // 缓存命中也回调一次：引擎按文案去重，同一批任务不会刷出几十条一样的提示
+  ctx.onQuality?.(play)
   const videoStream = play.video[0]
   if (!videoStream) throw new Error('没有可用的视频流')
   const audioStream = play.audio[0] ?? null
@@ -269,6 +305,7 @@ async function sliceSegment(
   } finally {
     safeRemove(videoFile, audioFile, assFile)
   }
+  return play.quality
 }
 
 /** 执行一批切片任务 */
@@ -320,7 +357,23 @@ export async function runSliceTasks(
     signal,
     infoCache: new Map<string, BiliVideoInfo>(),
     streamCache: new Map<string, PlayInfo>(),
-    subtitle
+    subtitle,
+    /**
+     * 降级提示按**文案**去重：一批 20 条任务都在 480P 时只提示一次，
+     * 而不是每切完一条就弹一条一模一样的。
+     */
+    onQuality: (play: PlayInfo): void => {
+      const text = downgradeText(play)
+      if (text && !warnings.includes(text)) warnings.push(text)
+    }
+  }
+
+  // 没有登录凭证时 B 站只下发 480P（2026-11-09 实测：匿名 dash 仅 32/16）。
+  // 提前说一句，别等切完才让用户自己发现画质不对。设置本来就是 480P 及以下时不吵。
+  if (!settings.biliCookie?.trim() && baseCtx.quality > 32) {
+    warnings.push(
+      '未检测到 B 站登录凭证：游客最高只能取到 480P。要切 720P 及以上，请到「设置 → B站账号」登录，或点用户脚本浮框里的「同步登录状态」'
+    )
   }
 
   for (let i = 0; i < tasks.length; i++) {
@@ -356,8 +409,18 @@ export async function runSliceTasks(
       // 覆盖用户已有的导出是最容易造成不可逆损失的操作（与 kit:export 的 uniqueDir 同理）。
       const output = uniqueOutputPath(join(outDir, `${sanitizeFileName(label)}.mp4`))
 
+      // 实际拿到的画质：单段就是它，跨分P 取最低的那一段（拼接后整体按低的算）
+      let pickedQuality = 0
+
       if (segments.length === 1) {
-        await sliceSegment(ctx, task.bvid, segments[0], output, stamp, task.subtitleSegments?.[0])
+        pickedQuality = await sliceSegment(
+          ctx,
+          task.bvid,
+          segments[0],
+          output,
+          stamp,
+          task.subtitleSegments?.[0]
+        )
       } else {
         // 跨分P：逐段裁到临时文件，再拼接
         const temps: string[] = []
@@ -368,7 +431,7 @@ export async function runSliceTasks(
               Math.round((s / segments.length) * 70)
             )
             const tmp = join(outDir, `.slice-part-${stamp}-${s}.mp4`)
-            await sliceSegment(
+            const q = await sliceSegment(
               ctx,
               task.bvid,
               segments[s],
@@ -376,6 +439,7 @@ export async function runSliceTasks(
               `${stamp}-${s}`,
               task.subtitleSegments?.[s]
             )
+            pickedQuality = pickedQuality ? Math.min(pickedQuality, q) : q
             temps.push(tmp)
           }
           report('mux', 88)
@@ -392,7 +456,14 @@ export async function runSliceTasks(
 
       ok++
       outputs.push(output)
-      entries.push({ index: i, note: label, status: 'ok', output })
+      entries.push({
+        index: i,
+        note: label,
+        status: 'ok',
+        output,
+        // 降级时把实际画质写进任务行，历史列表里能直接看出这条是 480P 还是 1080P
+        message: qualityNote(pickedQuality, ctx.quality)
+      })
       report('done', 100)
     } catch (err) {
       if ((err as Error).name === 'AbortError' || signal.aborted) {
