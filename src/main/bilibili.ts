@@ -769,21 +769,43 @@ export async function resolveTarget(
   return listed('space', await getSpaceVideos(ref.mid, cookie, pageLimit))
 }
 
-/** 探测当前 Cookie 的登录状态 */
-export async function checkLogin(cookie: string): Promise<{
-  loggedIn: boolean
+/**
+ * 探测登录状态的结果。
+ * - `in`：B 站确认已登录
+ * - `out`：B 站明确回了 -101（账号未登录），凭证确定失效
+ * - `unknown`：网络超时、断网、风控等，探测本身没成功，不能据此判断凭证好坏
+ */
+export type LoginProbeState = 'in' | 'out' | 'unknown'
+
+export interface LoginProbe {
+  state: LoginProbeState
   name?: string
   avatar?: string
-}> {
+}
+
+/**
+ * 探测 Cookie 的登录状态，并区分「确定失效」与「探测失败」。
+ *
+ * 为什么不能只回 true/false：B 站未登录时 nav 返回 code -101（被 requestJson 当异常抛出），
+ * 网络故障同样抛异常，两者混在一起就没法对用户说清是「凭证过期，得重新登录」还是
+ * 「刚才网络抖了一下，凭证可能是好的」——同步登录态时会把好凭证误报成失效，
+ * 反过来又把坏凭证报成成功（正是「以为修好了还是 480P」的来源）。
+ *
+ * @param retries 重试次数：同步凭证时用户在等回执，默认给 2 次（一次重试）就够，
+ *                免得网络不通时一路重试到 45 秒。
+ */
+export async function probeLogin(cookie: string, retries = 2): Promise<LoginProbe> {
   try {
-    const res = await requestJson(API_NAV, {}, cookie)
+    const res = await requestJson(API_NAV, {}, cookie, retries)
     const d = res?.data
     return {
-      loggedIn: Boolean(d?.isLogin),
+      state: d?.isLogin ? 'in' : 'out',
       name: d?.uname || undefined,
       avatar: d?.face || undefined
     }
-  } catch {
-    return { loggedIn: false }
+  } catch (err) {
+    // 只有 -101 是 B 站给出的确定性结论；其余（超时/断网/HTTP 错）只能算没查到
+    if (err instanceof BiliApiError && err.code === -101) return { state: 'out' }
+    return { state: 'unknown' }
   }
 }

@@ -66,7 +66,7 @@ function resetNameTemplate(): void {
 }
 
 const env = ref<Record<string, { path: string; exists: boolean }> | null>(null)
-const login = ref<{ loggedIn: boolean; name?: string }>({ loggedIn: false })
+const login = ref<{ loggedIn: boolean; unknown?: boolean; name?: string }>({ loggedIn: false })
 const stats = ref<{
   uploaders: number
   collections: number
@@ -187,8 +187,10 @@ async function checkLoginStatus(): Promise<void> {
     login.value = await window.api.loginStatus()
     if (login.value.loggedIn) {
       toast(`已登录${login.value.name ? `：${login.value.name}` : ''}`, 'success')
+    } else if (login.value.unknown) {
+      toast('这次没能连上 B站，无法确认登录态；请检查网络后重试', 'info', 4200)
     } else {
-      toast('未检测到有效登录态', 'error', 4200)
+      toast('未检测到有效登录态，切片画质会被限制在 480P 以内', 'error', 4800)
     }
   } finally {
     checking.value = false
@@ -206,8 +208,10 @@ async function saveCookie(): Promise<void> {
     login.value = await window.api.loginStatus()
     if (login.value.loggedIn) {
       toast(`已保存并登录${login.value.name ? `：${login.value.name}` : ''}`, 'success')
+    } else if (login.value.unknown) {
+      toast('已保存，但这次没能连上 B站 确认登录态；请检查网络后点「重新检测」', 'info', 5200)
     } else {
-      toast('已保存，但未检测到登录态，请检查 Cookie 是否正确', 'error', 4800)
+      toast('已保存，但 B站 判定为未登录：Cookie 可能已过期或复制不完整', 'error', 5200)
     }
   } finally {
     checking.value = false
@@ -358,6 +362,8 @@ const clientDetails = computed(() =>
       outdated: (c.protocol ?? 1) < BRIDGE_PROTOCOL_VERSION,
       /** 没声明能力表 = v4 及更早的老插件 */
       legacy: Object.keys(c.caps ?? {}).length === 0,
+      /** 脚本版本低于「会自动同步登录态」的那一版：桌面端凭证过期后切片会掉到 480P */
+      noAutoCookie: Boolean(c.userscriptOld),
       caps
     }
   })
@@ -365,6 +371,8 @@ const clientDetails = computed(() =>
 
 /** 是否有插件协议版本落后（用于给一条汇总提示） */
 const hasOutdatedClient = computed(() => clientDetails.value.some((c) => c.outdated))
+/** 是否有插件版本过旧、不会自动同步登录态 */
+const hasOldScript = computed(() => clientDetails.value.some((c) => c.noAutoCookie))
 
 
 /* --------------------------------- 快捷键 --------------------------------- */
@@ -1095,6 +1103,13 @@ async function openOutputDir(): Promise<void> {
                 <span v-if="!c.caps.length" class="muted" style="font-size: 12px">未声明任何能力</span>
                 <span v-for="cap in c.caps" :key="cap" class="cap-chip">{{ cap }}</span>
               </template>
+              <span v-if="c.noAutoCookie" style="font-size: 12px; color: var(--warn)">
+                脚本过旧 · 不会自动同步登录态
+              </span>
+            </div>
+            <div v-if="hasOldScript" class="hint" style="margin-top: 4px">
+              有用户脚本版本低于 v3.18.8，不会把浏览器里的登录态自动同步过来；
+              桌面端凭证过期后会静默掉到 480P。请用下方的「复制脚本」重新安装一次（覆盖旧脚本即可）。
             </div>
             <div v-if="hasOutdatedClient" class="hint" style="margin-top: 4px">
               有用户脚本的协议版本低于桌面端（v{{ BRIDGE_PROTOCOL_VERSION }}），部分新功能可能不可用；
@@ -1131,8 +1146,14 @@ async function openOutputDir(): Promise<void> {
       <div class="field">
         <label>登录状态</label>
         <div class="row">
-          <span :style="{ color: login.loggedIn ? 'var(--success)' : 'var(--danger)' }">
-            {{ login.loggedIn ? `✓ 已登录${login.name ? `（${login.name}）` : ''}` : '✗ 未登录 / 未验证' }}
+          <span :style="{ color: login.loggedIn ? 'var(--success)' : login.unknown ? 'var(--warn)' : 'var(--danger)' }">
+            {{
+              login.loggedIn
+                ? `✓ 已登录${login.name ? `（${login.name}）` : ''}`
+                : login.unknown
+                  ? '? 未能向 B站 确认（网络异常，可稍后重试）'
+                  : '✗ 未登录 / 凭证已失效（画质会被限制在 480P 以内）'
+            }}
           </span>
           <button class="btn sm" :disabled="checking" @click="checkLoginStatus">
             {{ checking ? '检测中…' : '重新检测' }}

@@ -10,6 +10,7 @@ import {
   parseSidx,
   splitRange
 } from '../src/main/slice/sidx'
+import { getPlayInfo } from '../src/main/slice/playurl'
 
 let passed = 0
 let failed = 0
@@ -217,5 +218,142 @@ check('parallelFactor 随体积递增', () => {
   assert.strictEqual(parallelFactor(500 * 1024 * 1024), 8)
 })
 
-console.log(`\n通过 ${passed}，失败 ${failed}\n`)
-if (failed > 0) process.exit(1)
+/* ---------------------------- 播放地址选流 ---------------------------- */
+section('播放地址选流（画质降级判定）')
+
+/** 造一条 DASH 视频流；index_range 缺失会被 toStream 丢掉，所以必须带上 */
+function dashVideo(id: number, codecs = 'avc1.640028'): Record<string, unknown> {
+  return {
+    id,
+    baseUrl: `https://cdn.example/v-${id}-${codecs}`,
+    codecs,
+    bandwidth: 1000,
+    segment_base: { index_range: '0-999', init_range: '0-99' }
+  }
+}
+
+function playurlPayload(opts: {
+  streams: Array<Record<string, unknown>>
+  acceptQuality: number[]
+  /** 接口自称的画质，用来证明它不可信 */
+  selfReportedQuality?: number
+}): unknown {
+  return {
+    code: 0,
+    message: '0',
+    data: {
+      quality: opts.selfReportedQuality ?? 0,
+      accept_quality: opts.acceptQuality,
+      timelength: 60_000,
+      dash: {
+        duration: 60,
+        video: opts.streams,
+        audio: [
+          {
+            id: 30280,
+            baseUrl: 'https://cdn.example/a',
+            codecs: 'mp4a.40.2',
+            bandwidth: 128000,
+            segment_base: { index_range: '0-99', init_range: '0-9' }
+          }
+        ]
+      }
+    }
+  }
+}
+
+/** 替换全局 fetch，只服务这一次请求；返回还原函数 */
+function stubFetchOnce(body: unknown): () => void {
+  const real = globalThis.fetch
+  globalThis.fetch = (async () => ({
+    ok: true,
+    status: 200,
+    json: async () => body
+  })) as unknown as typeof fetch
+  return () => {
+    globalThis.fetch = real
+  }
+}
+
+async function checkAsync(name: string, fn: () => Promise<void>): Promise<void> {
+  try {
+    await fn()
+    passed++
+    console.log(`  ✓ ${name}`)
+  } catch (err) {
+    failed++
+    console.error(`  ✗ ${name}\n      ${(err as Error).message}`)
+  }
+}
+
+async function runPlayInfoTests(): Promise<void> {
+  // 实测（2026-11-09，BV1GJ411x7h7）：未登录要 1080P 时接口回 data.quality=64、
+  // accept_quality 含 112，但 dash 里只有 480P/360P。选流必须看实际流。
+  {
+    const restore = stubFetchOnce(
+      playurlPayload({
+        streams: [dashVideo(32, 'hev1.1.6'), dashVideo(32, 'avc1.640028'), dashVideo(16, 'avc1.64000d')],
+        acceptQuality: [112, 80, 64, 32, 16],
+        selfReportedQuality: 64
+      })
+    )
+    try {
+      await checkAsync('未登录：按实际流选 480P，不会误报 1080P', async () => {
+        const play = await getPlayInfo('BV1xx411c7mD', 1, '')
+        assert.strictEqual(play.quality, 32, 'dash 里最高就是 480P，不能信 data.quality')
+        assert.strictEqual(play.requested, 80)
+        assert.strictEqual(play.qualityCap, 112, 'accept_quality 最大值 = 稿件支持的最高档')
+        assert.strictEqual(play.video.length, 1)
+        assert.match(play.video[0].codecs, /avc1/, '同清晰度优先 avc1（兼容性更好）')
+      })
+    } finally {
+      restore()
+    }
+  }
+
+  {
+    const restore = stubFetchOnce(
+      playurlPayload({
+        streams: [
+          dashVideo(112, 'avc1.640032'),
+          dashVideo(80, 'hev1.1.6'),
+          dashVideo(80, 'avc1.640028'),
+          dashVideo(64)
+        ],
+        acceptQuality: [112, 80, 64, 32, 16]
+      })
+    )
+    try {
+      await checkAsync('要 1080P 且有权限：选 80，不越级到 112', async () => {
+        const play = await getPlayInfo('BV1xx411c7mD', 1, 'SESSDATA=x', 80)
+        assert.strictEqual(play.quality, 80)
+        assert.strictEqual(play.qualityCap, 112)
+        assert.match(play.video[0].codecs, /avc1/)
+      })
+    } finally {
+      restore()
+    }
+  }
+
+  // 稿件本身最高 720P：quality 与上限都是 64，降级提示才会说「该视频最高只有 720P」，
+  // 而不是误导成「需要大会员」。
+  {
+    const restore = stubFetchOnce(
+      playurlPayload({ streams: [dashVideo(64)], acceptQuality: [64, 32, 16] })
+    )
+    try {
+      await checkAsync('稿件本身只有 720P：quality 与上限都应为 64', async () => {
+        const play = await getPlayInfo('BV1xx411c7mD', 1, 'SESSDATA=x', 80)
+        assert.strictEqual(play.quality, 64)
+        assert.strictEqual(play.qualityCap, 64)
+      })
+    } finally {
+      restore()
+    }
+  }
+}
+
+void runPlayInfoTests().then(() => {
+  console.log(`\n通过 ${passed}，失败 ${failed}\n`)
+  if (failed > 0) process.exit(1)
+})

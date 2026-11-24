@@ -179,6 +179,25 @@ export function setupIpcEvents(): void {
     })
   )
 
+  /**
+   * 用户脚本版本过旧（低于会自动同步登录态的那一版）。
+   *
+   * 老脚本永远不会把浏览器里的 Cookie 送过来，桌面端只能拿旧凭证切片；
+   * 凭证一过期就静默降到 480P，界面上看不出任何异常。这条提示必须给，
+   * 而且要写清「怎么改」（重新复制脚本）。
+   */
+  subs.push(
+    window.api.onBridgeUserscriptOld((info) => {
+      ui.showToast(
+        `浏览器用户脚本 v${info.clientVersion} 较旧（不会自动同步 B站 登录状态），` +
+          '桌面端凭证过期后切片就会只有 480P。请到「设置 → B站账号」点「复制脚本」重新安装一次。',
+        'error',
+        12000
+      )
+      emit('bridge.userscriptOld', info)
+    })
+  )
+
   /* -------------- 插件浏览到合集 / 系列 / 收藏夹：问用户是否批量拉取 -------------- */
 
   subs.push(
@@ -252,17 +271,33 @@ export function setupIpcEvents(): void {
 
   subs.push(
     window.api.onBridgeCookies((p) => {
-      if (p.ok) {
-        ui.showToast(
-          `已从浏览器同步登录状态${p.userName ? `（${p.userName}）` : ''}，现在可直接拉取字幕`,
-          'success',
-          4600
-        )
+      // p.ok 只表示「桌面端有没有把凭证存下来」，p.loggedIn 才是「B站 认不认这份凭证」。
+      // 以前一律弹「同步成功」，凭证过期的人会以为画质问题已经解决，切片时才发现还是 480P。
+      const refresh = (): void => {
         void settings.load()
         void loadBridgeStatusSafe()
-      } else {
-        ui.showToast(`登录状态同步失败：${p.message ?? '未知原因'}`, 'error', 4600)
       }
+      if (!p.ok) {
+        ui.showToast(`登录状态同步失败：${p.message ?? '未知原因'}`, 'error', p.kept ? 9000 : 6000)
+        refresh()
+        return
+      }
+      if (p.loggedIn === false) {
+        ui.showToast(
+          p.message ||
+            '桌面端已保存凭证，但 B站 未确认登录：画质仍会被限制在 480P 以内，请重新登录 B站 后再同步',
+          'error',
+          9000
+        )
+        refresh()
+        return
+      }
+      ui.showToast(
+        `已从浏览器同步登录状态${p.userName ? `（${p.userName}）` : ''}，切片可正常取到高画质`,
+        'success',
+        5200
+      )
+      refresh()
     })
   )
 

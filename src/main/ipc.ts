@@ -463,8 +463,16 @@ export function registerIpc(getWindow: () => BrowserWindow | null): void {
 
   ipcMain.handle('bili:loginStatus', async () => {
     const cookie = loadSettings().biliCookie
-    if (!cookie.trim()) return { loggedIn: false }
-    return bili.checkLogin(cookie)
+    if (!cookie.trim()) return { loggedIn: false, unknown: false }
+    // 区分「B站明确说未登录(-101)」与「这次没查到（断网/超时）」：前者要用户重新登录，
+    // 后者只是探测失败，把凭证判死会让用户以为同步没生效。
+    const probe = await bili.probeLogin(cookie)
+    return {
+      loggedIn: probe.state === 'in',
+      unknown: probe.state === 'unknown',
+      name: probe.name,
+      avatar: probe.avatar
+    }
   })
 
   /**

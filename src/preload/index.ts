@@ -147,8 +147,13 @@ const api = {
   },
 
   /* B站 */
-  loginStatus: (): Promise<{ loggedIn: boolean; name?: string; avatar?: string }> =>
-    ipcRenderer.invoke('bili:loginStatus'),
+  loginStatus: (): Promise<{
+    loggedIn: boolean
+    /** 有凭证但没能向 B站 确认（网络异常），此时 loggedIn=false 不代表凭证已失效 */
+    unknown?: boolean
+    name?: string
+    avatar?: string
+  }> => ipcRenderer.invoke('bili:loginStatus'),
   /** 读取弹幕作为字幕定位辅助；force=true 跳过 10 分钟缓存 */
   getDanmaku: (bvid: string, force = false): Promise<OpResult<DanmakuResult>> =>
     ipcRenderer.invoke('bili:danmaku', bvid, force),
@@ -513,6 +518,10 @@ const api = {
       clientBrowser: string
     }) => void
   ) => subscribe('bridge:version-skew', cb),
+  /** 插件版本太旧（不会自动同步登录态，切片可能静默降到 480P） */
+  onBridgeUserscriptOld: (
+    cb: (p: { clientVersion: string; minVersion: string; clientBrowser: string }) => void
+  ) => subscribe('bridge:userscript-old', cb),
   onDataWarning: (cb: (p: { missing: number; message: string }) => void) =>
     subscribe('data:warning', cb),
   onBridgeCookies: (
@@ -522,6 +531,8 @@ const api = {
       userName?: string
       count?: number
       message?: string
+      /** 浏览器凭证已失效，但桌面端原凭证仍有效，因此没有覆盖 */
+      kept?: boolean
     }) => void
   ) => subscribe('bridge:cookies', cb),
 

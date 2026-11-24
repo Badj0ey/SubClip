@@ -26,6 +26,31 @@ export const BRIDGE_PROTOCOL_VERSION = 5
 export const BRIDGE_SERVER_NAME = 'subclip'
 
 /**
+ * 「连上桌面端后自动同步 B站登录态」是从这个脚本版本开始有的。
+ *
+ * 用户脚本没有 @updateURL（篡改猴不会自动升级），所以老用户很可能一直停在
+ * 3.18.2 ~ 3.18.7：那些版本永远不会主动把 Cookie 送过来，桌面端只能拿旧凭证
+ * 去切片，凭证一过期就静默掉到 480P，而且界面上没有任何线索。
+ * 低于这个版本时桌面端会提示「重新复制一份脚本」。
+ */
+export const MIN_USCRIPT_VERSION = '3.18.8'
+
+/** 简易版本比较：只比较数字段，够用来判断「脚本比某版本旧」（a<b 返回负数） */
+export function compareVersion(a: string, b: string): number {
+  const parts = (v: string): number[] => {
+    const m = String(v ?? '').match(/\d+(?:\.\d+)*/)
+    return m ? m[0].split('.').map((n) => Number(n) || 0) : [0]
+  }
+  const pa = parts(a)
+  const pb = parts(b)
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const diff = (pa[i] ?? 0) - (pb[i] ?? 0)
+    if (diff) return diff
+  }
+  return 0
+}
+
+/**
  * 能力表（capabilities）。
  *
  * 解决的问题：协议版本号只能表达「整体是否兼容」，而实际使用中两端往往是
@@ -249,7 +274,17 @@ export type ServerMessage =
     } & BridgeEnvelope)
   | ({ type: 'pull-status'; bvid: string; stage: 'running' | 'fallback' | 'done' | 'error'; message: string } & BridgeEnvelope)
   | ({ type: 'subtitle-result'; bvid: string; page: number; lang: string; ok: boolean; message: string } & BridgeEnvelope)
-  | ({ type: 'cookies-result'; ok: boolean; message: string } & BridgeEnvelope)
+  | ({
+      type: 'cookies-result'
+      ok: boolean
+      message: string
+      /** 桌面端向 B站 复验的结果；`false` 表示凭证已存但当前取不到登录态（画质受限） */
+      loggedIn?: boolean
+      /** 桌面端本来就是同一份登录身份，这次没有重新保存 */
+      unchanged?: boolean
+      /** 浏览器凭证已失效，但桌面端原凭证仍有效，因此没有覆盖 */
+      kept?: boolean
+    } & BridgeEnvelope)
   | ({ type: 'ack'; ok: boolean; message?: string } & BridgeEnvelope)
   | ({ type: 'pong' } & BridgeEnvelope)
 
@@ -263,6 +298,8 @@ export interface BridgeClientInfo {
   remote: string
   /** 该插件是否已同步过 B站登录凭证 */
   cookieSynced: boolean
+  /** 插件版本低于 `MIN_USCRIPT_VERSION`：不会自动同步登录态，切片可能静默掉到 480P */
+  userscriptOld: boolean
   /** 握手来源 Origin（便于排查「为什么连不上」） */
   origin: string
   /** 桌面端设置了令牌时，该连接是否已通过令牌校验 */

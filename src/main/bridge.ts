@@ -32,6 +32,8 @@ import {
   BRIDGE_LIMITS,
   BRIDGE_PROTOCOL_VERSION,
   BRIDGE_SERVER_NAME,
+  MIN_USCRIPT_VERSION,
+  compareVersion,
   isBridgeOriginAllowed,
   parseClientMessage,
   requiredCapability,
@@ -118,6 +120,8 @@ export class BridgeServer extends EventEmitter {
   private token = ''
   /** 「插件协议比桌面端新」只提示一次（每次连接都弹会变成噪音） */
   private versionSkewNotified = false
+  /** 「插件版本过旧、不会自动同步登录态」同样只提示一次 */
+  private oldScriptNotified = false
 
   /** 运行期可以调整（设置里改了端口/令牌后调用） */
   configure(options: BridgeOptions): void {
@@ -294,6 +298,8 @@ export class BridgeServer extends EventEmitter {
       connectedAt: Date.now(),
       remote: req.socket.remoteAddress ?? '',
       cookieSynced: false,
+      // 握手前不知道版本，按「不老」记；收到 hello 后按插件自报的版本判断
+      userscriptOld: false,
       origin: origin ?? '',
       // 没配令牌时默认就是「已认证」
       authenticated: !this.token,
@@ -422,6 +428,7 @@ export class BridgeServer extends EventEmitter {
       case 'hello': {
         client.info.version = msg.version
         client.info.browser = msg.browser
+        client.info.userscriptOld = compareVersion(msg.version, MIN_USCRIPT_VERSION) < 0
         // 协议版本差异只记录、不断连：版本号是用来协商的。
         // 但「插件比桌面端新」需要让**界面**知道（只写进「最近事件」用户看不到），
         // 所以额外发一个事件，由 wire 转成渲染进程的提示。
@@ -434,6 +441,18 @@ export class BridgeServer extends EventEmitter {
             clientProtocol: client.info.protocol,
             serverProtocol: BRIDGE_PROTOCOL_VERSION,
             clientVersion: client.info.version,
+            clientBrowser: client.info.browser
+          })
+        }
+
+        // 老脚本不会自动同步登录态：桌面端的凭证一过期，切片就静默掉到 480P，
+        // 界面上却看不出任何异常。提示一次，让用户去设置页重新复制脚本。
+        if (client.info.userscriptOld && !this.oldScriptNotified) {
+          this.oldScriptNotified = true
+          this.touch(`插件 #${client.id} v${client.info.version} 过旧，不会自动同步登录态`)
+          this.emit('userscript-old', {
+            clientVersion: client.info.version,
+            minVersion: MIN_USCRIPT_VERSION,
             clientBrowser: client.info.browser
           })
         }

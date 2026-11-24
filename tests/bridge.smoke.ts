@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { WebSocket, WebSocketServer } from 'ws'
 import type { TreeNode } from '../src/shared/types'
-import { BRIDGE_ALLOWED_ORIGINS, BRIDGE_PROTOCOL_VERSION } from '../src/shared/bridge'
+import { BRIDGE_ALLOWED_ORIGINS, BRIDGE_PROTOCOL_VERSION, MIN_USCRIPT_VERSION } from '../src/shared/bridge'
 import { bridge } from '../src/main/bridge'
 import * as db from '../src/main/db'
 import { loadSettings } from '../src/main/settings'
@@ -127,6 +127,17 @@ async function run(): Promise<void> {
     const c = bridge.status().clients[0]
     assert.strictEqual(c.browser, 'Edge')
     assert.strictEqual(c.version, '1.0.0')
+  })
+
+  // 老脚本（3.18.8 之前）不会自动同步登录态：桌面端凭证一过期，切片就静默掉到 480P。
+  // 这是最需要让用户看见的一条，所以要有单独的提示事件。
+  check('老脚本握手时提示「不会自动同步登录态」并标记 userscriptOld', () => {
+    const ev = pushes.find((p) => p.channel === 'bridge:userscript-old')
+    assert.ok(ev, `应推送 bridge:userscript-old，实际推送：${pushes.map((p) => p.channel).join(',')}`)
+    const info = ev!.payload as { clientVersion: string; minVersion: string }
+    assert.strictEqual(info.clientVersion, '1.0.0')
+    assert.strictEqual(info.minVersion, MIN_USCRIPT_VERSION)
+    assert.strictEqual(bridge.status().clients[0].userscriptOld, true)
   })
 
   check('老插件（不带信封）按 v1 + 空能力表记录', () => {
@@ -668,6 +679,149 @@ async function run(): Promise<void> {
   })
 
   pullWs.close()
+  await wait(200)
+
+  /* -------------------- 登录凭证同步（切片画质的先决条件） -------------------- */
+
+  /**
+   * 用假的 nav 响应替代真实网络。
+   * 真实接口在测试里既慢又不稳定，而这里要验证的是「桌面端拿到什么结论、怎么存」，
+   * 不是 B站 的接口本身。
+   */
+  function stubNav(body: (cookie: string) => unknown): () => void {
+    const real = globalThis.fetch
+    globalThis.fetch = (async (_input: unknown, init?: { headers?: Record<string, string> }) => {
+      const cookie = String(init?.headers?.Cookie ?? '')
+      const payload = body(cookie)
+      return {
+        ok: true,
+        status: 200,
+        json: async () => payload
+      } as any
+    }) as typeof fetch
+    return () => {
+      globalThis.fetch = real
+    }
+  }
+
+  const LOGGED_IN = { code: 0, message: '0', data: { isLogin: true, uname: '测试用户', face: '' } }
+  const LOGGED_OUT = { code: -101, message: '账号未登录', data: { isLogin: false } }
+
+  const cookInbox: any[] = []
+  const cookWs = new WebSocket(`ws://127.0.0.1:${PORT}`, { origin: 'https://www.bilibili.com' })
+  cookWs.on('message', (raw) => cookInbox.push(JSON.parse(raw.toString())))
+  await new Promise<void>((resolve, reject) => {
+    cookWs.on('open', () => resolve())
+    cookWs.on('error', reject)
+  })
+  cookWs.send(JSON.stringify({ type: 'hello', version: '3.18.8', browser: 'Edge' }))
+  await wait(250)
+
+  const sendCookies = (cookie: string, count = 4): void => {
+    cookWs.send(JSON.stringify({ type: 'cookies', payload: { cookie, count, loggedIn: true } }))
+  }
+  const lastCookieReply = (): any => cookInbox.filter((m) => m.type === 'cookies-result').pop()
+  const lastCookieEvent = (): any => pushes.filter((p) => p.channel === 'bridge:cookies').pop()
+
+  // 只对「SESSDATA=good」放行登录，其余一律 -101 —— 等于模拟「浏览器已登录 / 凭证已过期」两种现场
+  let restoreNav = stubNav((cookie) =>
+    cookie.includes('SESSDATA=good') ? LOGGED_IN : LOGGED_OUT
+  )
+  try {
+    pushes.length = 0
+    sendCookies('SESSDATA=good; bili_jct=abc; DedeUserID=42; buvid3=old')
+    await wait(600)
+
+    check('有效凭证：写入桌面端并按真实登录态回执（不再只回 ok:true）', () => {
+      const reply = lastCookieReply()
+      assert.ok(reply, `应收到 cookies-result，实际：${JSON.stringify(cookInbox)}`)
+      assert.strictEqual(reply.ok, true)
+      assert.strictEqual(reply.loggedIn, true, 'B站 已确认登录，回执必须带上 loggedIn:true')
+      const stored = loadSettings().biliCookie
+      assert.ok(stored.includes('SESSDATA=good'), `凭证应落盘，实际：${stored}`)
+      const ev = lastCookieEvent()
+      assert.strictEqual(ev?.payload.loggedIn, true, '界面据此提示「可正常取到高画质」')
+      assert.strictEqual(ev?.payload.userName, '测试用户', '应带上复验拿到的昵称')
+    })
+
+    // 同一登录身份、只有 buvid3 变了（浏览器会自己轮换）：不应重复写盘、也不该再弹提示
+    pushes.length = 0
+    sendCookies('SESSDATA=good; bili_jct=abc; DedeUserID=42; buvid3=rotated')
+    await wait(500)
+
+    check('同一登录身份重复同步：不写盘、不推送（避免每开一个页面就弹「已同步」）', () => {
+      const reply = lastCookieReply()
+      assert.strictEqual(reply?.ok, true)
+      assert.strictEqual(reply?.unchanged, true, '应标记为「没有变化」')
+      assert.strictEqual(reply?.loggedIn, true, '没变化也要带上复核结论')
+      const stored = loadSettings().biliCookie
+      assert.ok(!stored.includes('buvid3=rotated'), `不应重新写盘，实际存的是：${stored}`)
+      assert.strictEqual(
+        pushes.filter((p) => p.channel === 'bridge:cookies').length,
+        0,
+        '没有变化时不应向界面推送事件'
+      )
+    })
+
+    // 浏览器和桌面端拿着同一份凭证，但服务端已经把它判死（改密码 / 在别处退出登录）。
+    // 只比字符串会当成「没变化」，于是永远静默 480P —— 必须真的问一次 B站。
+    restoreNav()
+    restoreNav = stubNav(() => LOGGED_OUT)
+    pushes.length = 0
+    sendCookies('SESSDATA=good; bili_jct=abc; DedeUserID=42; buvid3=rotated')
+    await wait(600)
+
+    check('凭证文本没变但已被服务端判死：不当成「已同步」，而是回执失败并说明', () => {
+      const reply = lastCookieReply()
+      assert.strictEqual(reply?.ok, false, '内容相同不等于登录有效，必须复核后如实回执')
+      assert.strictEqual(reply?.kept, true)
+      assert.ok(/失效/.test(String(reply?.message)), `文案应说清凭证失效，实际：${reply?.message}`)
+      assert.ok(loadSettings().biliCookie.includes('SESSDATA=good'), '不要因为复核失败就删掉凭证')
+      const ev = lastCookieEvent()
+      assert.strictEqual(ev?.payload.ok, false)
+    })
+
+    // 恢复「good 有效」的现场，继续验证「新凭证坏、旧凭证好」的保留逻辑
+    restoreNav()
+    restoreNav = stubNav((cookie) => (cookie.includes('SESSDATA=good') ? LOGGED_IN : LOGGED_OUT))
+    pushes.length = 0
+    sendCookies('SESSDATA=stale; bili_jct=abc; DedeUserID=42')
+    await wait(600)
+
+    check('新凭证已失效而旧凭证仍有效：保留旧凭证，并回执失败原因', () => {
+      const stored = loadSettings().biliCookie
+      assert.ok(stored.includes('SESSDATA=good'), `旧凭证应保留，实际：${stored}`)
+      assert.ok(!stored.includes('SESSDATA=stale'), '坏凭证不能盖掉好凭证')
+      const reply = lastCookieReply()
+      assert.strictEqual(reply?.ok, false, '应如实回执失败')
+      assert.strictEqual(reply?.kept, true, '应说明「保留旧凭证」')
+      assert.ok(/保留/.test(String(reply?.message)), `文案应说清原因，实际：${reply?.message}`)
+      const ev = lastCookieEvent()
+      assert.strictEqual(ev?.payload.kept, true)
+    })
+
+    // 网络异常时不能把凭证判死：状态未知 ≠ 未登录
+    restoreNav()
+    restoreNav = stubNav(() => {
+      throw new Error('网络不可达')
+    })
+    pushes.length = 0
+    sendCookies('SESSDATA=good2; bili_jct=abc; DedeUserID=42')
+    await wait(1500)
+
+    check('网络异常时仍保存凭证，但不谎报「已登录」', () => {
+      const reply = lastCookieReply()
+      assert.strictEqual(reply?.ok, true, '凭证本身没问题，只是没验证成功')
+      assert.notStrictEqual(reply?.loggedIn, true, '没查到就不能说已登录（会让人以为画质问题解决了）')
+      assert.ok(loadSettings().biliCookie.includes('SESSDATA=good2'), '应先把凭证存下来')
+      const ev = lastCookieEvent()
+      assert.strictEqual(ev?.payload.loggedIn, false, '界面应提示「未确认登录」而不是成功')
+    })
+  } finally {
+    restoreNav()
+  }
+
+  cookWs.close()
   await wait(200)
 
   /* --------------- 协议版本倒挂与能力校验（第七阶段，v5） --------------- */

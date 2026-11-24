@@ -35,6 +35,18 @@ function askBrowser(
   return null
 }
 
+/** 把 Cookie 字符串拆成键值表（同名的后写覆盖先写，与浏览器的组织方式一致） */
+function parseCookie(text: string): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const part of text.split(';')) {
+    const eq = part.indexOf('=')
+    if (eq <= 0) continue
+    const key = part.slice(0, eq).trim()
+    if (key) map.set(key, part.slice(eq + 1).trim())
+  }
+  return map
+}
+
 /**
  * 合并插件同步来的凭证与桌面端已存的凭证。
  *
@@ -44,19 +56,23 @@ function askBrowser(
  * 没有的键保留旧值（保住 HttpOnly 键）。
  */
 function mergeBiliCookie(stored: string, incoming: string): string {
-  const parse = (text: string): Map<string, string> => {
-    const map = new Map<string, string>()
-    for (const part of text.split(';')) {
-      const eq = part.indexOf('=')
-      if (eq <= 0) continue
-      const key = part.slice(0, eq).trim()
-      if (key) map.set(key, part.slice(eq + 1).trim())
-    }
-    return map
-  }
-  const merged = parse(stored)
-  for (const [key, value] of parse(incoming)) merged.set(key, value)
+  const merged = parseCookie(stored)
+  for (const [key, value] of parseCookie(incoming)) merged.set(key, value)
   return [...merged.entries()].map(([key, value]) => `${key}=${value}`).join('; ')
+}
+
+/**
+ * 判断两份凭证是不是「同一个登录身份」。
+ *
+ * 自动同步会在每次打开 B 站页面时跑一遍，而浏览器 cookie 里的 buvid3 / buvid4 之类
+ * 会自己轮换 —— 全串比较几乎每次都不相等，于是界面每隔一会儿就弹一次「已同步」。
+ * 真正决定登录态的是这几个键：它们没变，就没有必要重新探测、写盘、提示。
+ */
+function cookieIdentity(text: string): string {
+  const map = parseCookie(text)
+  return ['SESSDATA', 'DedeUserID', 'bili_jct']
+    .map((key) => `${key}=${map.get(key) ?? ''}`)
+    .join('&')
 }
 
 /**
@@ -210,38 +226,76 @@ export function wireBridge(push: PushFn): void {
   // 插件同步过来的登录凭证：写入设置后，桌面端即可自行调用 B 站接口
   bridge.on('cookies', (payload, clientId) => {
     void (async () => {
+      const reject = (message: string, extra: Record<string, unknown> = {}): void => {
+        bridge.markCookieSynced(clientId, false)
+        push('bridge:cookies', { ok: false, message, ...extra })
+        bridge.sendToClient(clientId, {
+          type: 'cookies-result', ok: false, kept: Boolean(extra.kept), message
+        })
+      }
       try {
         const cookie = payload?.cookie?.trim()
-        if (!cookie) {
-          push('bridge:cookies', { ok: false, message: '插件未提供有效的登录凭证' })
-          bridge.sendToClient(clientId, { type: 'cookies-result', ok: false, message: '登录凭证为空' })
+        if (!cookie) return reject('插件未提供有效的登录凭证')
+
+        const current = (loadSettings().biliCookie ?? '').trim()
+        // 同一份登录身份重复同步（打开每个 B 站页面都会自动来一次）：不写盘、不推送，
+        // 否则界面会被「已同步」提示反复打扰，而其实什么都没变。
+        // 但仍然要向 B站复核一次：凭证可能还在浏览器里、却已经被服务端判死
+        // （改密码、别处退出登录），只比字符串是发现不了的 —— 这种「看起来已同步、
+        // 实际早失效」正是切片静默掉到 480P 的典型现场。
+        if (current && cookieIdentity(current) === cookieIdentity(cookie)) {
+          const same = await bili.probeLogin(cookie, 1)
+          if (same.state === 'out') {
+            return reject('桌面端保存的登录凭证已被 B站判定失效（画质会被限制在 480P 以内）；请在浏览器里重新登录 B站，再点「同步登录状态」', {
+              kept: true
+            })
+          }
+          bridge.markCookieSynced(clientId, true)
+          bridge.sendToClient(clientId, {
+            type: 'cookies-result', ok: true, unchanged: true,
+            loggedIn: same.state === 'in',
+            message: same.state === 'in'
+              ? '桌面端已是最新的登录状态，无需重复保存'
+              : '桌面端已是最新的登录状态（本次未能向 B站复核，画质若偏低请再点一次「同步登录状态」）'
+          })
           return
         }
-        saveSettings({ biliCookie: cookie })
-        bridge.markCookieSynced(clientId, true)
 
-        // 用桌面端自己的实现复验一次，顺便拿到昵称
-        let loggedIn = Boolean(payload.loggedIn)
-        let userName = payload.userName ?? ''
-        try {
-          const res = await bili.checkLogin(cookie)
-          loggedIn = res.loggedIn
-          userName = res.name ?? userName
-        } catch {
-          /* 网络异常不影响凭证已保存 */
+        const probe = await bili.probeLogin(cookie)
+        // 浏览器里的凭证可能已经失效（比如从旧设备、旧配置复制来的），而桌面端原来的凭证还有效。
+        // 宁可不更新，也不能让坏凭证盖掉好凭证 —— 一旦盖掉，下一次切片就会掉到 480P。
+        if (probe.state === 'out' && current) {
+          // 这一枪只是「保住旧凭证」的兜底，用户在等回执，别重试太多次
+          const kept = await bili.probeLogin(current, 1)
+          if (kept.state === 'in') {
+            return reject('浏览器里的 B站登录态已失效；桌面端原有凭证仍然有效，已保留未覆盖', {
+              kept: true
+            })
+          }
         }
 
-        push('bridge:cookies', { ok: true, loggedIn, userName, count: payload.count ?? 0 })
+        // 合并而不是覆盖：插件回退到 document.cookie 时会缺 HttpOnly 键（SESSDATA 等），
+        // 直接覆盖等于把桌面端完整的登录态降级成匿名。
+        saveSettings({ biliCookie: mergeBiliCookie(current, cookie) })
+        bridge.markCookieSynced(clientId, probe.state !== 'out')
+
+        const loggedIn = probe.state === 'in'
+        push('bridge:cookies', {
+          ok: true,
+          loggedIn,
+          userName: probe.name ?? payload.userName ?? '',
+          count: Number(payload.count) || 0
+        })
         bridge.sendToClient(clientId, {
-          type: 'cookies-result', ok: true,
-          message: loggedIn ? '登录状态已保存到桌面端' : '凭证已保存，但 B站接口尚未确认登录；受限字幕可能仍需浏览器补抓'
+          type: 'cookies-result', ok: true, loggedIn,
+          message: loggedIn
+            ? '登录状态已保存到桌面端，切片可按账号权限取流'
+            : probe.state === 'out'
+              ? '凭证已保存，但 B站接口确认当前未登录（画质会被限制在 480P 以内）；请重新登录 B站后再点「同步登录状态」'
+              : '凭证已保存，但暂时无法向 B站确认登录状态（网络异常）；若切片画质偏低请再点一次「同步登录状态」'
         })
       } catch (err) {
-        bridge.markCookieSynced(clientId, false)
-        push('bridge:cookies', { ok: false, message: (err as Error).message })
-        bridge.sendToClient(clientId, {
-          type: 'cookies-result', ok: false, message: `登录状态保存失败：${(err as Error).message}`
-        })
+        reject(`登录状态保存失败：${(err as Error).message}`)
       }
     })()
   })
@@ -254,6 +308,12 @@ export function wireBridge(push: PushFn): void {
    * 而这种信息只写在 `lastEvent` 里用户看不到。
    */
   bridge.on('version-skew', (info) => push('bridge:version-skew', info))
+
+  /**
+   * 插件版本太旧（低于自动同步登录态那一版）。
+   * 必须让用户看见：老脚本不会主动送 Cookie，桌面端凭证过期后切片只会静默降到 480P。
+   */
+  bridge.on('userscript-old', (info) => push('bridge:userscript-old', info))
 }
 
 /** 仅供测试重置换线状态 */

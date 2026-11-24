@@ -2,7 +2,7 @@
 // @name         字幕剪 SubClip · B站桥接
 // @name:en      SubClip Bilibili Bridge
 // @namespace    https://github.com/Badj0ey/SubClip
-// @version      3.18.8
+// @version      3.18.9
 // @description  在 B 站页面左下角识别视频，把页面信息、登录态与字幕同步给「字幕剪」桌面端
 // @author       Badj0ey
 // @homepageURL  https://github.com/Badj0ey/SubClip
@@ -131,6 +131,8 @@
     autoCookieTimer: 0,
     /** 是否允许连上桌面端后自动同步登录态（用户可在「连接设置」里关掉） */
     autoCookie: true,
+    /** 「页面里明明登录着、却读不到 HttpOnly 凭证」只提醒一次，别每次开页面都刷 */
+    cookieUnreadableWarned: false,
     page: null,
     pageSignature: '',
     tracks: { key: '', at: 0, data: null, error: '', loading: false },
@@ -1250,10 +1252,12 @@
       clearTimeout(state.autoCookieTimer)
       state.autoCookieTimer = 0
     }
-    state.cookieSynced = Boolean(message.ok)
+    // ok 只代表桌面端存下了凭证；loggedIn 才是 B站 认不认它（false = 画质仍会被限制）
+    const confirmed = message.ok && message.loggedIn !== false
+    state.cookieSynced = confirmed
     const detail = String(message.message || (message.ok ? '登录状态已保存' : '登录状态保存失败'))
-    addEvent(detail, message.ok ? 'ok' : 'error')
-    if (!auto) feedback(detail, message.ok ? 'ok' : 'error')
+    addEvent(detail, confirmed ? 'ok' : message.ok ? 'warn' : 'error')
+    if (!auto) feedback(detail, confirmed ? 'ok' : message.ok ? 'warn' : 'error')
     renderLogin()
   }
 
@@ -1496,6 +1500,10 @@
     if (!payload) return
     if (!send({ type: 'page-info', payload })) return
 
+    // 用户刚点了「同步」= 马上就要切片，此刻最该确认登录态是新的：
+    // 顺手补传一次（受 60 秒节流约束，连点不会重复发）。
+    autoSyncCookies()
+
     state.pulling = true
     state.pendingPullBvid = page.bvid
     updateActionAvailability()
@@ -1550,8 +1558,13 @@
       const reason = result.usedGM
         ? '没有读到 SESSDATA（可能未登录，或脚本管理器未授权 Cookie）'
         : '脚本管理器不支持 GM_cookie，读不到 HttpOnly 的 SESSDATA'
-      // 自动模式下这就是「没登录」的常态，不值得每次都记一笔
-      if (auto) return
+      // 自动模式下「没登录」是常态，不值得每次都记一笔；
+      // 但「页面里登录着、却读不到凭证」是环境问题：桌面端永远拿不到 Cookie，
+      // 切片就会一直只有 480P，而用户完全不知道为什么。这种必须说一次。
+      if (auto) {
+        if (state.login.data?.loggedIn) warnCookieUnreadable(reason)
+        return
+      }
       feedback('未读取到有效登录状态', 'error')
       addEvent(`${reason}；可在桌面端手动粘贴 Cookie`, 'warn')
       return
@@ -1593,6 +1606,22 @@
     if (!options?.force && Date.now() - state.autoCookieAt < AUTO_COOKIE_INTERVAL_MS) return
     state.autoCookieAt = Date.now()
     void syncCookies({ auto: true })
+  }
+
+  /**
+   * 浏览器登录着、桌面端却拿不到凭证时提醒一次。
+   *
+   * 这是「自动同步登录态」最常见的一种哑火：脚本管理器没给 GM_cookie 权限
+   * （或用的是不支持它的管理器），HttpOnly 的 SESSDATA 读不出来，
+   * 面板上却因为 B站的 nav 接口显示「已登录」。用户会以为已经同步好了，
+   * 直到切片出来是 480P 才发现 —— 所以宁可多一句提示。
+   */
+  function warnCookieUnreadable(reason) {
+    if (state.cookieUnreadableWarned) return
+    state.cookieUnreadableWarned = true
+    const hint = '桌面端拿不到登录凭证，切片画质会被限制在 480P 以内'
+    addEvent(`${reason}；${hint}`, 'error')
+    feedback(`读不到登录凭证：${hint}`, 'error')
   }
 
   /* =============================== UI 构建 =============================== */

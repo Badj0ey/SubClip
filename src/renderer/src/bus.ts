@@ -97,6 +97,15 @@ export type AppEvents = {
     clientVersion: string
     clientBrowser: string
   }
+  /**
+   * 用户脚本版本过旧（低于 MIN_USCRIPT_VERSION，不会自动同步登录态）。
+   * 与 versionSkew 分开：一个是「桌面端该升级」，一个是「脚本该重装」，对用户的动作不同。
+   */
+  'bridge.userscriptOld': {
+    clientVersion: string
+    minVersion: string
+    clientBrowser: string
+  }
   /** 插件检测到合集 / 收藏夹，请求用户确认批量拉取 */
   'bridge.collection': PendingCollectionHint
   /** 设置被重新加载 */
